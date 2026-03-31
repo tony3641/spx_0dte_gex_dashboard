@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPX 0DTE GEX Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #0a0e17;
+            color: #e0e6ed;
+            overflow-x: hidden;
+        }
+
+        /* Header bar */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 20px;
+            background: #111827;
+            border-bottom: 1px solid #1e293b;
+        }
+        .header h1 {
+            font-size: 18px;
+            font-weight: 600;
+            color: #f8fafc;
+        }
+        .header h1 span { color: #3b82f6; }
+
+        /* Status bar */
+        .status-bar {
+            display: flex;
+            gap: 24px;
+            align-items: center;
+            font-size: 12px;
+        }
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .status-label { color: #64748b; }
+        .status-value { color: #94a3b8; font-weight: 500; }
+        .dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .dot-green { background: #22c55e; box-shadow: 0 0 6px #22c55e80; }
+        .dot-red { background: #ef4444; box-shadow: 0 0 6px #ef444480; }
+        .dot-yellow { background: #eab308; box-shadow: 0 0 6px #eab30880; }
+
+        /* Key levels strip */
+        .levels-strip {
+            display: flex;
+            gap: 4px;
+            padding: 6px 20px;
+            background: #0f172a;
+            border-bottom: 1px solid #1e293b;
+            overflow-x: auto;
+        }
+        .level-badge {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .level-badge .label { opacity: 0.7; font-weight: 400; }
+        .badge-spot { background: #1e293b; color: #f8fafc; }
+        .badge-call-wall { background: #052e16; color: #4ade80; border: 1px solid #16a34a40; }
+        .badge-put-wall { background: #2a0a0a; color: #f87171; border: 1px solid #dc262640; }
+        .badge-gamma-flip { background: #1a1400; color: #facc15; border: 1px solid #ca8a0440; }
+        .badge-max-pain { background: #0c1a3d; color: #60a5fa; border: 1px solid #2563eb40; }
+        .badge-mode-live { background: #052e16; color: #4ade80; border: 1px solid #16a34a40; }
+        .badge-mode-hist { background: #1a1400; color: #facc15; border: 1px solid #ca8a0440; }
+        .badge-net-gex { background: #1e293b; color: #e2e8f0; border: 1px solid #33415540; }
+        .badge-converging { background: #052e16; color: #4ade80; border: 1px solid #16a34a60; }
+        .badge-diverging  { background: #2a0a0a; color: #f87171; border: 1px solid #dc262660; }
+
+        /* Charts container */
+        .charts-container {
+            display: grid;
+            grid-template-columns: 1fr;
+            grid-template-rows: 1fr 1fr;
+            height: calc(100vh - 100px);
+            padding: 8px;
+            gap: 8px;
+        }
+        .chart-panel {
+            background: #111827;
+            border-radius: 8px;
+            border: 1px solid #1e293b;
+            overflow: hidden;
+            position: relative;
+        }
+        .chart-title {
+            position: absolute;
+            top: 8px;
+            left: 12px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #94a3b8;
+            z-index: 10;
+            pointer-events: none;
+        }
+        #priceChart, #gexChart {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* GEX chain-fetch loading overlay */
+        .gex-loading {
+            position: absolute;
+            inset: 0;
+            z-index: 20;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            background: rgba(10, 14, 23, 0.78);
+            border-radius: 8px;
+            backdrop-filter: blur(2px);
+        }
+        .gex-loading.hidden { display: none; }
+        .gex-loading-spinner {
+            width: 44px; height: 44px;
+            border: 3px solid #1e293b;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        .gex-loading-text {
+            font-size: 13px;
+            font-weight: 500;
+            color: #94a3b8;
+            letter-spacing: 0.03em;
+        }
+        .gex-loading-sub {
+            font-size: 11px;
+            color: #475569;
+            margin-top: -8px;
+        }
+
+        /* Overlay for loading/disconnected */
+        .overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: #0a0e17e0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .overlay.hidden { display: none; }
+        .overlay .spinner {
+            width: 36px; height: 36px;
+            border: 3px solid #1e293b;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .overlay .msg {
+            font-size: 14px;
+            color: #94a3b8;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <h1><span>SPX</span> 0DTE GEX Dashboard</h1>
+        <div class="status-bar">
+            <div class="status-item">
+                <span class="dot" id="connDot"></span>
+                <span class="status-value" id="connStatus">Connecting...</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Market:</span>
+                <span class="status-value" id="marketStatus">—</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Expiration:</span>
+                <span class="status-value" id="expDisplay">—</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Last GEX:</span>
+                <span class="status-value" id="lastGexUpdate">—</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Key levels strip -->
+    <div class="levels-strip" id="levelsStrip">
+        <div class="level-badge badge-spot">
+            <span class="label">SPX</span>
+            <span id="spotBadge">—</span>
+        </div>
+        <div class="level-badge" id="modeBadge" style="display:none;">
+            <span id="modeBadgeText">—</span>
+        </div>
+        <div class="level-badge badge-call-wall">
+            <span class="label">Call Wall</span>
+            <span id="callWallBadge">—</span>
+        </div>
+        <div class="level-badge badge-put-wall">
+            <span class="label">Put Wall</span>
+            <span id="putWallBadge">—</span>
+        </div>
+        <div class="level-badge badge-gamma-flip">
+            <span class="label">Gamma Flip</span>
+            <span id="gammaFlipBadge">—</span>
+        </div>
+        <div class="level-badge badge-max-pain">
+            <span class="label">Max Pain</span>
+            <span id="maxPainBadge">—</span>
+        </div>
+        <div class="level-badge badge-net-gex">
+            <span class="label">Net GEX</span>
+            <span id="netGexBadge">—</span>
+        </div>
+        <div class="level-badge" id="mmRegimeBadge" style="display:none;">
+            <span id="mmRegimeText">—</span>
+        </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="charts-container">
+        <div class="chart-panel">
+            <div class="chart-title" id="priceChartTitle">SPX Intraday</div>
+            <div id="priceChart"></div>
+        </div>
+        <div class="chart-panel">
+            <div class="chart-title">Gamma Exposure (GEX) by Strike</div>
+            <div class="gex-loading" id="gexLoading">
+                <div class="gex-loading-spinner"></div>
+                <div class="gex-loading-text" id="gexLoadingText">Fetching option chain…</div>
+                <div class="gex-loading-sub" id="gexLoadingSub"></div>
+            </div>
+            <div id="gexChart"></div>
+        </div>
+    </div>
+
+    <!-- Loading overlay -->
+    <div class="overlay" id="loadingOverlay">
+        <div class="spinner"></div>
+        <div class="msg" id="overlayMsg">Connecting to server...</div>
+    </div>
+
+    <script>
+    // ======================================================================
+    // State
+    // ======================================================================
+    const state = {
+        bars: [],          // [{time, open, high, low, close}]
+        gex: null,         // latest gex data
+        wsConnected: false,
+        ibConnected: false,
+        priceChartReady: false,
+        gexChartReady: false,
+        dataMode: 'initializing',   // 'live' | 'historical' | 'initializing'
+        historicalDate: '',
+        currentSpot: 0,    // most up-to-date spot (live SPX or ES-derived)
+        esDerived: false,  // true when currentSpot is ES-derived
+    };
+
+    // ======================================================================
+    // Chart setup
+    // ======================================================================
+    const CHART_BG = '#111827';
+    const GRID_COLOR = '#1e293b';
+    const TEXT_COLOR = '#94a3b8';
+
+    const priceLayout = {
+        paper_bgcolor: CHART_BG,
+        plot_bgcolor: CHART_BG,
+        margin: { t: 36, r: 80, b: 40, l: 60 },
+        xaxis: {
+            color: TEXT_COLOR,
+            gridcolor: GRID_COLOR,
+            tickformat: '%H:%M',
+            type: 'date',
+            rangeslider: { visible: false },
+        },
+        yaxis: {
+            color: TEXT_COLOR,
+            gridcolor: GRID_COLOR,
+            side: 'right',
+            tickformat: ',.2f',
+        },
+        showlegend: false,
+        shapes: [],
+        annotations: [],
+    };
+
+    const gexLayout = {
+        paper_bgcolor: CHART_BG,
+        plot_bgcolor: CHART_BG,
+        margin: { t: 36, r: 60, b: 40, l: 60 },
+        barmode: 'relative',
+        xaxis: {
+            color: TEXT_COLOR,
+            gridcolor: GRID_COLOR,
+            title: { text: 'Strike', font: { color: TEXT_COLOR, size: 11 } },
+        },
+        yaxis: {
+            color: TEXT_COLOR,
+            gridcolor: GRID_COLOR,
+            title: { text: 'GEX ($)', font: { color: TEXT_COLOR, size: 11 } },
+        },
+        showlegend: true,
+        legend: {
+            x: 0.01, y: 0.99,
+            font: { color: TEXT_COLOR, size: 11 },
+            bgcolor: 'rgba(0,0,0,0)',
+        },
+        shapes: [],
+        annotations: [],
+    };
+
+    function initPriceChart() {
+        Plotly.newPlot('priceChart', [{
+            x: [],
+            open: [],
+            high: [],
+            low: [],
+            close: [],
+            type: 'candlestick',
+            name: 'SPX',
+            increasing: { line: { color: '#22c55e' }, fillcolor: '#22c55e90' },
+            decreasing: { line: { color: '#ef4444' }, fillcolor: '#ef444490' },
+        }], priceLayout, {
+            responsive: true,
+            displayModeBar: false,
+        });
+        state.priceChartReady = true;
+    }
+
+    function initGexChart() {
+        Plotly.newPlot('gexChart', [
+            {
+                x: [], y: [],
+                type: 'bar',
+                name: 'Call GEX',
+                marker: { color: '#22c55e80' },
+            },
+            {
+                x: [], y: [],
+                type: 'bar',
+                name: 'Put GEX',
+                marker: { color: '#ef444480' },
+            },
+        ], gexLayout, {
+            responsive: true,
+            displayModeBar: false,
+        });
+        state.gexChartReady = true;
+    }
+
+    // ======================================================================
+    // Chart update functions
+    // ======================================================================
+    function updatePriceChart() {
+        if (!state.priceChartReady || state.bars.length === 0) return;
+
+        const times  = state.bars.map(b => b.time);
+        const opens  = state.bars.map(b => b.open);
+        const highs  = state.bars.map(b => b.high);
+        const lows   = state.bars.map(b => b.low);
+        const closes = state.bars.map(b => b.close);
+
+        // Build horizontal level lines
+        const shapes = [];
+        const annotations = [];
+
+        if (state.gex) {
+            const levels = [
+                { val: state.gex.call_wall, color: '#22c55e', label: 'Call Wall', dash: 'solid' },
+                { val: state.gex.put_wall, color: '#ef4444', label: 'Put Wall', dash: 'solid' },
+                { val: state.gex.gamma_flip, color: '#eab308', label: 'Gamma Flip', dash: 'dash' },
+                { val: state.gex.max_pain, color: '#3b82f6', label: 'Max Pain', dash: 'dash' },
+            ];
+
+            for (const lv of levels) {
+                if (lv.val == null) continue;
+                shapes.push({
+                    type: 'line',
+                    xref: 'paper', x0: 0, x1: 1,
+                    yref: 'y', y0: lv.val, y1: lv.val,
+                    line: { color: lv.color, width: 1.5, dash: lv.dash },
+                });
+                annotations.push({
+                    xref: 'paper', x: 1.01,
+                    yref: 'y', y: lv.val,
+                    text: `${lv.label} ${lv.val}`,
+                    showarrow: false,
+                    font: { color: lv.color, size: 10 },
+                    xanchor: 'left',
+                });
+            }
+        }
+
+        Plotly.react('priceChart', [{
+            x: times,
+            open: opens,
+            high: highs,
+            low: lows,
+            close: closes,
+            type: 'candlestick',
+            name: 'SPX',
+            increasing: { line: { color: '#22c55e' }, fillcolor: '#22c55e90' },
+            decreasing: { line: { color: '#ef4444' }, fillcolor: '#ef444490' },
+        }], {
+            ...priceLayout,
+            shapes,
+            annotations,
+        });
+    }
+
+    function appendBar(bar) {
+        state.bars.push(bar);
+        if (state.bars.length > 7200) {
+            state.bars = state.bars.slice(-7200);
+        }
+        updatePriceChart();
+    }
+
+    function updateLastBar(bar) {
+        if (state.bars.length === 0) {
+            state.bars.push(bar);
+        } else {
+            // Replace the last bar (same minute)
+            const last = state.bars[state.bars.length - 1];
+            if (last.time === bar.time) {
+                state.bars[state.bars.length - 1] = bar;
+            } else {
+                state.bars.push(bar);
+            }
+        }
+        updatePriceChart();
+    }
+
+    function handleChainProgress(data) {
+        const overlay  = document.getElementById('gexLoading');
+        const textEl   = document.getElementById('gexLoadingText');
+        const subEl    = document.getElementById('gexLoadingSub');
+
+        if (data.phase === 'done') {
+            overlay.classList.add('hidden');
+            return;
+        }
+
+        // Only show during the very first fetch — suppress spinner for recurring updates
+        if (state.gex) return;
+
+        overlay.classList.remove('hidden');
+
+        const phaseText = {
+            starting:   'Fetching option chain…',
+            qualifying: 'Qualifying contracts…',
+            fetching:   'Streaming market data…',
+            computing:  'Computing GEX…',
+        };
+        textEl.textContent = phaseText[data.phase] || 'Fetching option chain…';
+
+        if (data.phase === 'fetching') {
+            subEl.textContent = `Batch ${data.batch} of ${data.total_batches}`;
+        } else {
+            subEl.textContent = '';
+        }
+    }
+
+    function updateGexChart() {
+        if (!state.gexChartReady || !state.gex || !state.gex.gex_bars) return;
+
+        const bars = state.gex.gex_bars;
+        const strikes = bars.map(b => b.strike);
+        const callGex = bars.map(b => b.call_gex);
+        const putGex = bars.map(b => b.put_gex);
+
+        // Vertical line at current spot
+        const shapes = [];
+        const annotations = [];
+
+        // Use latest currentSpot (updated via status msgs) so the line moves in
+        // real-time as ES moves, rather than waiting for the next chain fetch.
+        const spotForLine = state.currentSpot > 0 ? state.currentSpot : (state.gex.spot_price || 0);
+        const spotLabel = state.esDerived
+            ? `ES derived SPX: ${spotForLine}`
+            : `SPX: ${spotForLine}`;
+
+        if (spotForLine > 0) {
+            shapes.push({
+                type: 'line',
+                xref: 'x', x0: spotForLine, x1: spotForLine,
+                yref: 'paper', y0: 0, y1: 1,
+                line: { color: '#f8fafc', width: 2, dash: 'dot' },
+            });
+            annotations.push({
+                x: spotForLine,
+                yref: 'paper', y: 1.02,
+                text: spotLabel,
+                showarrow: false,
+                font: { color: state.esDerived ? '#facc15' : '#f8fafc', size: 10 },
+            });
+        }
+
+        // Mark key strikes on GEX chart
+        const keyLevels = [
+            { val: state.gex.call_wall, color: '#22c55e', label: 'CW' },
+            { val: state.gex.put_wall, color: '#ef4444', label: 'PW' },
+            { val: state.gex.gamma_flip, color: '#eab308', label: 'GF' },
+            { val: state.gex.max_pain, color: '#3b82f6', label: 'MP' },
+        ];
+
+        for (const lv of keyLevels) {
+            if (lv.val == null) continue;
+            shapes.push({
+                type: 'line',
+                xref: 'x', x0: lv.val, x1: lv.val,
+                yref: 'paper', y0: 0, y1: 1,
+                line: { color: lv.color, width: 1.5, dash: 'dash' },
+            });
+            annotations.push({
+                x: lv.val,
+                yref: 'paper', y: -0.06,
+                text: lv.label,
+                showarrow: false,
+                font: { color: lv.color, size: 10, },
+            });
+        }
+
+        // Net GEX + regime annotation in top-right of chart
+        const netGex = state.gex.total_net_gex;
+        if (netGex != null) {
+            const isPositive = netGex >= 0;
+            const regimeLabel = isPositive ? '▼ CONVERGING' : '▲ DIVERGING';
+            const regimeColor = isPositive ? '#4ade80' : '#f87171';
+            annotations.push({
+                xref: 'paper', x: 0.98,
+                yref: 'paper', y: 0.99,
+                text: `Net GEX: <b>${fmtGex(netGex)}</b>   <span style="color:${regimeColor}">${regimeLabel}</span>`,
+                showarrow: false,
+                font: { color: '#e2e8f0', size: 12 },
+                xanchor: 'right',
+                yanchor: 'top',
+                bgcolor: '#1a202c',
+                bordercolor: isPositive ? '#16a34a' : '#dc2626',
+                borderwidth: 2,
+                borderpad: 8,
+                borderradius: 4,
+            });
+        }
+
+        Plotly.react('gexChart', [
+            {
+                x: strikes,
+                y: callGex,
+                type: 'bar',
+                name: 'Call GEX',
+                marker: { color: strikes.map(() => '#22c55e80') },
+            },
+            {
+                x: strikes,
+                y: putGex,
+                type: 'bar',
+                name: 'Put GEX',
+                marker: { color: strikes.map(() => '#ef444480') },
+            },
+        ], {
+            ...gexLayout,
+            shapes,
+            annotations,
+        });
+    }
+
+    // ======================================================================
+    // Badge updates
+    // ======================================================================
+    function fmtGex(val) {
+        // Format GEX in billions (B) or millions (M) for readability
+        if (val == null) return '—';
+        const abs = Math.abs(val);
+        const sign = val < 0 ? '-' : '+';
+        if (abs >= 1e9)  return sign + (abs / 1e9).toFixed(2) + 'B';
+        if (abs >= 1e6)  return sign + (abs / 1e6).toFixed(1) + 'M';
+        if (abs >= 1e3)  return sign + (abs / 1e3).toFixed(0) + 'K';
+        return sign + abs.toFixed(0);
+    }
+
+    function updateBadges() {
+        const spot = state.bars.length > 0 ? state.bars[state.bars.length - 1].close : null;
+        document.getElementById('spotBadge').textContent = spot ? spot.toFixed(2) : '—';
+
+        if (state.gex) {
+            document.getElementById('callWallBadge').textContent =
+                state.gex.call_wall != null ? state.gex.call_wall.toFixed(0) : '—';
+            document.getElementById('putWallBadge').textContent =
+                state.gex.put_wall != null ? state.gex.put_wall.toFixed(0) : '—';
+            document.getElementById('gammaFlipBadge').textContent =
+                state.gex.gamma_flip != null ? state.gex.gamma_flip.toFixed(1) : '—';
+            document.getElementById('maxPainBadge').textContent =
+                state.gex.max_pain != null ? state.gex.max_pain.toFixed(0) : '—';
+
+            // Net GEX value
+            const netGex = state.gex.total_net_gex;
+            document.getElementById('netGexBadge').textContent = fmtGex(netGex);
+
+            // MM Hedging regime
+            const regimeBadge = document.getElementById('mmRegimeBadge');
+            const regimeText  = document.getElementById('mmRegimeText');
+            if (netGex != null) {
+                regimeBadge.style.display = '';
+                if (netGex >= 0) {
+                    regimeBadge.className = 'level-badge badge-converging';
+                    regimeText.innerHTML  = '▼ MM: CONVERGING';
+                    regimeText.title      = 'Positive GEX: dealers are net long gamma. They sell into rallies and buy dips — market-stabilising.';
+                } else {
+                    regimeBadge.className = 'level-badge badge-diverging';
+                    regimeText.innerHTML  = '▲ MM: DIVERGING';
+                    regimeText.title      = 'Negative GEX: dealers are net short gamma. They chase moves in the same direction — market-amplifying.';
+                }
+            } else {
+                regimeBadge.style.display = 'none';
+            }
+        }
+    }
+
+    function updateStatus(data) {
+        // Connection dot
+        const dot = document.getElementById('connDot');
+        const connText = document.getElementById('connStatus');
+        if (data.connected) {
+            dot.className = 'dot dot-green';
+            connText.textContent = 'IB Connected';
+        } else {
+            dot.className = 'dot dot-red';
+            connText.textContent = 'IB Disconnected';
+        }
+
+        // Market status
+        const ms = document.getElementById('marketStatus');
+        const msVal = data.market_status || '—';
+        ms.textContent = msVal;
+        if (msVal === 'RTH') ms.style.color = '#22c55e';
+        else if (msVal === 'GTH' || msVal === 'CURB') ms.style.color = '#eab308';
+        else ms.style.color = '#94a3b8';
+
+        // Expiration
+        document.getElementById('expDisplay').textContent = data.expiration || '—';
+
+        // Last GEX update
+        if (data.last_chain_update) {
+            document.getElementById('lastGexUpdate').textContent = data.last_chain_update;
+        }
+
+        // Data mode badge & chart title
+        if (data.data_mode) {
+            state.dataMode = data.data_mode;
+            state.historicalDate = data.historical_date || '';
+            updateModeBadge();
+        }
+
+        // Update ES-derived spot in real-time (between chain fetches)
+        if (data.spot_price > 0) {
+            const prevSpot = state.currentSpot;
+            const prevDerived = state.esDerived;
+            state.currentSpot = data.spot_price;
+            state.esDerived = data.es_derived || false;
+            // Re-render GEX spot line if spot or regime changed
+            if (state.gexChartReady && state.gex &&
+                (state.currentSpot !== prevSpot || state.esDerived !== prevDerived)) {
+                updateGexChart();
+            }
+        }
+
+        // Sync loading overlay with chain_fetching flag
+        // (mainly for reconnects where the client missed the starting event)
+        if (data.chain_fetching === true && !state.gex) {
+            const overlay = document.getElementById('gexLoading');
+            document.getElementById('gexLoadingText').textContent = 'Fetching option chain…';
+            document.getElementById('gexLoadingSub').textContent = '';
+            overlay.classList.remove('hidden');
+        }
+    }
+
+    function updateModeBadge() {
+        const badge = document.getElementById('modeBadge');
+        const text  = document.getElementById('modeBadgeText');
+        const title = document.getElementById('priceChartTitle');
+
+        if (state.dataMode === 'live') {
+            badge.style.display = '';
+            badge.className = 'level-badge badge-mode-live';
+            text.textContent = '\u25CF LIVE';
+            title.textContent = 'SPX Intraday \u2014 Live';
+        } else if (state.dataMode === 'historical') {
+            badge.style.display = '';
+            badge.className = 'level-badge badge-mode-hist';
+            text.textContent = '\u25CB HISTORICAL ' + state.historicalDate;
+            title.textContent = 'SPX Intraday \u2014 ' + state.historicalDate + ' (last session)';
+        } else {
+            badge.style.display = 'none';
+            title.textContent = 'SPX Intraday';
+        }
+    }
+
+    // ======================================================================
+    // WebSocket
+    // ======================================================================
+    let ws = null;
+    let reconnectTimer = null;
+
+    function connectWS() {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = `${proto}//${location.host}/ws`;
+        console.log('Connecting to', url);
+
+        ws = new WebSocket(url);
+
+        ws.onopen = () => {
+            console.log('WebSocket connected');
+            state.wsConnected = true;
+            document.getElementById('loadingOverlay').classList.add('hidden');
+            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        };
+
+        ws.onclose = () => {
+            console.log('WebSocket closed');
+            state.wsConnected = false;
+            document.getElementById('connDot').className = 'dot dot-red';
+            document.getElementById('connStatus').textContent = 'Disconnected';
+            // Show overlay with reconnecting message
+            document.getElementById('overlayMsg').textContent = 'Reconnecting...';
+            document.getElementById('loadingOverlay').classList.remove('hidden');
+            scheduleReconnect();
+        };
+
+        ws.onerror = (e) => {
+            console.error('WebSocket error', e);
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                handleMessage(msg);
+            } catch (e) {
+                console.error('Failed to parse message', e);
+            }
+        };
+    }
+
+    function scheduleReconnect() {
+        if (reconnectTimer) return;
+        reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connectWS();
+        }, 3000);
+    }
+
+    function handleMessage(msg) {
+        switch (msg.type) {
+            case 'init':
+                handleInit(msg.data);
+                break;
+            case 'bar':
+                appendBar(msg.data);
+                updateBadges();
+                break;
+            case 'bar_update':
+                updateLastBar(msg.data);
+                updateBadges();
+                break;
+            case 'chain_progress':
+                handleChainProgress(msg.data);
+                break;
+            case 'gex':
+                state.gex = msg.data;
+                if (msg.data.spot_price > 0) state.currentSpot = msg.data.spot_price;
+                state.esDerived = msg.data.es_derived || false;
+                updateGexChart();
+                updatePriceChart();  // redraw level lines
+                updateBadges();
+                break;
+            case 'status':
+                updateStatus(msg.data);
+                break;
+            case 'ping':
+                // keepalive, ignore
+                break;
+            default:
+                console.log('Unknown message type:', msg.type);
+        }
+    }
+
+    function handleInit(data) {
+        // Update mode first so chart title is correct before drawing
+        if (data.data_mode) {
+            state.dataMode = data.data_mode;
+            state.historicalDate = data.historical_date || '';
+            updateModeBadge();
+        }
+
+        // Seed currentSpot and esDerived from init payload immediately
+        if (data.spot_price > 0) state.currentSpot = data.spot_price;
+        state.esDerived = data.es_derived || false;
+
+        // Restore bar history (OHLC)
+        if (data.price_history && data.price_history.length > 0) {
+            state.bars = data.price_history;
+            updatePriceChart();
+        }
+
+        // Restore GEX
+        if (data.gex) {
+            state.gex = data.gex;
+            if (data.gex.spot_price > 0) state.currentSpot = data.gex.spot_price;
+            state.esDerived = data.es_derived || false;
+            updateGexChart();
+            updatePriceChart();
+        }
+
+        updateStatus(data);
+        updateBadges();
+    }
+
+    // ======================================================================
+    // Init
+    // ======================================================================
+    document.addEventListener('DOMContentLoaded', () => {
+        initPriceChart();
+        initGexChart();
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            Plotly.Plots.resize('priceChart');
+            Plotly.Plots.resize('gexChart');
+        });
+
+        connectWS();
+    });
+    </script>
+</body>
+</html>
