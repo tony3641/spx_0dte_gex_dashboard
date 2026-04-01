@@ -403,8 +403,8 @@
             close: [],
             type: 'candlestick',
             name: 'SPX',
-            increasing: { line: { color: '#22c55e' }, fillcolor: '#22c55e90' },
-            decreasing: { line: { color: '#ef4444' }, fillcolor: '#ef444490' },
+            increasing: { line: { color: '#22c55e' }, fillcolor: '#22c55e' },
+            decreasing: { line: { color: '#ef4444' }, fillcolor: '#ef4444' },
         }], { ...priceLayout, margin: mobilePriceMargin() }, {
             responsive: true,
             displayModeBar: false,
@@ -500,9 +500,43 @@
         const lows   = state.bars.map(b => b.low);
         const closes = state.bars.map(b => b.close);
 
+        // Detect session boundary: first bar of the most-recent calendar date
+        let sessionStartTime = null;
+        if (state.bars.length > 1) {
+            const lastDate = state.bars[state.bars.length - 1].time.substring(0, 10);
+            for (let i = 0; i < state.bars.length; i++) {
+                if (state.bars[i].time.substring(0, 10) === lastDate) {
+                    // Only draw the line when there are prev-day bars
+                    if (i > 0) sessionStartTime = state.bars[i].time;
+                    break;
+                }
+            }
+        }
+
         // Build horizontal level lines
         const shapes = [];
         const annotations = [];
+
+        // Session-boundary vertical line
+        if (sessionStartTime) {
+            const sessionDate = sessionStartTime.substring(0, 10);
+            shapes.push({
+                type: 'line',
+                xref: 'x', x0: sessionStartTime, x1: sessionStartTime,
+                yref: 'paper', y0: 0, y1: 1,
+                line: { color: '#475569', width: 1.5, dash: 'dashdot' },
+            });
+            annotations.push({
+                xref: 'x', x: sessionStartTime,
+                yref: 'paper', y: 0.99,
+                text: `▶ ${sessionDate}`,
+                showarrow: false,
+                font: { color: '#94a3b8', size: 10 },
+                xanchor: 'left',
+                bgcolor: 'rgba(17,24,39,0.85)',
+                borderpad: 3,
+            });
+        }
 
         if (state.gex) {
             const levels = [
@@ -539,8 +573,8 @@
             close: closes,
             type: 'candlestick',
             name: 'SPX',
-            increasing: { line: { color: '#22c55e' }, fillcolor: '#22c55e90' },
-            decreasing: { line: { color: '#ef4444' }, fillcolor: '#ef444490' },
+            increasing: { line: { color: '#22c55e' }, fillcolor: '#22c55e' },
+            decreasing: { line: { color: '#ef4444' }, fillcolor: '#ef4444' },
         }], {
             ...priceLayout,
             shapes,
@@ -1150,27 +1184,38 @@
         initSmileChart();
 
         // Sync horizontal zoom between GEX chart (xaxis) and Smile chart (xaxis + xaxis2)
+        // Guard flag prevents the two handlers from triggering each other infinitely.
+        let syncingZoom = false;
+
         document.getElementById('gexChart').on('plotly_relayout', (data) => {
+            if (syncingZoom) return;
             if (data['xaxis.range[0]'] !== undefined && data['xaxis.range[1]'] !== undefined) {
                 const xRange = [data['xaxis.range[0]'], data['xaxis.range[1]']];
+                syncingZoom = true;
                 Plotly.relayout('smileChart', {
                     'xaxis.range': xRange,
                     'xaxis2.range': xRange,
-                });
+                }).finally(() => { syncingZoom = false; });
             } else if (data['xaxis.autorange'] !== undefined) {
+                syncingZoom = true;
                 Plotly.relayout('smileChart', {
                     'xaxis.autorange': data['xaxis.autorange'],
                     'xaxis2.autorange': data['xaxis.autorange'],
-                });
+                }).finally(() => { syncingZoom = false; });
             }
         });
 
         document.getElementById('smileChart').on('plotly_relayout', (data) => {
+            if (syncingZoom) return;
             if (data['xaxis.range[0]'] !== undefined && data['xaxis.range[1]'] !== undefined) {
                 const xRange = [data['xaxis.range[0]'], data['xaxis.range[1]']];
-                Plotly.relayout('gexChart', { 'xaxis.range': xRange });
+                syncingZoom = true;
+                Plotly.relayout('gexChart', { 'xaxis.range': xRange })
+                    .finally(() => { syncingZoom = false; });
             } else if (data['xaxis.autorange'] !== undefined) {
-                Plotly.relayout('gexChart', { 'xaxis.autorange': data['xaxis.autorange'] });
+                syncingZoom = true;
+                Plotly.relayout('gexChart', { 'xaxis.autorange': data['xaxis.autorange'] })
+                    .finally(() => { syncingZoom = false; });
             }
         });
 

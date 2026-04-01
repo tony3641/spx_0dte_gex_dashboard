@@ -325,12 +325,20 @@ async def fetch_historical_bars():
         return
 
     session_date = last_trading_date()
-    end_dt = datetime(
-        session_date.year, session_date.month, session_date.day,
-        16, 30, 0,  # well after RTH close
-    ).strftime("%Y%m%d-%H:%M:%S")
 
-    logger.info(f"Fetching 1-min historical bars for {session_date.isoformat()}...")
+    # During RTH, pass endDateTime="" so IB returns bars right up to the current
+    # minute (a future endDateTime causes IB to lag 30-60 min behind live).
+    # Outside RTH, anchor to 16:30 to ensure the full completed session is returned.
+    if is_within_rth():
+        end_dt = ""
+    else:
+        end_dt = datetime(
+            session_date.year, session_date.month, session_date.day,
+            16, 30, 0,
+        ).strftime("%Y%m%d-%H:%M:%S")
+
+    logger.info(f"Fetching 1-min historical bars for {session_date.isoformat()} "
+                f"(endDateTime={'now' if end_dt == '' else end_dt})...")
 
     try:
         bars = await ib.reqHistoricalDataAsync(
@@ -369,7 +377,9 @@ async def fetch_historical_bars():
     state.spx_price = last_close
     state.spx_last_close = last_close   # fixed reference for ES-derived calc
     state.historical_date = session_date.isoformat()
-    state.data_mode = "historical"
+    # Only set historical mode if we're not already live
+    if state.data_mode != "live":
+        state.data_mode = "historical"
 
     logger.info(
         f"Loaded {len(bars)} historical bars for {session_date.isoformat()}, "
@@ -400,19 +410,35 @@ async def price_push_loop():
             if minute_key != current_minute:
                 # Close the previous bar (if any) and ship it
                 if current_bar is not None:
-                    state.price_history.append(current_bar)
+                    # Avoid duplicating a bar already loaded from historical fetch
+                    if not state.price_history or state.price_history[-1]["time"] != current_bar["time"]:
+                        state.price_history.append(current_bar)
                     await broadcast({"type": "bar", "data": current_bar})
 
-                # Start a new bar
+                # Start a new bar — resume from last historical bar if present
                 bar_time = now.replace(second=0, microsecond=0)
-                current_bar = {
-                    "time": bar_time.isoformat(),
-                    "time_short": bar_time.strftime("%H:%M"),
-                    "open": price,
-                    "high": price,
-                    "low": price,
-                    "close": price,
-                }
+                bar_time_iso = bar_time.isoformat()
+                # If the current minute already exists at the tail of history
+                # (e.g. an in-progress bar from historical fetch), inherit its OHLC
+                if state.price_history and state.price_history[-1]["time"] == bar_time_iso:
+                    existing = state.price_history[-1]
+                    current_bar = {
+                        "time": bar_time_iso,
+                        "time_short": bar_time.strftime("%H:%M"),
+                        "open": existing["open"],
+                        "high": max(existing["high"], price),
+                        "low": min(existing["low"], price),
+                        "close": price,
+                    }
+                else:
+                    current_bar = {
+                        "time": bar_time_iso,
+                        "time_short": bar_time.strftime("%H:%M"),
+                        "open": price,
+                        "high": price,
+                        "low": price,
+                        "close": price,
+                    }
                 current_minute = minute_key
             else:
                 # Update the current bar
@@ -633,9 +659,13 @@ async def lifespan(app):
         # Always subscribe to ES futures for off-hours derived price
         await setup_es_subscription()
 
-        # If market is not open, seed the chart with last session's bars
+        # Always seed the chart with the current/last session's intraday bars.
+        # During RTH this pre-fills today's session from 9:30 AM up to now;
+        # outside RTH this loads the previous session's bars as before.
+        await fetch_historical_bars()
+
+        # Only needed outside RTH (ES-derived off-hours spot price)
         if not is_within_rth():
-            await fetch_historical_bars()
             await fetch_es_baseline()
             logger.info(f"Historical mode: showing {state.historical_date}, "
                         f"ref price={state.spx_price:.2f}, "
