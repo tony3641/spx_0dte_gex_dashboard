@@ -49,6 +49,7 @@ IB_PORT = int(os.getenv("IB_PORT", "7497"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
 CHAIN_REFRESH_SECONDS = int(os.getenv("CHAIN_REFRESH_SECONDS", "60"))
 PRICE_PUSH_INTERVAL = float(os.getenv("PRICE_PUSH_INTERVAL", "1.0"))  # seconds
+SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")  # 0.0.0.0 = all interfaces
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 
 # ---------------------------------------------------------------------------
@@ -746,10 +747,19 @@ if __name__ == "__main__":
 
     config = uvicorn.Config(
         app,
-        host="0.0.0.0",
+        host=SERVER_HOST,
         port=SERVER_PORT,
         log_level="info",
         loop="none",  # Don't create a new loop; use ours
     )
     server = uvicorn.Server(config)
+    
+    # Log accessible URLs
+    logger.info(f"Server starting on {SERVER_HOST}:{SERVER_PORT}")
+    if SERVER_HOST == "0.0.0.0":
+        logger.info(f"  Local access    : http://localhost:{SERVER_PORT}")
+        logger.info(f"  Network access  : http://<your-local-ip>:{SERVER_PORT}  (e.g. http://192.168.1.100:{SERVER_PORT})")
+    else:
+        logger.info(f"  Access at       : http://{SERVER_HOST}:{SERVER_PORT}")
+    
     loop.run_until_complete(server.serve())

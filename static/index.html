@@ -174,6 +174,44 @@
             font-size: 14px;
             color: #94a3b8;
         }
+
+        /* ======================================================
+           Mobile / phone portrait  ≤ 600 px
+           ====================================================== */
+        @media (max-width: 600px) {
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 4px;
+                padding: 6px 12px;
+            }
+            .header h1 { font-size: 15px; }
+            .status-bar {
+                flex-wrap: wrap;
+                gap: 4px 14px;
+            }
+            .levels-strip {
+                padding: 4px 8px;
+                gap: 3px;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+            }
+            .levels-strip::-webkit-scrollbar { display: none; }
+            .level-badge {
+                padding: 3px 8px;
+                font-size: 11px;
+            }
+            .charts-container {
+                height: calc(100svh - 120px);
+                padding: 4px;
+                gap: 4px;
+            }
+            .chart-title {
+                font-size: 11px;
+                top: 4px;
+                left: 8px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -242,7 +280,7 @@
         </div>
         <div class="chart-panel">
             <div class="chart-title">Gamma Exposure (GEX) by Strike</div>
-            <div class="gex-loading" id="gexLoading">
+            <div class="gex-loading hidden" id="gexLoading">
                 <div class="gex-loading-spinner"></div>
                 <div class="gex-loading-text" id="gexLoadingText">Fetching option chain…</div>
                 <div class="gex-loading-sub" id="gexLoadingSub"></div>
@@ -280,6 +318,19 @@
     const CHART_BG = '#111827';
     const GRID_COLOR = '#1e293b';
     const TEXT_COLOR = '#94a3b8';
+
+    // ======================================================================
+    // Responsive helpers
+    // ======================================================================
+    function isMobile() { return window.innerWidth < 600; }
+
+    function mobilePriceMargin() {
+        return isMobile() ? { t: 28, r: 50, b: 32, l: 40 } : { t: 36, r: 80, b: 40, l: 60 };
+    }
+    function mobileGexMargin() {
+        return isMobile() ? { t: 28, r: 30, b: 32, l: 40 } : { t: 36, r: 60, b: 40, l: 60 };
+    }
+    function mobileAxisFontSize() { return isMobile() ? 9 : 11; }
 
     const priceLayout = {
         paper_bgcolor: CHART_BG,
@@ -339,7 +390,7 @@
             name: 'SPX',
             increasing: { line: { color: '#22c55e' }, fillcolor: '#22c55e90' },
             decreasing: { line: { color: '#ef4444' }, fillcolor: '#ef444490' },
-        }], priceLayout, {
+        }], { ...priceLayout, margin: mobilePriceMargin() }, {
             responsive: true,
             displayModeBar: false,
         });
@@ -347,6 +398,14 @@
     }
 
     function initGexChart() {
+        const fs = mobileAxisFontSize();
+        const layout = {
+            ...gexLayout,
+            margin: mobileGexMargin(),
+            xaxis: { ...gexLayout.xaxis, title: { text: 'Strike', font: { color: TEXT_COLOR, size: fs } } },
+            yaxis: { ...gexLayout.yaxis, title: { text: 'GEX ($)', font: { color: TEXT_COLOR, size: fs } } },
+            legend: { ...gexLayout.legend, font: { color: TEXT_COLOR, size: fs } },
+        };
         Plotly.newPlot('gexChart', [
             {
                 x: [], y: [],
@@ -360,7 +419,7 @@
                 name: 'Put GEX',
                 marker: { color: '#ef444480' },
             },
-        ], gexLayout, {
+        ], layout, {
             responsive: true,
             displayModeBar: false,
         });
@@ -828,6 +887,8 @@
             state.esDerived = data.es_derived || false;
             updateGexChart();
             updatePriceChart();
+            // Cached GEX from server — hide loading overlay immediately
+            document.getElementById('gexLoading').classList.add('hidden');
         }
 
         updateStatus(data);
@@ -841,8 +902,16 @@
         initPriceChart();
         initGexChart();
 
-        // Handle window resize
+        // Handle window resize — update margins for mobile/desktop transitions
         window.addEventListener('resize', () => {
+            const fs = mobileAxisFontSize();
+            Plotly.relayout('priceChart', { margin: mobilePriceMargin() });
+            Plotly.relayout('gexChart', {
+                margin: mobileGexMargin(),
+                'xaxis.title.font.size': fs,
+                'yaxis.title.font.size': fs,
+                'legend.font.size': fs,
+            });
             Plotly.Plots.resize('priceChart');
             Plotly.Plots.resize('gexChart');
         });

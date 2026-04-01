@@ -24,6 +24,25 @@ A real-time Gamma Exposure (GEX) dashboard for SPX 0DTE options, powered by Inte
    ```
 4. Open `http://localhost:8000` in a browser.
 
+## Network Access
+
+The server binds to all network interfaces (`0.0.0.0`), so it's accessible from both localhost and your local IP address:
+
+- **Localhost only**: `http://localhost:8000`
+- **Local network**: `http://<your-local-ip>:8000` (e.g., `http://192.168.1.100:8000`)
+
+The exact URLs are printed to the console when the server starts. You can override the listening address with the `SERVER_HOST` environment variable if needed.
+
+## Screenshot
+
+![Dashboard Screenshot](docs/screenshot.png)
+
+The dashboard displays:
+- **SPX Intraday Chart** (top) — candlestick chart with key GEX levels overlaid (Call Wall, Put Wall, Gamma Flip, Max Pain)
+- **GEX Chart** (bottom) — bar chart showing Call GEX (green) and Put GEX (red) by strike, with key levels annotated
+- **Level Badges** — real-time spot price, mode (LIVE/HISTORICAL/ES-DERIVED), and key strikes (Call Wall, Put Wall, Gamma Flip, Max Pain, Net GEX, MM regime)
+- **Status Bar** — IB connection, market status, expiration, last GEX update time
+
 ## Files
 
 | File | Purpose |
@@ -42,7 +61,8 @@ A real-time Gamma Exposure (GEX) dashboard for SPX 0DTE options, powered by Inte
 | `IB_PORT` | `7497` | TWS API port |
 | `IB_CLIENT_ID` | `1` | IB client ID |
 | `CHAIN_REFRESH_SECONDS` | `60` | How often to re-fetch the option chain |
-| `SERVER_PORT` | `8000` | uvicorn listen port |
+| `SERVER_HOST` | `0.0.0.0` | Server listen address (all interfaces) |
+| `SERVER_PORT` | `8000` | Server listen port |
 
 ## Data Modes
 
