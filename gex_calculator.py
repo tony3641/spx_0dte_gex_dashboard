@@ -7,10 +7,79 @@ Computes:
   - Put Wall (highest put gamma × OI strike)
   - Gamma Flip Point (where cumulative net GEX crosses zero)
   - Max Pain (strike minimizing total option holder payout)
+  - IV smile data with charm and delta-decay efficiency
 """
 
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+
+
+# ===========================================================================
+# Black-Scholes helpers (no scipy dependency — uses math.erf)
+# ===========================================================================
+
+def _norm_cdf(x: float) -> float:
+    """Standard normal CDF via erf."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _bsm_delta(S: float, K: float, T: float, r: float, sigma: float, right: str) -> Optional[float]:
+    """
+    BSM delta for a European option.
+
+    Args:
+        S: spot price
+        K: strike
+        T: time to expiry in years (must be > 0)
+        r: risk-free rate (annualized, e.g. 0.053)
+        sigma: implied volatility (annualized, e.g. 0.18)
+        right: 'C' or 'P'
+
+    Returns:
+        delta value, or None if inputs are degenerate.
+    """
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return None
+    try:
+        sqrt_T = math.sqrt(T)
+        d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrt_T)
+        if right == 'C':
+            return _norm_cdf(d1)
+        else:
+            return _norm_cdf(d1) - 1.0
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def _compute_charm_fd(
+    S: float, K: float, T: float, r: float, sigma: float, right: str,
+    dt: float = 15.0 / (390.0 * 252.0),
+) -> Optional[float]:
+    """
+    Compute charm (∂δ/∂t) via finite-difference on BSM delta.
+
+    Uses δ(T) and δ(T - dt) to approximate the rate of delta decay.
+    Default dt = 15 minutes expressed in trading-year fractions.
+
+    Returns:
+        charm value (positive means delta is decaying toward zero),
+        or None if computation fails.
+    """
+    if T <= dt:
+        # Not enough time left for finite difference
+        dt = T * 0.5
+        if dt <= 0:
+            return None
+
+    delta_now = _bsm_delta(S, K, T, r, sigma, right)
+    delta_later = _bsm_delta(S, K, T - dt, r, sigma, right)
+
+    if delta_now is None or delta_later is None:
+        return None
+
+    # charm = -dδ/dT (positive = delta decaying toward zero as time passes)
+    return -(delta_later - delta_now) / dt
 
 
 @dataclass
@@ -45,9 +114,26 @@ class GEXResult:
     total_put_gex: float = 0.0
     total_net_gex: float = 0.0
     strikes: List[float] = field(default_factory=list)
+    call_oi_by_strike: Dict[float, int] = field(default_factory=dict)
+    put_oi_by_strike: Dict[float, int] = field(default_factory=dict)
+    total_call_oi: int = 0
+    total_put_oi: int = 0
+    call_vol_by_strike: Dict[float, int] = field(default_factory=dict)
+    put_vol_by_strike: Dict[float, int] = field(default_factory=dict)
+    total_call_vol: int = 0
+    total_put_vol: int = 0
+    # IV smile / charm / delta data (unfiltered — all strikes)
+    call_iv_by_strike: Dict[float, float] = field(default_factory=dict)
+    put_iv_by_strike: Dict[float, float] = field(default_factory=dict)
+    call_delta_by_strike: Dict[float, float] = field(default_factory=dict)
+    put_delta_by_strike: Dict[float, float] = field(default_factory=dict)
+    call_charm_by_strike: Dict[float, float] = field(default_factory=dict)
+    put_charm_by_strike: Dict[float, float] = field(default_factory=dict)
 
 
-def compute_gex(options: List[OptionData], spot_price: float) -> GEXResult:
+def compute_gex(options: List[OptionData], spot_price: float,
+                time_to_expiry_years: float = 0.0,
+                risk_free_rate: float = 0.053) -> GEXResult:
     """
     Compute GEX metrics from a list of option data.
 
@@ -85,6 +171,17 @@ def compute_gex(options: List[OptionData], spot_price: float) -> GEXResult:
     call_gex: Dict[float, float] = {}
     put_gex: Dict[float, float] = {}
     net_gex: Dict[float, float] = {}
+    call_oi_per_strike: Dict[float, int] = {}
+    put_oi_per_strike: Dict[float, int] = {}
+    call_vol_per_strike: Dict[float, int] = {}
+    put_vol_per_strike: Dict[float, int] = {}
+    # Smile / charm data
+    call_iv_map: Dict[float, float] = {}
+    put_iv_map: Dict[float, float] = {}
+    call_delta_map: Dict[float, float] = {}
+    put_delta_map: Dict[float, float] = {}
+    call_charm_map: Dict[float, float] = {}
+    put_charm_map: Dict[float, float] = {}
 
     # For wall detection
     max_call_gex_val = 0.0
@@ -113,6 +210,34 @@ def compute_gex(options: List[OptionData], spot_price: float) -> GEXResult:
         call_gex[strike] = c_gex
         put_gex[strike] = p_gex
         net_gex[strike] = c_gex + p_gex
+        call_oi_per_strike[strike] = calls_by_strike[strike].open_interest if strike in calls_by_strike else 0
+        put_oi_per_strike[strike] = puts_by_strike[strike].open_interest if strike in puts_by_strike else 0
+        call_vol_per_strike[strike] = (calls_by_strike[strike].volume or 0) if strike in calls_by_strike else 0
+        put_vol_per_strike[strike] = (puts_by_strike[strike].volume or 0) if strike in puts_by_strike else 0
+
+        # IV / delta / charm per strike
+        if strike in calls_by_strike:
+            c = calls_by_strike[strike]
+            if c.implied_vol is not None and c.implied_vol > 0:
+                call_iv_map[strike] = c.implied_vol
+            if c.delta is not None:
+                call_delta_map[strike] = c.delta
+            if time_to_expiry_years > 0 and c.implied_vol and c.implied_vol > 0:
+                ch = _compute_charm_fd(spot_price, strike, time_to_expiry_years,
+                                      risk_free_rate, c.implied_vol, 'C')
+                if ch is not None:
+                    call_charm_map[strike] = ch
+        if strike in puts_by_strike:
+            p = puts_by_strike[strike]
+            if p.implied_vol is not None and p.implied_vol > 0:
+                put_iv_map[strike] = p.implied_vol
+            if p.delta is not None:
+                put_delta_map[strike] = p.delta
+            if time_to_expiry_years > 0 and p.implied_vol and p.implied_vol > 0:
+                ch = _compute_charm_fd(spot_price, strike, time_to_expiry_years,
+                                      risk_free_rate, p.implied_vol, 'P')
+                if ch is not None:
+                    put_charm_map[strike] = ch
 
         # Track walls (absolute magnitudes)
         if c_gex > max_call_gex_val:
@@ -145,6 +270,20 @@ def compute_gex(options: List[OptionData], spot_price: float) -> GEXResult:
         total_put_gex=total_put,
         total_net_gex=total_call + total_put,
         strikes=all_strikes,
+        call_oi_by_strike=call_oi_per_strike,
+        put_oi_by_strike=put_oi_per_strike,
+        total_call_oi=sum(call_oi_per_strike.values()),
+        total_put_oi=sum(put_oi_per_strike.values()),
+        call_vol_by_strike=call_vol_per_strike,
+        put_vol_by_strike=put_vol_per_strike,
+        total_call_vol=sum(call_vol_per_strike.values()),
+        total_put_vol=sum(put_vol_per_strike.values()),
+        call_iv_by_strike=call_iv_map,
+        put_iv_by_strike=put_iv_map,
+        call_delta_by_strike=call_delta_map,
+        put_delta_by_strike=put_delta_map,
+        call_charm_by_strike=call_charm_map,
+        put_charm_by_strike=put_charm_map,
     )
 
 
@@ -232,6 +371,10 @@ def gex_result_to_dict(result: GEXResult) -> dict:
                 "call_gex": round(call_g, 2),
                 "put_gex": round(put_g, 2),
                 "net_gex": round(net_g, 2),
+                "call_oi": result.call_oi_by_strike.get(strike, 0),
+                "put_oi": result.put_oi_by_strike.get(strike, 0),
+                "call_vol": result.call_vol_by_strike.get(strike, 0),
+                "put_vol": result.put_vol_by_strike.get(strike, 0),
             })
 
     return {
@@ -246,4 +389,43 @@ def gex_result_to_dict(result: GEXResult) -> dict:
         "total_call_gex": round(result.total_call_gex, 2),
         "total_put_gex": round(result.total_put_gex, 2),
         "total_net_gex": round(result.total_net_gex, 2),
+        "total_call_oi": result.total_call_oi,
+        "total_put_oi": result.total_put_oi,
+        "total_call_vol": result.total_call_vol,
+        "total_put_vol": result.total_put_vol,
+        "smile_data": _build_smile_data(result),
     }
+
+
+def _build_smile_data(result: GEXResult) -> list:
+    """Build smile_data array — unfiltered by GEX, includes all strikes with valid IV."""
+    data = []
+    for strike in result.strikes:
+        c_iv = result.call_iv_by_strike.get(strike)
+        p_iv = result.put_iv_by_strike.get(strike)
+        # Skip strikes where neither call nor put has IV
+        if c_iv is None and p_iv is None:
+            continue
+        c_delta = result.call_delta_by_strike.get(strike)
+        p_delta = result.put_delta_by_strike.get(strike)
+        c_charm = result.call_charm_by_strike.get(strike)
+        p_charm = result.put_charm_by_strike.get(strike)
+        # Delta-decay efficiency = |charm| / |delta|  (clamped when delta ≈ 0)
+        c_eff = None
+        if c_charm is not None and c_delta is not None and abs(c_delta) > 0.001:
+            c_eff = round(abs(c_charm) / abs(c_delta), 4)
+        p_eff = None
+        if p_charm is not None and p_delta is not None and abs(p_delta) > 0.001:
+            p_eff = round(abs(p_charm) / abs(p_delta), 4)
+        data.append({
+            "strike": strike,
+            "call_iv": round(c_iv * 100, 2) if c_iv is not None else None,   # as %
+            "put_iv": round(p_iv * 100, 2) if p_iv is not None else None,
+            "call_delta": round(c_delta, 4) if c_delta is not None else None,
+            "put_delta": round(p_delta, 4) if p_delta is not None else None,
+            "call_charm": round(c_charm, 6) if c_charm is not None else None,
+            "put_charm": round(p_charm, 6) if p_charm is not None else None,
+            "call_efficiency": c_eff,
+            "put_efficiency": p_eff,
+        })
+    return data

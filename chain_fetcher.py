@@ -30,7 +30,7 @@ TRADING_DAYS_PER_YEAR = 252
 
 def _strike_range_for_std_devs(
     spot: float,
-    n_std: float = 8.0,
+    n_std: float = 5.0,
     annual_vol: float = DEFAULT_ANNUAL_VOL,
 ) -> Tuple[float, float]:
     """Return (low, high) strike bounds = spot ± n_std daily standard deviations."""
@@ -46,7 +46,7 @@ async def fetch_option_chain(
     expiration: str,
     strikes: List[float],
     spot_price: float,
-    std_dev_range: float = 8.0,
+    std_dev_range: float = 5.0,
     annual_vol: float = DEFAULT_ANNUAL_VOL,
     progress_callback=None,
 ) -> List[OptionData]:

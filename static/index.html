@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SPX 0DTE GEX Dashboard</title>
+    <title>SPX 0DTE Option Dashboard</title>
     <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -88,7 +88,7 @@
         .charts-container {
             display: grid;
             grid-template-columns: 1fr;
-            grid-template-rows: 1fr 1fr;
+            grid-template-rows: 1fr 1fr 1fr;
             height: calc(100vh - 100px);
             padding: 8px;
             gap: 8px;
@@ -110,7 +110,7 @@
             z-index: 10;
             pointer-events: none;
         }
-        #priceChart, #gexChart {
+        #priceChart, #gexChart, #smileChart {
             width: 100%;
             height: 100%;
         }
@@ -287,6 +287,15 @@
             </div>
             <div id="gexChart"></div>
         </div>
+        <div class="chart-panel">
+            <div class="chart-title">IV Smile & Delta-Decay Efficiency</div>
+            <div class="gex-loading hidden" id="smileLoading">
+                <div class="gex-loading-spinner"></div>
+                <div class="gex-loading-text" id="smileLoadingText">Fetching option chain…</div>
+                <div class="gex-loading-sub" id="smileLoadingSub"></div>
+            </div>
+            <div id="smileChart"></div>
+        </div>
     </div>
 
     <!-- Loading overlay -->
@@ -306,6 +315,7 @@
         ibConnected: false,
         priceChartReady: false,
         gexChartReady: false,
+        smileChartReady: false,
         dataMode: 'initializing',   // 'live' | 'historical' | 'initializing'
         historicalDate: '',
         currentSpot: 0,    // most up-to-date spot (live SPX or ES-derived)
@@ -329,6 +339,11 @@
     }
     function mobileGexMargin() {
         return isMobile() ? { t: 28, r: 30, b: 32, l: 40 } : { t: 36, r: 60, b: 40, l: 60 };
+    }
+    function mobileSmileMargin() {
+        return isMobile()
+            ? { t: 20, r: 40, b: 20, l: 40 }
+            : { t: 28, r: 60, b: 30, l: 60 };
     }
     function mobileAxisFontSize() { return isMobile() ? 9 : 11; }
 
@@ -419,11 +434,58 @@
                 name: 'Put GEX',
                 marker: { color: '#ef444480' },
             },
+            {
+                x: [], y: [],
+                type: 'scatter',
+                mode: 'lines+markers',
+                name: 'Net GEX',
+                line: { color: '#facc15', width: 1.5 },
+                marker: { color: '#facc15', size: 3 },
+            },
         ], layout, {
             responsive: true,
             displayModeBar: false,
         });
         state.gexChartReady = true;
+    }
+
+    function initSmileChart() {
+        const fs = mobileAxisFontSize();
+        const m = mobileSmileMargin();
+        const layout = {
+            paper_bgcolor: CHART_BG,
+            plot_bgcolor: CHART_BG,
+            margin: m,
+            showlegend: true,
+            legend: {
+                x: 0.01, y: 1.0,
+                font: { color: TEXT_COLOR, size: fs },
+                bgcolor: 'rgba(0,0,0,0)',
+                orientation: 'h',
+            },
+            grid: { rows: 2, columns: 1, subplots: [['xy'], ['x2y3']], roworder: 'top to bottom', ygap: 0.12 },
+            // Top subplot: Calls
+            xaxis:  { color: TEXT_COLOR, gridcolor: GRID_COLOR, showticklabels: false, matches: 'x2' },
+            yaxis:  { color: TEXT_COLOR, gridcolor: GRID_COLOR, title: { text: 'Call IV %', font: { color: '#4ade80', size: fs } }, side: 'left' },
+            yaxis2: { color: TEXT_COLOR, gridcolor: 'rgba(0,0,0,0)', title: { text: 'Efficiency', font: { color: '#facc15', size: fs } }, side: 'right', overlaying: 'y', showgrid: false },
+            // Bottom subplot: Puts
+            xaxis2: { color: TEXT_COLOR, gridcolor: GRID_COLOR, title: { text: 'Strike', font: { color: TEXT_COLOR, size: fs } } },
+            yaxis3: { color: TEXT_COLOR, gridcolor: GRID_COLOR, title: { text: 'Put IV %', font: { color: '#f87171', size: fs } }, side: 'left' },
+            yaxis4: { color: TEXT_COLOR, gridcolor: 'rgba(0,0,0,0)', title: { text: 'Efficiency', font: { color: '#facc15', size: fs } }, side: 'right', overlaying: 'y3', showgrid: false },
+            annotations: [
+                { text: 'CALLS', xref: 'paper', yref: 'paper', x: 0.5, y: 1.01, showarrow: false, font: { color: '#4ade80', size: 11, weight: 'bold' } },
+                { text: 'PUTS',  xref: 'paper', yref: 'paper', x: 0.5, y: 0.46, showarrow: false, font: { color: '#f87171', size: 11, weight: 'bold' } },
+            ],
+            shapes: [],
+        };
+        // 4 traces:  call IV, call eff, put IV, put eff
+        Plotly.newPlot('smileChart', [
+            { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Call IV', line: { color: '#4ade80', width: 2 }, xaxis: 'x', yaxis: 'y' },
+            { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Call Eff', line: { color: '#facc15', width: 1.5, dash: 'dot' }, xaxis: 'x', yaxis: 'y2' },
+            { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Put IV', line: { color: '#f87171', width: 2 }, xaxis: 'x2', yaxis: 'y3' },
+            { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Put Eff', line: { color: '#facc15', width: 1.5, dash: 'dot' }, xaxis: 'x2', yaxis: 'y4' },
+        ], layout, { responsive: true, displayModeBar: false });
+        state.smileChartReady = true;
     }
 
     // ======================================================================
@@ -510,19 +572,24 @@
     }
 
     function handleChainProgress(data) {
-        const overlay  = document.getElementById('gexLoading');
-        const textEl   = document.getElementById('gexLoadingText');
-        const subEl    = document.getElementById('gexLoadingSub');
+        const gexOverlay  = document.getElementById('gexLoading');
+        const gexTextEl   = document.getElementById('gexLoadingText');
+        const gexSubEl    = document.getElementById('gexLoadingSub');
+        const smileOverlay = document.getElementById('smileLoading');
+        const smileTextEl  = document.getElementById('smileLoadingText');
+        const smileSubEl   = document.getElementById('smileLoadingSub');
 
         if (data.phase === 'done') {
-            overlay.classList.add('hidden');
+            gexOverlay.classList.add('hidden');
+            smileOverlay.classList.add('hidden');
             return;
         }
 
         // Only show during the very first fetch — suppress spinner for recurring updates
         if (state.gex) return;
 
-        overlay.classList.remove('hidden');
+        gexOverlay.classList.remove('hidden');
+        smileOverlay.classList.remove('hidden');
 
         const phaseText = {
             starting:   'Fetching option chain…',
@@ -530,12 +597,17 @@
             fetching:   'Streaming market data…',
             computing:  'Computing GEX…',
         };
-        textEl.textContent = phaseText[data.phase] || 'Fetching option chain…';
+        const text = phaseText[data.phase] || 'Fetching option chain…';
+        gexTextEl.textContent = text;
+        smileTextEl.textContent = text;
 
         if (data.phase === 'fetching') {
-            subEl.textContent = `Batch ${data.batch} of ${data.total_batches}`;
+            const subText = `Batch ${data.batch} of ${data.total_batches}`;
+            gexSubEl.textContent = subText;
+            smileSubEl.textContent = subText;
         } else {
-            subEl.textContent = '';
+            gexSubEl.textContent = '';
+            smileSubEl.textContent = '';
         }
     }
 
@@ -546,6 +618,7 @@
         const strikes = bars.map(b => b.strike);
         const callGex = bars.map(b => b.call_gex);
         const putGex = bars.map(b => b.put_gex);
+        const netGexPerBar = bars.map(b => b.net_gex);
 
         // Vertical line at current spot
         const shapes = [];
@@ -605,10 +678,36 @@
             const isPositive = netGex >= 0;
             const regimeLabel = isPositive ? '▼ CONVERGING' : '▲ DIVERGING';
             const regimeColor = isPositive ? '#4ade80' : '#f87171';
+            const callOI = state.gex.total_call_oi;
+            const putOI = state.gex.total_put_oi;
+            const callOIStr = (callOI != null && callOI > 0) ? callOI.toLocaleString() : '—';
+            const putOIStr = (putOI != null && putOI > 0) ? putOI.toLocaleString() : '—';
+            
+            // P/C OI Ratio
+            let pcRatioStr = '—';
+            let pcRatioColor = '#94a3b8';
+            if (callOI > 0) {
+                const pcRatio = putOI / callOI;
+                pcRatioStr = pcRatio.toFixed(2);
+                pcRatioColor = pcRatio <= 1 ? '#4ade80' : '#f87171';
+            }
+            
+            // GEX Skew %
+            let gexSkewStr = '—';
+            let gexSkewColor = '#94a3b8';
+            const totalCallG = state.gex.total_call_gex || 0;
+            const totalPutG = Math.abs(state.gex.total_put_gex || 0);
+            const totalGross = totalCallG + totalPutG;
+            if (totalGross > 0) {
+                const pct = (totalCallG / totalGross * 100);
+                gexSkewStr = pct.toFixed(0) + '%';
+                gexSkewColor = pct >= 50 ? '#4ade80' : '#f87171';
+            }
+            
             annotations.push({
                 xref: 'paper', x: 0.98,
                 yref: 'paper', y: 0.99,
-                text: `Net GEX: <b>${fmtGex(netGex)}</b>   <span style="color:${regimeColor}">${regimeLabel}</span>`,
+                text: `Net GEX: <b>${fmtGex(netGex)}</b>   <span style="color:${regimeColor}">${regimeLabel}</span><br>Call OI/Put OI: <span style="color:#4ade80"><b>${callOIStr}</b></span>/<span style="color:#f87171"><b>${putOIStr}</b></span><br>P/C OI: <span style="color:${pcRatioColor}"><b>${pcRatioStr}</b></span>   Call GEX%: <span style="color:${gexSkewColor}"><b>${gexSkewStr}</b></span>`,
                 showarrow: false,
                 font: { color: '#e2e8f0', size: 12 },
                 xanchor: 'right',
@@ -621,6 +720,19 @@
             });
         }
 
+        // Calculate common range from all smile data if available
+        let commonRange = null;
+        if (state.gex && state.gex.smile_data && state.gex.smile_data.length > 0) {
+            const smileStrikes = state.gex.smile_data.map(d => d.strike).filter(s => s != null);
+            if (smileStrikes.length > 0) {
+                const minSmile = Math.min(...smileStrikes);
+                const maxSmile = Math.max(...smileStrikes);
+                // Add 1% padding
+                const range = maxSmile - minSmile;
+                commonRange = [minSmile - range * 0.01, maxSmile + range * 0.01];
+            }
+        }
+
         Plotly.react('gexChart', [
             {
                 x: strikes,
@@ -628,6 +740,8 @@
                 type: 'bar',
                 name: 'Call GEX',
                 marker: { color: strikes.map(() => '#22c55e80') },
+                customdata: bars.map(b => [fmtGex(b.call_gex), (b.call_oi ?? 0).toLocaleString(), (b.call_vol ?? 0).toLocaleString()]),
+                hovertemplate: '<b>Strike: %{x}</b><br>Call GEX: %{customdata[0]}<br>Call OI: %{customdata[1]}<br>Call Vol: %{customdata[2]}<extra></extra>',
             },
             {
                 x: strikes,
@@ -635,9 +749,133 @@
                 type: 'bar',
                 name: 'Put GEX',
                 marker: { color: strikes.map(() => '#ef444480') },
+                customdata: bars.map(b => [fmtGex(b.put_gex), (b.put_oi ?? 0).toLocaleString(), (b.put_vol ?? 0).toLocaleString()]),
+                hovertemplate: '<b>Strike: %{x}</b><br>Put GEX: %{customdata[0]}<br>Put OI: %{customdata[1]}<br>Put Vol: %{customdata[2]}<extra></extra>',
+            },
+            {
+                x: strikes,
+                y: netGexPerBar,
+                type: 'scatter',
+                mode: 'lines+markers',
+                name: 'Net GEX',
+                line: { color: '#facc15', width: 1.5 },
+                marker: { color: '#facc15', size: 3 },
+                customdata: bars.map(b => [fmtGex(b.net_gex)]),
+                hovertemplate: '<b>Strike: %{x}</b><br>Net GEX: %{customdata[0]}<extra></extra>',
             },
         ], {
             ...gexLayout,
+            shapes,
+            annotations,
+            xaxis: { ...gexLayout.xaxis, range: commonRange },
+        });
+    }
+
+    function updateSmileChart() {
+        if (!state.smileChartReady || !state.gex || !state.gex.smile_data) return;
+
+        const sd = state.gex.smile_data;
+        if (sd.length === 0) return;
+
+        // Separate call and put data (filter nulls)
+        const callStrikes = [], callIV = [], callEff = [], callCustom = [];
+        const putStrikes  = [], putIV  = [], putEff  = [], putCustom = [];
+
+        for (const d of sd) {
+            if (d.call_iv != null) {
+                callStrikes.push(d.strike);
+                callIV.push(d.call_iv);
+                callEff.push(d.call_efficiency);
+                callCustom.push([
+                    d.call_delta != null ? d.call_delta.toFixed(4) : '—',
+                    d.call_charm != null ? d.call_charm.toFixed(6) : '—',
+                    d.call_efficiency != null ? d.call_efficiency.toFixed(4) : '—',
+                ]);
+            }
+            if (d.put_iv != null) {
+                putStrikes.push(d.strike);
+                putIV.push(d.put_iv);
+                putEff.push(d.put_efficiency);
+                putCustom.push([
+                    d.put_delta != null ? d.put_delta.toFixed(4) : '—',
+                    d.put_charm != null ? d.put_charm.toFixed(6) : '—',
+                    d.put_efficiency != null ? d.put_efficiency.toFixed(4) : '—',
+                ]);
+            }
+        }
+
+        // Calculate common range from all smile data
+        let commonRange = null;
+        const smileStrikes = sd.map(d => d.strike).filter(s => s != null);
+        if (smileStrikes.length > 0) {
+            const minSmile = Math.min(...smileStrikes);
+            const maxSmile = Math.max(...smileStrikes);
+            // Add 1% padding
+            const range = maxSmile - minSmile;
+            commonRange = [minSmile - range * 0.01, maxSmile + range * 0.01];
+        }
+
+        // Spot + key level vertical lines for both subplots
+        const shapes = [];
+        const spotForLine = state.currentSpot > 0 ? state.currentSpot : (state.gex.spot_price || 0);
+        const addVertical = (xref, val, color, dash) => {
+            if (val == null || val <= 0) return;
+            shapes.push({
+                type: 'line', xref: xref, x0: val, x1: val,
+                yref: 'paper', y0: 0, y1: 1,
+                line: { color: color, width: 1, dash: dash },
+            });
+        };
+        // Draw on both x-axes
+        for (const xr of ['x', 'x2']) {
+            addVertical(xr, spotForLine, '#f8fafc', 'dot');
+            addVertical(xr, state.gex.call_wall, '#22c55e', 'dash');
+            addVertical(xr, state.gex.put_wall, '#ef4444', 'dash');
+            addVertical(xr, state.gex.gamma_flip, '#eab308', 'dash');
+        }
+
+        // Preserve the CALLS / PUTS subtitle annotations
+        const annotations = [
+            { text: 'CALLS', xref: 'paper', yref: 'paper', x: 0.5, y: 1.01, showarrow: false, font: { color: '#4ade80', size: 11 } },
+            { text: 'PUTS',  xref: 'paper', yref: 'paper', x: 0.5, y: 0.46, showarrow: false, font: { color: '#f87171', size: 11 } },
+        ];
+
+        const hoverCall = '<b>Strike: %{x}</b><br>Call IV: %{y:.1f}%<br>Delta: %{customdata[0]}<br>Charm: %{customdata[1]}<br>Efficiency: %{customdata[2]}<extra></extra>';
+        const hoverCallEff = '<b>Strike: %{x}</b><br>Efficiency: %{y:.4f}<extra></extra>';
+        const hoverPut = '<b>Strike: %{x}</b><br>Put IV: %{y:.1f}%<br>Delta: %{customdata[0]}<br>Charm: %{customdata[1]}<br>Efficiency: %{customdata[2]}<extra></extra>';
+        const hoverPutEff = '<b>Strike: %{x}</b><br>Efficiency: %{y:.4f}<extra></extra>';
+
+        Plotly.react('smileChart', [
+            { x: callStrikes, y: callIV, type: 'scatter', mode: 'lines', name: 'Call IV',
+              line: { color: '#4ade80', width: 2 }, xaxis: 'x', yaxis: 'y',
+              customdata: callCustom, hovertemplate: hoverCall },
+            { x: callStrikes, y: callEff, type: 'scatter', mode: 'lines', name: 'Call Eff',
+              line: { color: '#facc15', width: 1.5, dash: 'dot' }, xaxis: 'x', yaxis: 'y2',
+              hovertemplate: hoverCallEff },
+            { x: putStrikes, y: putIV, type: 'scatter', mode: 'lines', name: 'Put IV',
+              line: { color: '#f87171', width: 2 }, xaxis: 'x2', yaxis: 'y3',
+              customdata: putCustom, hovertemplate: hoverPut },
+            { x: putStrikes, y: putEff, type: 'scatter', mode: 'lines', name: 'Put Eff',
+              line: { color: '#facc15', width: 1.5, dash: 'dot' }, xaxis: 'x2', yaxis: 'y4',
+              hovertemplate: hoverPutEff },
+        ], {
+            paper_bgcolor: CHART_BG,
+            plot_bgcolor: CHART_BG,
+            margin: mobileSmileMargin(),
+            showlegend: true,
+            legend: {
+                x: 0.01, y: 1.0,
+                font: { color: TEXT_COLOR, size: mobileAxisFontSize() },
+                bgcolor: 'rgba(0,0,0,0)',
+                orientation: 'h',
+            },
+            grid: { rows: 2, columns: 1, subplots: [['xy'], ['x2y3']], roworder: 'top to bottom', ygap: 0.12 },
+            xaxis:  { color: TEXT_COLOR, gridcolor: GRID_COLOR, showticklabels: false, matches: 'x2', range: commonRange },
+            yaxis:  { color: TEXT_COLOR, gridcolor: GRID_COLOR, title: { text: 'Call IV %', font: { color: '#4ade80', size: mobileAxisFontSize() } }, side: 'left' },
+            yaxis2: { color: TEXT_COLOR, gridcolor: 'rgba(0,0,0,0)', title: { text: 'Efficiency', font: { color: '#facc15', size: mobileAxisFontSize() } }, side: 'right', overlaying: 'y', showgrid: false },
+            xaxis2: { color: TEXT_COLOR, gridcolor: GRID_COLOR, title: { text: 'Strike', font: { color: TEXT_COLOR, size: mobileAxisFontSize() } }, range: commonRange },
+            yaxis3: { color: TEXT_COLOR, gridcolor: GRID_COLOR, title: { text: 'Put IV %', font: { color: '#f87171', size: mobileAxisFontSize() } }, side: 'left' },
+            yaxis4: { color: TEXT_COLOR, gridcolor: 'rgba(0,0,0,0)', title: { text: 'Efficiency', font: { color: '#facc15', size: mobileAxisFontSize() } }, side: 'right', overlaying: 'y3', showgrid: false },
             shapes,
             annotations,
         });
@@ -740,16 +978,21 @@
             if (state.gexChartReady && state.gex &&
                 (state.currentSpot !== prevSpot || state.esDerived !== prevDerived)) {
                 updateGexChart();
+                updateSmileChart();
             }
         }
 
         // Sync loading overlay with chain_fetching flag
         // (mainly for reconnects where the client missed the starting event)
         if (data.chain_fetching === true && !state.gex) {
-            const overlay = document.getElementById('gexLoading');
+            const gexOverlay = document.getElementById('gexLoading');
+            const smileOverlay = document.getElementById('smileLoading');
             document.getElementById('gexLoadingText').textContent = 'Fetching option chain…';
             document.getElementById('gexLoadingSub').textContent = '';
-            overlay.classList.remove('hidden');
+            document.getElementById('smileLoadingText').textContent = 'Fetching option chain…';
+            document.getElementById('smileLoadingSub').textContent = '';
+            gexOverlay.classList.remove('hidden');
+            smileOverlay.classList.remove('hidden');
         }
     }
 
@@ -848,6 +1091,7 @@
                 if (msg.data.spot_price > 0) state.currentSpot = msg.data.spot_price;
                 state.esDerived = msg.data.es_derived || false;
                 updateGexChart();
+                updateSmileChart();
                 updatePriceChart();  // redraw level lines
                 updateBadges();
                 break;
@@ -887,8 +1131,10 @@
             state.esDerived = data.es_derived || false;
             updateGexChart();
             updatePriceChart();
-            // Cached GEX from server — hide loading overlay immediately
+            updateSmileChart();
+            // Cached GEX from server — hide loading overlays immediately
             document.getElementById('gexLoading').classList.add('hidden');
+            document.getElementById('smileLoading').classList.add('hidden');
         }
 
         updateStatus(data);
@@ -901,6 +1147,32 @@
     document.addEventListener('DOMContentLoaded', () => {
         initPriceChart();
         initGexChart();
+        initSmileChart();
+
+        // Sync horizontal zoom between GEX chart (xaxis) and Smile chart (xaxis + xaxis2)
+        document.getElementById('gexChart').on('plotly_relayout', (data) => {
+            if (data['xaxis.range[0]'] !== undefined && data['xaxis.range[1]'] !== undefined) {
+                const xRange = [data['xaxis.range[0]'], data['xaxis.range[1]']];
+                Plotly.relayout('smileChart', {
+                    'xaxis.range': xRange,
+                    'xaxis2.range': xRange,
+                });
+            } else if (data['xaxis.autorange'] !== undefined) {
+                Plotly.relayout('smileChart', {
+                    'xaxis.autorange': data['xaxis.autorange'],
+                    'xaxis2.autorange': data['xaxis.autorange'],
+                });
+            }
+        });
+
+        document.getElementById('smileChart').on('plotly_relayout', (data) => {
+            if (data['xaxis.range[0]'] !== undefined && data['xaxis.range[1]'] !== undefined) {
+                const xRange = [data['xaxis.range[0]'], data['xaxis.range[1]']];
+                Plotly.relayout('gexChart', { 'xaxis.range': xRange });
+            } else if (data['xaxis.autorange'] !== undefined) {
+                Plotly.relayout('gexChart', { 'xaxis.autorange': data['xaxis.autorange'] });
+            }
+        });
 
         // Handle window resize — update margins for mobile/desktop transitions
         window.addEventListener('resize', () => {
@@ -912,8 +1184,10 @@
                 'yaxis.title.font.size': fs,
                 'legend.font.size': fs,
             });
+            Plotly.relayout('smileChart', { margin: mobileSmileMargin() });
             Plotly.Plots.resize('priceChart');
             Plotly.Plots.resize('gexChart');
+            Plotly.Plots.resize('smileChart');
         });
 
         connectWS();

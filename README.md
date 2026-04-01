@@ -1,4 +1,4 @@
-# SPX 0DTE GEX Dashboard
+# SPX 0DTE Option Dashboard
 
 A real-time Gamma Exposure (GEX) dashboard for SPX 0DTE options, powered by Interactive Brokers TWS and served as a browser app.
 
@@ -37,11 +37,43 @@ The exact URLs are printed to the console when the server starts. You can overri
 
 ![Dashboard Screenshot](docs/screenshot.png)
 
-The dashboard displays:
-- **SPX Intraday Chart** (top) — candlestick chart with key GEX levels overlaid (Call Wall, Put Wall, Gamma Flip, Max Pain)
-- **GEX Chart** (bottom) — bar chart showing Call GEX (green) and Put GEX (red) by strike, with key levels annotated
-- **Level Badges** — real-time spot price, mode (LIVE/HISTORICAL/ES-DERIVED), and key strikes (Call Wall, Put Wall, Gamma Flip, Max Pain, Net GEX, MM regime)
-- **Status Bar** — IB connection, market status, expiration, last GEX update time
+The dashboard displays three interactive charts:
+
+### 1. SPX Intraday (top)
+Candlestick chart with key GEX levels overlaid:
+- Call Wall, Put Wall, Gamma Flip, Max Pain
+
+### 2. Gamma Exposure (GEX) by Strike (middle)
+Bar chart showing Call GEX (green) and Put GEX (red) by strike with:
+- **Net GEX line** (yellow) — cumulative gamma exposure
+- **Spot price indicator** (white dotted line)
+- **Key level markers** — visual anchors for walls and flip points
+- **Annotation box** — Net GEX value, MM regime (CONVERGING/DIVERGING), Call OI, Put OI, P/C OI Ratio, Call GEX % skew
+
+### 3. IV Smile & Delta-Decay Efficiency (bottom)
+Two-row subplot showing:
+- **Top (Calls):** Call IV curve (green) + Call efficiency (yellow, dotted)
+- **Bottom (Puts):** Put IV curve (red) + Put efficiency (yellow, dotted)
+- All subplots share synchronized x-axes (strike ranges aligned)
+- Hover displays: Strike, IV %, Delta, Charm (delta decay rate), Efficiency metric
+
+**Real-time zoom sync:** Pan/zoom either the GEX or Smile chart → both charts update their x-axis range simultaneously.
+
+### Status Bar
+Real-time status indicators:
+- **IB Connection** — green dot when connected
+- **Market Status** — RTH (green) / GTH (yellow) / closed (gray)
+- **Expiration** — target SPXW expiration date
+- **Last GEX Update** — timestamp of most recent chain fetch
+
+### Level Badges
+Key strike prices and conditions:
+- **SPX** — current spot price
+- **Call Wall / Put Wall** — highest gamma-OI strikes
+- **Gamma Flip** — price level where net gamma crosses zero
+- **Max Pain** — strike minimizing option holder payoff
+- **Net GEX** — total gamma exposure (with regime label)
+- **Data Mode** — LIVE, HISTORICAL, or ES-DERIVED
 
 ## Files
 

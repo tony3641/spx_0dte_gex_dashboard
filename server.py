@@ -509,8 +509,28 @@ async def chain_fetch_loop():
                     for o in options:
                         o.open_interest = o.volume
 
+                # Compute time to expiry in trading-year fractions for charm
+                tte_years = 0.0
+                if state.expiration:
+                    try:
+                        from datetime import datetime as _dt
+                        exp_date = _dt.strptime(state.expiration, "%Y%m%d").date()
+                        now = now_et()
+                        if exp_date == now.date():
+                            # 0DTE: minutes until 16:00 ET close
+                            close_dt = now.replace(hour=16, minute=0, second=0, microsecond=0)
+                            mins_left = max((close_dt - now).total_seconds() / 60.0, 1.0)
+                            tte_years = mins_left / (390.0 * 252.0)
+                        else:
+                            # Multi-day: trading days × 390 min
+                            days_left = (exp_date - now.date()).days
+                            tte_years = max(days_left, 1) * 390.0 / (390.0 * 252.0)
+                    except Exception:
+                        tte_years = 0.0
+
                 # Compute GEX
-                gex_result = compute_gex(options, state.spx_price)
+                gex_result = compute_gex(options, state.spx_price,
+                                         time_to_expiry_years=tte_years)
                 gex_result.expiration = state.expiration
                 gex_result.timestamp = now_et().isoformat()
 
@@ -649,7 +669,7 @@ async def lifespan(app):
 # ---------------------------------------------------------------------------
 # Create app & HTTP routes
 # ---------------------------------------------------------------------------
-app = FastAPI(title="SPX 0DTE GEX Dashboard", lifespan=lifespan)
+app = FastAPI(title="SPX 0DTE Option Dashboard", lifespan=lifespan)
 
 STATIC_DIR = Path(__file__).parent / "static"
 

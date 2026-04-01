@@ -97,6 +97,81 @@ overlay.classList.remove('hidden');
 
 ---
 
+## Session: April 1, 2026 — IV Smile & Synchronized Charts
+
+### Added 3rd Chart with IV Smile & Delta-Decay Efficiency
+**New dashboard chart:** IV Smile & Delta-Decay Efficiency — displays implied volatility curves and delta-decay efficiency metrics across strikes.
+
+**UI Layout:**
+- **Top subplot (Calls):** Call IV curve (green) + Call efficiency = |charm| / |delta| (yellow, dotted)
+- **Bottom subplot (Puts):** Put IV curve (red) + Put efficiency (yellow, dotted)
+- **Key lines:** Spot price (white dotted), Call Wall, Put Wall, Gamma Flip (dashed)
+- **Hover tooltip:** Strike, IV %, Delta, Charm, Efficiency
+- **Loading spinner:** Synced with GEX chart during initial option chain fetch
+
+**Data Computation (`gex_calculator.py`):**
+- Added **Black-Scholes delta calculation** — no scipy dependency (uses `math.erf` for norm CDF)
+  - `_norm_cdf()` — standard normal CDF
+  - `_bsm_delta()` — European option delta at any S, K, T, σ, r
+  - `_compute_charm_fd()` — delta decay rate via 15-minute finite-difference
+
+- Extended `GEXResult` dataclass to hold per-strike IV, delta, charm, and efficiency data
+- Updated `compute_gex()` signature to accept `time_to_expiry_years` and `risk_free_rate` parameters
+- Added `_build_smile_data()` function — formats smile data for frontend (strike-level IV, delta, charm, efficiency)
+
+**Time-to-Expiry Calculation (`server.py`):**
+- For 0DTE: minutes remaining until 16:00 ET close, converted to trading-year fractions
+- For multi-day expirations: calendar days remaining × (390 min/day) / (390 × 252 trading days/year)
+- Passed to `compute_gex()` for charm calculation
+
+**Frontend (`static/index.html`):**
+- New `initSmileChart()`, `updateSmileChart()` functions
+- Grid layout: 3 rows (price:gex:smile = 1:1:1)
+- Responsive margins and font sizing for mobile/desktop
+
+### Synchronized Horizontal Zoom Between GEX & Smile Charts
+Both charts compute a **common x-axis range** from the smile data strikes and apply it to their respective x-axes.
+
+**Sync Logic:**
+- GEX chart zoom event → updates Smile chart's xaxis + xaxis2 range
+- Smile chart zoom event → updates GEX chart's xaxis range
+- Both charts always show identical strike price positions (pixel-perfect alignment)
+- Example: strike 5600 is now at the same horizontal pixel location in both charts
+
+**Implementation:**
+- Event listeners on `plotly_relayout` for both charts
+- Sync applies to both zoom and auto-range operations
+- Common range calculated as `[min(strikes) - 1%, max(strikes) + 1%]` for padding
+
+### Enhanced GEX Chart Metrics
+**Updates to GEX chart:**
+- Added **Net GEX line** (yellow) overlaid on call/put bars for visual clarity
+- Enhanced top-right annotation box with:
+  - **Call OI** (green) / **Put OI** (red) — total for all strikes
+  - **P/C OI Ratio** — put OI / call OI (green if ≤1, red if >1)
+  - **Call GEX %** — call GEX / gross GEX (green if ≥50%, red if <50%)
+- Hover tooltips now include:
+  - Call/Put GEX values
+  - Call/Put OI per strike
+  - Call/Put volume per strike
+
+**Extended `GEXResult` dataclass:**
+- Added `call_oi_by_strike`, `put_oi_by_strike`, totals
+- Added `call_vol_by_strike`, `put_vol_by_strike`, totals
+- Added IV, delta, charm maps: `call_iv_by_strike`, `put_iv_by_strike`, etc.
+
+### Tightened Strike Filtering
+Changed default `std_dev_range` from **8.0 to 5.0** in `chain_fetcher.py`:
+- Covers ±5 daily standard deviations (~99.99% of probability mass)
+- Reduces fetch time by ~30-40% compared to ±8σ
+- Lower memory footprint, faster computation
+
+### Minor Updates
+- Updated FastAPI title: "SPX 0DTE GEX Dashboard" → "SPX 0DTE Option Dashboard" (reflects broader feature set)
+- Updated [README.md](README.md) title to match
+
+---
+
 ## Architecture Notes
 
 - **IB data flow:** `ib.pendingTickersEvent` (async) → `on_pending_tickers` → updates `state.spx_price` / `state.es_price` → derives ES-based SPX when not in RTH.
