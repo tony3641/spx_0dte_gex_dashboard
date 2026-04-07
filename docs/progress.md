@@ -29,9 +29,24 @@ All significant feature additions and bug fixes made to the SPX 0DTE GEX Dashboa
 - Preserve `data_mode = "live"` if live ticks have already been detected (avoid regressing to historical mode).
 - Prevent duplicate minute bars at the historical/live seam: live push now dedupes before appending and inherits partial last-bar OHLC when appropriate.
 - Frontend: fully filled candle bodies (no alpha transparency) and a clear vertical session-start marker with a date label when prior-day bars are present.
+- UI accessibility: added IV Smile title help indicator with hover/focus tooltip for delta-decay efficiency definition and fixed literal `\n` to actual line breaks.
+- Added GEX chart title help tooltip for GEX meaning, and hover titles for Call Wall/Put Wall/Gamma Flip/Max Pain/Net GEX badges; MM regime badge hover text also present.
 
 Result: the price chart now fills the full session from 09:30 through the current minute immediately after startup, with no 12:30→13:30 hole.
 
+---
+
+### Dashboard Snapshot First, Chain Stream Second
+**Problem:** Chain streaming could begin before the initial dashboard snapshot was fully loaded, causing the dashboard to remain empty until the next refresh.
+
+**Fix:** Startup now forces one full chain snapshot before starting option-chain live streaming. The dashboard snapshot refreshes on a fixed 5-minute cadence independent of the option-chain stream.
+
+**Implementation:**
+- `server.py` startup now triggers an immediate snapshot and waits for `latest_gex` + `chain_data` before starting `chain_stream_loop()`.
+- The snapshot loop uses `SNAPSHOT_REFRESH_SECONDS` (default 300) and is no longer tied to active tab state.
+- `gex` messages are broadcast for dashboard updates regardless of whether the chain tab is active.
+
+---
 
 ### Error 321 on Snapshot Request
 **Problem:** IB returned Error 321 when `genericTickList` was set with `snapshot=True`.

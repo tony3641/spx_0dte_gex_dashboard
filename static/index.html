@@ -1551,7 +1551,8 @@
                 const msg = JSON.parse(event.data);
                 handleMessage(msg);
             } catch (e) {
-                console.error('Failed to parse message', e);
+                const snippet = typeof event.data === 'string' ? event.data.slice(0, 240) : '[non-string payload]';
+                console.error('Failed to parse message', e, snippet);
             }
         };
     }
@@ -1600,6 +1601,13 @@
     // ======================================================================
     function handleChainQuotes(data) {
         if (!data || !data.strikes) return;
+        const scope = data.scope || 'full';
+
+        if (scope === 'full' && data.strikes.length === 0 && Object.keys(state.chainData).length > 0) {
+            console.warn('Ignoring empty full chain_quotes payload; preserving existing chain table data');
+            return;
+        }
+
         state.chainMeta = {
             spot_price: data.spot_price,
             annual_vol: data.annual_vol,
@@ -1609,10 +1617,21 @@
         };
         state.chainLastUpdateMs = data.timestamp_iso ? Date.parse(data.timestamp_iso) : Date.now();
         updateChainUpdateAge();
-        state.chainData = {};
-        for (const row of data.strikes) {
-            state.chainData[row.strike] = row;
+
+        // Full payload replaces all rows; stream payload merges to avoid table wipe.
+        if (scope === 'full' || Object.keys(state.chainData).length === 0) {
+            state.chainData = {};
+            for (const row of data.strikes) {
+                state.chainData[row.strike] = row;
+            }
+        } else {
+            for (const row of data.strikes) {
+                const existing = state.chainData[row.strike] || { strike: row.strike };
+                state.chainData[row.strike] = { ...existing, ...row };
+            }
         }
+
+        console.debug(`chain_quotes scope=${scope} rows=${data.strikes.length} mergedRows=${Object.keys(state.chainData).length}`);
         renderChainTable();
         updateStrategyPrices();
     }
