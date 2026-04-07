@@ -95,6 +95,8 @@ class OptionData:
     bid: Optional[float] = None
     ask: Optional[float] = None
     last: Optional[float] = None
+    bid_size: int = 0
+    ask_size: int = 0
 
 
 @dataclass

@@ -7,7 +7,8 @@ to stay within IB's 100 simultaneous market-data-line limit.
 
 import asyncio
 import logging
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import List, Optional, Set, Tuple
 
 from ib_insync import IB, Option, Contract, Ticker
 
@@ -21,6 +22,25 @@ BATCH_SIZE = 200
 
 # Max contracts to qualify in one call
 QUALIFY_BATCH_SIZE = 150
+
+# Re-qualify only when spot moves more than this many points from cached anchor.
+QUAL_CACHE_REQUALIFY_MOVE = 20.0
+
+
+@dataclass
+class QualificationCache:
+    """Cache of qualified contracts and unknown contract keys for one expiration."""
+    expiration: str = ""
+    anchor_spot: float = 0.0
+    qualified: List[Option] = field(default_factory=list)
+    unknown_keys: Set[str] = field(default_factory=set)
+
+
+_qualification_cache = QualificationCache()
+
+
+def _contract_key(expiration: str, strike: float, right: str) -> str:
+    return f"{expiration}:{strike:.1f}:{right}"
 
 
 # Default assumed annualised implied volatility when we have no better estimate.
@@ -49,6 +69,8 @@ async def fetch_option_chain(
     std_dev_range: float = 5.0,
     annual_vol: float = DEFAULT_ANNUAL_VOL,
     progress_callback=None,
+    force_requalify: bool = False,
+    allow_unknown_retry: bool = False,
 ) -> List[OptionData]:
     """
     Fetch the option chain for the given expiration using batched snapshots.
@@ -81,10 +103,18 @@ async def fetch_option_chain(
         f"expiration={expiration}, range=[{range_lo}..{range_hi}]"
     )
 
-    # Build all option contracts (calls + puts)
+    # Build all option contracts (calls + puts), skipping known-unknown contracts
+    # unless this fetch is an explicit manual retry.
+    global _qualification_cache
+    if allow_unknown_retry:
+        _qualification_cache.unknown_keys.clear()
+
     contracts: List[Option] = []
     for strike in filtered_strikes:
         for right in ('C', 'P'):
+            key = _contract_key(expiration, strike, right)
+            if key in _qualification_cache.unknown_keys and not allow_unknown_retry:
+                continue
             contracts.append(
                 Option(
                     symbol='SPX',
@@ -100,21 +130,76 @@ async def fetch_option_chain(
 
     logger.info(f"Total contracts to fetch: {len(contracts)}")
 
-    # Phase 1: Qualify contracts in batches
+    need_requalify = force_requalify
+    if _qualification_cache.expiration != expiration:
+        need_requalify = True
+    elif _qualification_cache.anchor_spot <= 0:
+        need_requalify = True
+    elif abs(spot_price - _qualification_cache.anchor_spot) > QUAL_CACHE_REQUALIFY_MOVE:
+        need_requalify = True
+    elif not _qualification_cache.qualified:
+        need_requalify = True
+
     qualified: List[Option] = []
-    for i in range(0, len(contracts), QUALIFY_BATCH_SIZE):
-        batch = contracts[i:i + QUALIFY_BATCH_SIZE]
-        try:
-            result = ib.qualifyContracts(*batch)
-            qualified.extend([c for c in result if c.conId > 0])
-        except Exception as e:
-            logger.warning(f"Qualify batch {i // QUALIFY_BATCH_SIZE} failed: {e}")
-        # Small delay to avoid hammering IB
-        await asyncio.sleep(0.1)
+    if not need_requalify:
+        valid_keys = {
+            _contract_key(expiration, c.strike, c.right)
+            for c in contracts
+        }
+        qualified = [
+            c for c in _qualification_cache.qualified
+            if _contract_key(expiration, c.strike, c.right) in valid_keys
+        ]
+        logger.info(
+            f"Using cached qualified contracts: {len(qualified)} "
+            f"(anchor={_qualification_cache.anchor_spot:.2f}, spot={spot_price:.2f})"
+        )
+    else:
+        # Phase 1: Qualify contracts in batches
+        logger.info("Re-qualifying contracts (cache miss / spot moved / manual retry)")
+        newly_qualified: List[Option] = []
+        unknown_keys: Set[str] = set(_qualification_cache.unknown_keys)
+
+        for i in range(0, len(contracts), QUALIFY_BATCH_SIZE):
+            batch = contracts[i:i + QUALIFY_BATCH_SIZE]
+            batch_num = i // QUALIFY_BATCH_SIZE + 1
+            try:
+                result = ib.qualifyContracts(*batch)
+                result_ok = [c for c in result if c.conId > 0]
+                newly_qualified.extend(result_ok)
+
+                qualified_keys = {
+                    _contract_key(expiration, c.strike, c.right)
+                    for c in result_ok
+                }
+                for c in batch:
+                    key = _contract_key(expiration, c.strike, c.right)
+                    if key not in qualified_keys:
+                        unknown_keys.add(key)
+
+            except Exception as e:
+                logger.warning(f"Qualify batch {batch_num} failed: {e}")
+                # Conservative fallback: mark all contracts in failed batch unknown
+                for c in batch:
+                    unknown_keys.add(_contract_key(expiration, c.strike, c.right))
+
+            # Small delay to avoid hammering IB
+            await asyncio.sleep(0.1)
+
+        _qualification_cache.expiration = expiration
+        _qualification_cache.anchor_spot = spot_price
+        _qualification_cache.qualified = newly_qualified
+        _qualification_cache.unknown_keys = unknown_keys
+        qualified = newly_qualified
+
+        logger.info(
+            f"Qualification cache updated: qualified={len(newly_qualified)}, "
+            f"unknown_blacklist={len(unknown_keys)}, anchor={spot_price:.2f}"
+        )
 
     logger.info(f"Qualified {len(qualified)} / {len(contracts)} contracts")
 
-    if progress_callback:
+    if progress_callback and need_requalify:
         await progress_callback('qualifying', 1, 1, 10)
 
     # Phase 2: Snapshot market data in batches
@@ -242,6 +327,8 @@ def _ticker_to_option_data(ticker: Ticker) -> Optional[OptionData]:
     bid = _safe_float(ticker.bid) if ticker.bid not in (None, -1) else None
     ask = _safe_float(ticker.ask) if ticker.ask not in (None, -1) else None
     last = _safe_float(ticker.last) if ticker.last not in (None, -1) else None
+    bid_size = _safe_int(ticker.bidSize)
+    ask_size = _safe_int(ticker.askSize)
 
     return OptionData(
         strike=contract.strike,
@@ -254,6 +341,8 @@ def _ticker_to_option_data(ticker: Ticker) -> Optional[OptionData]:
         bid=bid,
         ask=ask,
         last=last,
+        bid_size=bid_size,
+        ask_size=ask_size,
     )
 
 

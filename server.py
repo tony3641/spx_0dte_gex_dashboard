@@ -31,7 +31,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ib_insync import IB, Index, Contract, Future, util
+from ib_insync import IB, Index, Contract, Future, Option, util
 
 from market_hours import (
     now_et, is_within_rth, market_status,
@@ -47,7 +47,8 @@ from gex_calculator import compute_gex, gex_result_to_dict, GEXResult, OptionDat
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "7497"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
-CHAIN_REFRESH_SECONDS = int(os.getenv("CHAIN_REFRESH_SECONDS", "60"))
+CHAIN_REFRESH_SECONDS = int(os.getenv("CHAIN_REFRESH_SECONDS", "10"))
+DASHBOARD_CHAIN_REFRESH_SECONDS = int(os.getenv("DASHBOARD_CHAIN_REFRESH_SECONDS", "300"))
 PRICE_PUSH_INTERVAL = float(os.getenv("PRICE_PUSH_INTERVAL", "1.0"))  # seconds
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")  # 0.0.0.0 = all interfaces
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
@@ -94,6 +95,15 @@ class AppState:
     es_at_spx_close: float = 0.0     # ES price at last SPX RTH close (baseline)
     spx_last_close: float = 0.0      # SPX price at last RTH close (fixed reference)
     es_derived: bool = False          # True when spx_price is computed from ES
+    # Option chain data for Tab 2
+    chain_data: List[OptionData] = []           # raw option data from last fetch
+    chain_quotes_cache: Optional[dict] = None   # serialized chain_quotes payload
+    chain_fetch_active: Optional[asyncio.Event] = None  # set when NOT fetching
+    chain_stream_tickers: dict = {}             # {(strike,right): Ticker}
+    chain_stream_contracts: dict = {}           # {(strike,right): Contract}
+    force_chain_fetch_event: Optional[asyncio.Event] = None
+    active_tab: str = "dashboard"              # "dashboard" | "chain"
+    manual_refresh_requested: bool = False
 
 state = AppState()
 
@@ -399,6 +409,12 @@ async def price_push_loop():
         try:
             await asyncio.sleep(PRICE_PUSH_INTERVAL)
 
+            # When user is on option-chain tab, pause dashboard bar generation.
+            if state.active_tab == "chain":
+                current_bar = None
+                current_minute = None
+                continue
+
             # Only push live ticks when the market is open and streaming
             if state.live_price <= 0:
                 continue
@@ -464,8 +480,14 @@ async def chain_fetch_loop():
     # Wait a bit for initial connection and price to settle
     await asyncio.sleep(5)
 
+    if state.force_chain_fetch_event is None:
+        state.force_chain_fetch_event = asyncio.Event()
+
     while True:
         try:
+            force_manual_refresh = state.manual_refresh_requested
+            state.manual_refresh_requested = False
+
             if not state.connected or not state.expiration:
                 logger.info("Waiting for connection/expiration...")
                 await asyncio.sleep(10)
@@ -491,6 +513,19 @@ async def chain_fetch_loop():
                 continue
 
             state.chain_fetching = True
+
+            # Pause live chain streaming to free market data lines for batch fetch
+            if state.chain_fetch_active is not None:
+                state.chain_fetch_active.clear()
+                # Cancel all live stream subscriptions
+                for key, contract in list(state.chain_stream_contracts.items()):
+                    try:
+                        ib.cancelMktData(contract)
+                    except Exception:
+                        pass
+                state.chain_stream_tickers.clear()
+                state.chain_stream_contracts.clear()
+
             mode_label = "LIVE" if state.data_mode == "live" else "HIST"
             logger.info(
                 f"[{mode_label}] Starting chain fetch: exp={state.expiration}, "
@@ -498,19 +533,21 @@ async def chain_fetch_loop():
                 f"{len(state.strikes)} total strikes available"
             )
 
-            # Broadcast chain fetch start (pct=0)
-            await broadcast({"type": "chain_progress", "data": {
-                "phase": "starting", "batch": 0, "total_batches": 1, "pct": 0
-            }})
+            # Broadcast chain fetch start (pct=0) only when dashboard is active
+            if state.active_tab != "chain":
+                await broadcast({"type": "chain_progress", "data": {
+                    "phase": "starting", "batch": 0, "total_batches": 1, "pct": 0
+                }})
 
             # Progress callback — called from fetch_option_chain after each batch
             async def _on_progress(phase, batch, total_batches, pct):
-                await broadcast({"type": "chain_progress", "data": {
-                    "phase": phase,
-                    "batch": batch,
-                    "total_batches": total_batches,
-                    "pct": pct,
-                }})
+                if state.active_tab != "chain":
+                    await broadcast({"type": "chain_progress", "data": {
+                        "phase": phase,
+                        "batch": batch,
+                        "total_batches": total_batches,
+                        "pct": pct,
+                    }})
 
             # Refresh annualised vol from recent daily bars
             await compute_annual_vol(lookback_days=30)
@@ -525,6 +562,8 @@ async def chain_fetch_loop():
                 std_dev_range=8.0,
                 annual_vol=state.annual_vol,
                 progress_callback=_on_progress,
+                force_requalify=force_manual_refresh,
+                allow_unknown_retry=force_manual_refresh,
             )
 
             if options:
@@ -574,26 +613,54 @@ async def chain_fetch_loop():
                 # Broadcast GEX update (inject es_derived flag)
                 gex_payload = dict(state.latest_gex)
                 gex_payload["es_derived"] = state.es_derived
+                if state.active_tab != "chain":
+                    await broadcast({
+                        "type": "gex",
+                        "data": gex_payload,
+                    })
+
+                # Store raw chain data and broadcast chain_quotes for Tab 2
+                state.chain_data = options
+                state.chain_quotes_cache = build_chain_quotes(
+                    options, state.spx_price, gex_result, state.annual_vol)
                 await broadcast({
-                    "type": "gex",
-                    "data": gex_payload,
+                    "type": "chain_quotes",
+                    "data": state.chain_quotes_cache,
                 })
             else:
                 logger.warning("No option data returned from chain fetch")
 
             # Signal chain fetch complete
-            await broadcast({"type": "chain_progress", "data": {
-                "phase": "done", "batch": 1, "total_batches": 1, "pct": 100
-            }})
+            if state.active_tab != "chain":
+                await broadcast({"type": "chain_progress", "data": {
+                    "phase": "done", "batch": 1, "total_batches": 1, "pct": 100
+                }})
             state.chain_fetching = False
+
+            # Resume live chain streaming
+            if state.chain_fetch_active is not None:
+                state.chain_fetch_active.set()
 
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.error(f"Chain fetch error: {e}", exc_info=True)
             state.chain_fetching = False
+            if state.chain_fetch_active is not None:
+                state.chain_fetch_active.set()
 
-        await asyncio.sleep(CHAIN_REFRESH_SECONDS)
+        # Refresh cadence depends on the active tab:
+        # - dashboard tab: low-frequency (OI changes slowly)
+        # - option-chain tab: faster updates
+        refresh_timeout = CHAIN_REFRESH_SECONDS if state.active_tab == "chain" else DASHBOARD_CHAIN_REFRESH_SECONDS
+
+        # Refresh every refresh_timeout seconds, or immediately when manual refresh is requested.
+        try:
+            await asyncio.wait_for(state.force_chain_fetch_event.wait(), timeout=refresh_timeout)
+            state.force_chain_fetch_event.clear()
+            logger.info("Manual chain refresh triggered")
+        except asyncio.TimeoutError:
+            pass
 
 
 async def status_push_loop():
@@ -622,6 +689,210 @@ async def status_push_loop():
             break
         except Exception as e:
             logger.error(f"Status push error: {e}")
+            await asyncio.sleep(5)
+
+
+def build_chain_quotes(options: List[OptionData], spot_price: float,
+                       gex_result: Optional[GEXResult] = None,
+                       annual_vol: float = 0.20) -> dict:
+    """Serialize a list of OptionData into the chain_quotes payload.
+
+    Returns a dict shaped for the 'chain_quotes' WebSocket message, with one
+    row per strike (calls on left, puts on right).
+    """
+    calls = {}
+    puts = {}
+    for o in options:
+        if o.right == 'C':
+            calls[o.strike] = o
+        else:
+            puts[o.strike] = o
+
+    all_strikes = sorted(set(list(calls.keys()) + list(puts.keys())))
+
+    rows = []
+    for s in all_strikes:
+        row = {"strike": s}
+        c = calls.get(s)
+        p = puts.get(s)
+        if c:
+            row.update({
+                "call_bid": c.bid, "call_ask": c.ask,
+                "call_bid_size": c.bid_size, "call_ask_size": c.ask_size,
+                "call_last": c.last,
+                "call_delta": round(c.delta, 4) if c.delta is not None else None,
+                "call_gamma": round(c.gamma, 6) if c.gamma is not None else None,
+                "call_oi": c.open_interest, "call_volume": c.volume,
+                "call_iv": round(c.implied_vol * 100, 2) if c.implied_vol else None,
+            })
+        if p:
+            row.update({
+                "put_bid": p.bid, "put_ask": p.ask,
+                "put_bid_size": p.bid_size, "put_ask_size": p.ask_size,
+                "put_last": p.last,
+                "put_delta": round(p.delta, 4) if p.delta is not None else None,
+                "put_gamma": round(p.gamma, 6) if p.gamma is not None else None,
+                "put_oi": p.open_interest, "put_volume": p.volume,
+                "put_iv": round(p.implied_vol * 100, 2) if p.implied_vol else None,
+            })
+        rows.append(row)
+
+    call_wall = gex_result.call_wall if gex_result else None
+    put_wall = gex_result.put_wall if gex_result else None
+    gamma_flip = gex_result.gamma_flip if gex_result else None
+
+    return {
+        "strikes": rows,
+        "spot_price": round(spot_price, 2),
+        "annual_vol": annual_vol,
+        "call_wall": call_wall,
+        "put_wall": put_wall,
+        "gamma_flip": gamma_flip,
+        "timestamp": now_et().strftime("%H:%M:%S"),
+        "timestamp_iso": now_et().isoformat(),
+    }
+
+
+# Number of strikes above/below ATM to stream live quotes for
+CHAIN_STREAM_HALF_WIDTH = 15
+
+
+async def chain_stream_loop():
+    """Maintain persistent market data subscriptions for ATM ±N strikes.
+
+    Broadcasts 'chain_tick' messages every ~1 second with updated bid/ask/
+    size/volume for all actively streamed options.  Pauses subscriptions while
+    the periodic GEX chain fetch is running (to stay within IB market data
+    line limits).
+    """
+    # Initialise the event (set = safe to stream)
+    state.chain_fetch_active = asyncio.Event()
+    state.chain_fetch_active.set()
+
+    await asyncio.sleep(15)  # let first chain fetch populate data
+
+    while True:
+        try:
+            # Wait until chain fetch is not running
+            await state.chain_fetch_active.wait()
+
+            if not state.connected or not state.expiration or state.spx_price <= 0:
+                await asyncio.sleep(5)
+                continue
+
+            if not is_cboe_options_open():
+                await asyncio.sleep(30)
+                continue
+
+            # Determine the ATM strike and desired window
+            spot = state.spx_price
+            avail = [s for s in state.strikes if s % 5 == 0]
+            if not avail:
+                await asyncio.sleep(10)
+                continue
+
+            atm = min(avail, key=lambda s: abs(s - spot))
+            desired = set(s for s in avail
+                         if atm - CHAIN_STREAM_HALF_WIDTH * 5 <= s <= atm + CHAIN_STREAM_HALF_WIDTH * 5)
+
+            # Keys currently subscribed
+            current_keys = set(state.chain_stream_tickers.keys())
+            desired_keys = set()
+            for s in desired:
+                desired_keys.add((s, 'C'))
+                desired_keys.add((s, 'P'))
+
+            # Cancel stale subs
+            for key in current_keys - desired_keys:
+                try:
+                    contract = state.chain_stream_contracts.pop(key, None)
+                    if contract:
+                        ib.cancelMktData(contract)
+                except Exception:
+                    pass
+                state.chain_stream_tickers.pop(key, None)
+
+            # Subscribe new strikes
+            new_keys = desired_keys - current_keys
+            if new_keys:
+                new_contracts = []
+                for (strike, right) in new_keys:
+                    c = Option(
+                        symbol='SPX',
+                        lastTradeDateOrContractMonth=state.expiration,
+                        strike=strike, right=right,
+                        exchange='SMART', multiplier='100',
+                        currency='USD', tradingClass='SPXW',
+                    )
+                    new_contracts.append(((strike, right), c))
+
+                # Qualify in one batch
+                try:
+                    raw = [c for _, c in new_contracts]
+                    ib.qualifyContracts(*raw)
+                    for (key, c) in new_contracts:
+                        if c.conId > 0:
+                            ticker = ib.reqMktData(c, genericTickList='101', snapshot=False)
+                            state.chain_stream_tickers[key] = ticker
+                            state.chain_stream_contracts[key] = c
+                except Exception as e:
+                    logger.warning(f"Chain stream subscribe error: {e}")
+
+            # Wait for data to arrive, then broadcast a tick update
+            await asyncio.sleep(1)
+
+            ticks = []
+            for (strike, right), ticker in state.chain_stream_tickers.items():
+                bid = ticker.bid if ticker.bid not in (None, -1) else None
+                ask = ticker.ask if ticker.ask not in (None, -1) else None
+                last_val = ticker.last if ticker.last not in (None, -1) else None
+                bid_sz = int(ticker.bidSize) if ticker.bidSize not in (None, -1) and not (isinstance(ticker.bidSize, float) and math.isnan(ticker.bidSize)) else 0
+                ask_sz = int(ticker.askSize) if ticker.askSize not in (None, -1) and not (isinstance(ticker.askSize, float) and math.isnan(ticker.askSize)) else 0
+                vol = int(ticker.volume) if ticker.volume not in (None, -1) and not (isinstance(ticker.volume, float) and math.isnan(ticker.volume)) else 0
+
+                greeks = ticker.modelGreeks or ticker.lastGreeks
+                delta = None
+                gamma = None
+                iv = None
+                if greeks:
+                    if greeks.delta is not None and not math.isnan(greeks.delta):
+                        delta = round(greeks.delta, 4)
+                    if greeks.gamma is not None and not math.isnan(greeks.gamma):
+                        gamma = round(greeks.gamma, 6)
+                    if greeks.impliedVol is not None and not math.isnan(greeks.impliedVol):
+                        iv = round(greeks.impliedVol * 100, 2)
+
+                ticks.append({
+                    "strike": strike, "right": right,
+                    "bid": round(bid, 2) if bid is not None else None,
+                    "ask": round(ask, 2) if ask is not None else None,
+                    "bid_size": bid_sz, "ask_size": ask_sz,
+                    "last": round(last_val, 2) if last_val is not None else None,
+                    "volume": vol,
+                    "delta": delta, "gamma": gamma, "iv": iv,
+                })
+
+            if ticks:
+                await broadcast({
+                    "type": "chain_tick",
+                    "data": {
+                        "ticks": ticks,
+                        "timestamp_iso": now_et().isoformat(),
+                    }
+                })
+
+        except asyncio.CancelledError:
+            # Clean up all streaming subs
+            for key, contract in state.chain_stream_contracts.items():
+                try:
+                    ib.cancelMktData(contract)
+                except Exception:
+                    pass
+            state.chain_stream_tickers.clear()
+            state.chain_stream_contracts.clear()
+            break
+        except Exception as e:
+            logger.error(f"Chain stream error: {e}")
             await asyncio.sleep(5)
 
 
@@ -679,6 +950,7 @@ async def lifespan(app):
         state.background_tasks.append(asyncio.create_task(price_push_loop()))
         state.background_tasks.append(asyncio.create_task(chain_fetch_loop()))
         state.background_tasks.append(asyncio.create_task(status_push_loop()))
+        state.background_tasks.append(asyncio.create_task(chain_stream_loop()))
 
         logger.info("All background tasks started")
 
@@ -752,6 +1024,7 @@ async def websocket_endpoint(ws: WebSocket):
                 "historical_date": state.historical_date,
                 "es_derived": state.es_derived,
                 "es_price": round(state.es_price, 2) if state.es_price > 0 else None,
+                "chain_quotes": state.chain_quotes_cache,
             }
         }
         await ws.send_text(json.dumps(init_msg))
@@ -763,7 +1036,15 @@ async def websocket_endpoint(ws: WebSocket):
                 # Handle client messages (e.g., force refresh)
                 if msg == "refresh_chain":
                     logger.info("Client requested chain refresh")
-                    # Trigger an immediate chain fetch by just logging - the loop will handle it
+                    state.manual_refresh_requested = True
+                    if state.force_chain_fetch_event is not None:
+                        state.force_chain_fetch_event.set()
+                elif msg == "set_tab:chain":
+                    state.active_tab = "chain"
+                    logger.info("Client active tab: chain")
+                elif msg == "set_tab:dashboard":
+                    state.active_tab = "dashboard"
+                    logger.info("Client active tab: dashboard")
             except asyncio.TimeoutError:
                 # Send keepalive ping
                 try:

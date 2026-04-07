@@ -89,7 +89,7 @@
             display: grid;
             grid-template-columns: 1fr;
             grid-template-rows: 1fr 1fr 1fr;
-            height: calc(100vh - 100px);
+            height: calc(100vh - 134px);
             padding: 8px;
             gap: 8px;
         }
@@ -110,6 +110,57 @@
             z-index: 10;
             pointer-events: none;
         }
+
+        /* Inline help tooltip for chart titles */
+        .chart-title .help {
+            pointer-events: auto;
+            display: inline-block;
+            margin-left: 8px;
+            vertical-align: middle;
+            background: #1e293b;
+            color: #94a3b8;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            line-height: 18px;
+            text-align: center;
+            font-size: 12px;
+            cursor: default;
+            position: relative;
+        }
+        .chart-title .help:focus { outline: 2px solid #334155; }
+        .chart-title .help .tooltip {
+            display: none;
+            position: absolute;
+            top: 26px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #0b1220;
+            color: #e2e8f0;
+            padding: 8px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            width: 300px;
+            box-shadow: 0 6px 18px rgba(2,6,23,0.6);
+            z-index: 40;
+            text-align: left;
+            line-height: 1.25;
+        }
+        .chart-title .help .tooltip::after {
+            content: '';
+            position: absolute;
+            top: -6px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-width: 6px;
+            border-style: solid;
+            border-color: transparent transparent #0b1220 transparent;
+        }
+        .chart-title .help:hover .tooltip,
+        .chart-title .help:focus .tooltip {
+            display: block;
+        }
+
         #priceChart, #gexChart, #smileChart {
             width: 100%;
             height: 100%;
@@ -176,6 +227,305 @@
         }
 
         /* ======================================================
+           Tab bar
+           ====================================================== */
+        .tab-bar {
+            display: flex;
+            gap: 0;
+            padding: 0 20px;
+            background: #0f172a;
+            border-bottom: 1px solid #1e293b;
+        }
+        .tab-btn {
+            padding: 8px 24px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #64748b;
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            cursor: pointer;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .tab-btn:hover { color: #94a3b8; }
+        .tab-btn.active {
+            color: #3b82f6;
+            border-bottom-color: #3b82f6;
+        }
+
+        /* ======================================================
+           Option Chain Table (Tab 2)
+           ====================================================== */
+        .chain-container {
+            display: none;
+            flex-direction: column;
+            height: calc(100vh - 134px);
+            padding: 0;
+            overflow: hidden;
+        }
+        .chain-container.active { display: flex; }
+
+        .chain-controls {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: #0f172a;
+            border-bottom: 1px solid #1e293b;
+            font-size: 12px;
+            color: #94a3b8;
+        }
+        .chain-refresh-btn {
+            background: #1e293b;
+            color: #e2e8f0;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 5px 10px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .chain-refresh-btn:hover {
+            border-color: #3b82f6;
+            color: #3b82f6;
+        }
+
+        .chain-table-wrap {
+            flex: 1;
+            overflow: auto;
+            position: relative;
+        }
+        .chain-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            table-layout: fixed;
+        }
+        .chain-table thead {
+            position: sticky;
+            top: 0;
+            z-index: 5;
+        }
+        .chain-table th {
+            background: #111827;
+            color: #64748b;
+            font-weight: 600;
+            padding: 6px 4px;
+            text-align: right;
+            border-bottom: 1px solid #1e293b;
+            font-size: 11px;
+            white-space: nowrap;
+        }
+        .chain-table th.strike-hdr {
+            text-align: center;
+            background: #1e293b;
+            color: #e2e8f0;
+            font-size: 12px;
+            position: relative;
+        }
+        .chain-table th.call-side { color: #4ade80; }
+        .chain-table th.put-side  { color: #f87171; }
+
+        .chain-table td {
+            padding: 4px 5px;
+            text-align: right;
+            border-bottom: 1px solid #111827;
+            color: #cbd5e1;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        .chain-table td.strike-col {
+            text-align: center;
+            font-weight: 700;
+            color: #e2e8f0;
+            background: #0f172a;
+            border-left: 1px solid #1e293b;
+            border-right: 1px solid #1e293b;
+        }
+
+        /* Clickable bid/ask cells */
+        .chain-table td.cell-bid {
+            cursor: pointer;
+            color: #f87171;
+        }
+        .chain-table td.cell-bid:hover {
+            background: #7f1d1d;
+            color: #fca5a5;
+        }
+        .chain-table td.cell-ask {
+            cursor: pointer;
+            color: #4ade80;
+        }
+        .chain-table td.cell-ask:hover {
+            background: #14532d;
+            color: #86efac;
+        }
+
+        /* ITM shading (per-side) */
+        .chain-table td.itm-call {
+            background: #0b3b1e;
+        }
+        .chain-table td.itm-put {
+            background: #3b0b12;
+        }
+
+        /* Selected leg side (clicked bid/ask) */
+        .chain-table td.cell-selected-bid {
+            background: #7f1d1d !important;
+            color: #fecaca;
+            box-shadow: inset 0 0 0 1px #ef4444;
+        }
+        .chain-table td.cell-selected-ask {
+            background: #14532d !important;
+            color: #bbf7d0;
+            box-shadow: inset 0 0 0 1px #22c55e;
+        }
+
+        /* Row highlights for walls / flip / ATM */
+        .chain-table tr.row-call-wall { background: #052e1680; }
+        .chain-table tr.row-call-wall td.strike-col { border-left: 3px solid #22c55e; }
+        .chain-table tr.row-put-wall  { background: #2a0a0a80; }
+        .chain-table tr.row-put-wall td.strike-col  { border-left: 3px solid #ef4444; }
+        .chain-table tr.row-gamma-flip { background: #1a140080; }
+        .chain-table tr.row-gamma-flip td.strike-col { border-left: 3px solid #eab308; }
+        .chain-table tr.row-atm       { background: #1e293b80; }
+        .chain-table tr.row-atm td.strike-col        { border-left: 3px solid #f8fafc; font-size: 13px; }
+
+        /* Strike labels for wall/flip */
+        .strike-tag {
+            display: inline-block;
+            font-size: 9px;
+            font-weight: 600;
+            padding: 1px 4px;
+            border-radius: 3px;
+            margin-left: 4px;
+            vertical-align: middle;
+        }
+        .strike-tag-cw { background: #16a34a40; color: #4ade80; }
+        .strike-tag-pw { background: #dc262640; color: #f87171; }
+        .strike-tag-gf { background: #ca8a0440; color: #facc15; }
+
+        /* Flash animation on value change */
+        @keyframes flash-green { 0% { background: #16a34a60; } 100% { background: transparent; } }
+        @keyframes flash-red   { 0% { background: #dc262660; } 100% { background: transparent; } }
+        .flash-up  { animation: flash-green 0.6s ease-out; }
+        .flash-down{ animation: flash-red 0.6s ease-out; }
+
+        /* ======================================================
+           Strategy Builder Panel
+           ====================================================== */
+        .strategy-panel {
+            background: #111827;
+            border-top: 1px solid #1e293b;
+            max-height: 280px;
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+        .strategy-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 16px;
+            background: #0f172a;
+            border-bottom: 1px solid #1e293b;
+        }
+        .strategy-header h3 {
+            font-size: 13px;
+            font-weight: 600;
+            color: #e2e8f0;
+        }
+        .strategy-clear-btn {
+            font-size: 11px;
+            color: #64748b;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 4px;
+            padding: 3px 10px;
+            cursor: pointer;
+        }
+        .strategy-clear-btn:hover { color: #f87171; border-color: #f87171; }
+
+        .strategy-legs {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .strategy-legs th {
+            background: #0f172a;
+            color: #64748b;
+            font-weight: 600;
+            padding: 5px 8px;
+            text-align: left;
+            border-bottom: 1px solid #1e293b;
+            font-size: 11px;
+        }
+        .strategy-legs td {
+            padding: 5px 8px;
+            border-bottom: 1px solid #111827;
+            color: #cbd5e1;
+        }
+        .strategy-legs .leg-buy  { color: #4ade80; font-weight: 700; }
+        .strategy-legs .leg-sell { color: #f87171; font-weight: 700; }
+        .leg-remove {
+            cursor: pointer;
+            color: #64748b;
+            font-size: 14px;
+            padding: 0 4px;
+        }
+        .leg-remove:hover { color: #f87171; }
+        .leg-qty {
+            width: 40px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: #e2e8f0;
+            text-align: center;
+            border-radius: 3px;
+            padding: 2px;
+            font-size: 12px;
+        }
+        .qty-group {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .qty-btn {
+            width: 18px;
+            height: 18px;
+            border-radius: 3px;
+            border: 1px solid #334155;
+            background: #0b1220;
+            color: #94a3b8;
+            cursor: pointer;
+            font-size: 12px;
+            line-height: 14px;
+            padding: 0;
+        }
+        .qty-btn:hover { color: #e2e8f0; border-color: #64748b; }
+
+        .strategy-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            padding: 10px 16px;
+            border-top: 1px solid #1e293b;
+            font-size: 12px;
+        }
+        .summary-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .summary-label { color: #64748b; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+        .summary-value { color: #e2e8f0; font-weight: 600; font-variant-numeric: tabular-nums; }
+        .summary-credit { color: #4ade80; }
+        .summary-debit  { color: #f87171; }
+        .strategy-empty {
+            padding: 16px;
+            text-align: center;
+            color: #475569;
+            font-size: 12px;
+        }
+
+        /* ======================================================
            Mobile / phone portrait  ≤ 600 px
            ====================================================== */
         @media (max-width: 600px) {
@@ -202,7 +552,7 @@
                 font-size: 11px;
             }
             .charts-container {
-                height: calc(100svh - 120px);
+                height: calc(100svh - 150px);
                 padding: 4px;
                 gap: 4px;
             }
@@ -211,6 +561,12 @@
                 top: 4px;
                 left: 8px;
             }
+            .tab-btn { padding: 6px 14px; font-size: 12px; }
+            .chain-table { font-size: 10px; }
+            .chain-table th { font-size: 9px; padding: 4px 2px; }
+            .chain-table td { padding: 3px 2px; }
+            .chain-container { height: calc(100svh - 150px); }
+            .chain-controls { padding: 6px 8px; font-size: 11px; }
         }
     </style>
 </head>
@@ -272,14 +628,24 @@
         </div>
     </div>
 
-    <!-- Charts -->
-    <div class="charts-container">
+    <!-- Tab bar -->
+    <div class="tab-bar">
+        <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
+        <button class="tab-btn" data-tab="chain" onclick="switchTab('chain')">Option Chain</button>
+    </div>
+
+    <!-- Charts (Tab 1) -->
+    <div class="charts-container active" id="dashboardTab">
         <div class="chart-panel">
             <div class="chart-title" id="priceChartTitle">SPX Intraday</div>
             <div id="priceChart"></div>
         </div>
         <div class="chart-panel">
-            <div class="chart-title">Gamma Exposure (GEX) by Strike</div>
+            <div class="chart-title">Gamma Exposure (GEX) by Strike
+                <span class="help" tabindex="0" aria-label="GEX chart info">?
+                    <span class="tooltip" role="tooltip">Use this chart to see where gamma exposure accumulates by strike. Peaks show levels where option dealer hedging is concentrated; net line direction indicates whether overall market makers are long (positive) or short (negative) gamma.</span>
+                </span>
+            </div>
             <div class="gex-loading hidden" id="gexLoading">
                 <div class="gex-loading-spinner"></div>
                 <div class="gex-loading-text" id="gexLoadingText">Fetching option chain…</div>
@@ -288,13 +654,97 @@
             <div id="gexChart"></div>
         </div>
         <div class="chart-panel">
-            <div class="chart-title">IV Smile & Delta-Decay Efficiency</div>
+            <div class="chart-title">IV Smile & Delta-Decay Efficiency
+                <span class="help" tabindex="0" aria-label="IV Smile help">?
+                    <span class="tooltip" role="tooltip">Delta-decay efficiency = |charm| ÷ |delta|.<br>Computed from short finite-difference decay (15-minute step) of option delta; it represents the rate at which an option's delta changes relative to its current delta magnitude.<br>Higher values indicate faster delta erosion per unit delta — useful for assessing hedging sensitivity to time decay and short-term rebalancing cost.</span>
+                </span>
+            </div>
             <div class="gex-loading hidden" id="smileLoading">
                 <div class="gex-loading-spinner"></div>
                 <div class="gex-loading-text" id="smileLoadingText">Fetching option chain…</div>
                 <div class="gex-loading-sub" id="smileLoadingSub"></div>
             </div>
             <div id="smileChart"></div>
+        </div>
+    </div>
+
+    <!-- Option Chain (Tab 2) -->
+    <div class="chain-container" id="chainTab">
+        <div class="chain-controls">
+            <div>
+                <div id="chainRangeInfo">Visible range: —</div>
+                <div id="chainLastUpdateInfo" style="font-size:11px;color:#64748b;">Last update: —</div>
+            </div>
+            <button class="chain-refresh-btn" onclick="manualRefreshChain()">Manual Update</button>
+        </div>
+        <div class="chain-table-wrap" id="chainTableWrap">
+            <table class="chain-table" id="chainTable">
+                <thead>
+                    <tr>
+                        <th class="call-side">IV</th>
+                        <th class="call-side">Vol</th>
+                        <th class="call-side">OI</th>
+                        <th class="call-side">Gamma</th>
+                        <th class="call-side">Delta</th>
+                        <th class="call-side">Ask Sz</th>
+                        <th class="call-side">Ask</th>
+                        <th class="call-side">Bid</th>
+                        <th class="call-side">Bid Sz</th>
+                        <th class="strike-hdr">Strike</th>
+                        <th class="put-side">Bid Sz</th>
+                        <th class="put-side">Bid</th>
+                        <th class="put-side">Ask</th>
+                        <th class="put-side">Ask Sz</th>
+                        <th class="put-side">Delta</th>
+                        <th class="put-side">Gamma</th>
+                        <th class="put-side">OI</th>
+                        <th class="put-side">Vol</th>
+                        <th class="put-side">IV</th>
+                    </tr>
+                </thead>
+                <tbody id="chainBody"></tbody>
+            </table>
+        </div>
+
+        <!-- Strategy Builder -->
+        <div class="strategy-panel" id="strategyPanel">
+            <div class="strategy-header">
+                <h3>Strategy Builder <span id="strategyLegCount" style="color:#64748b;font-weight:400;font-size:11px;"></span></h3>
+                <button class="strategy-clear-btn" onclick="clearStrategy()">Clear All</button>
+            </div>
+            <div id="strategyContent">
+                <div class="strategy-empty" id="strategyEmpty">Click <span style="color:#4ade80">Ask</span> to buy or <span style="color:#f87171">Bid</span> to sell an option</div>
+            </div>
+            <div class="strategy-summary" id="strategySummary" style="display:none;">
+                <div class="summary-item">
+                    <span class="summary-label">Combo Bid</span>
+                    <span class="summary-value" id="comboBid">—</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">Combo Ask</span>
+                    <span class="summary-value" id="comboAsk">—</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">Combo Mid</span>
+                    <span class="summary-value" id="comboMid">—</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">Net Debit/Credit</span>
+                    <span class="summary-value" id="comboNet">—</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">Max Profit</span>
+                    <span class="summary-value" id="comboMaxProfit">—</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">Max Loss</span>
+                    <span class="summary-value" id="comboMaxLoss">—</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">Breakeven</span>
+                    <span class="summary-value" id="comboBreakeven">—</span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -320,6 +770,15 @@
         historicalDate: '',
         currentSpot: 0,    // most up-to-date spot (live SPX or ES-derived)
         esDerived: false,  // true when currentSpot is ES-derived
+        // Option chain tab state
+        activeTab: 'dashboard',
+        chainData: {},        // keyed by strike: {strike, call_bid, call_ask, ...}
+        chainMeta: null,      // {spot_price, call_wall, put_wall, gamma_flip}
+        strategyLegs: [],     // [{id, action, strike, right, qty, ...}]
+        nextLegId: 1,
+        prevCellValues: {},   // for flash animation: "strike_right_field" → prev value
+        chainLastUpdateMs: null,
+        chainAgeTimer: null,
     };
 
     // ======================================================================
@@ -1068,6 +1527,7 @@
             console.log('WebSocket connected');
             state.wsConnected = true;
             document.getElementById('loadingOverlay').classList.add('hidden');
+            ws.send(state.activeTab === 'chain' ? 'set_tab:chain' : 'set_tab:dashboard');
             if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
         };
 
@@ -1104,6 +1564,481 @@
         }, 3000);
     }
 
+    // ======================================================================
+    // Tab switching
+    // ======================================================================
+    function switchTab(tab) {
+        state.activeTab = tab;
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.tab === tab);
+        });
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(tab === 'chain' ? 'set_tab:chain' : 'set_tab:dashboard');
+        }
+        const dashboard = document.getElementById('dashboardTab');
+        const chain = document.getElementById('chainTab');
+        if (tab === 'dashboard') {
+            dashboard.style.display = '';
+            dashboard.classList.add('active');
+            chain.classList.remove('active');
+            // Trigger Plotly resize since charts were hidden
+            setTimeout(() => {
+                Plotly.Plots.resize('priceChart');
+                Plotly.Plots.resize('gexChart');
+                Plotly.Plots.resize('smileChart');
+            }, 50);
+        } else {
+            dashboard.style.display = 'none';
+            dashboard.classList.remove('active');
+            chain.classList.add('active');
+            scrollToATM();
+        }
+    }
+
+    // ======================================================================
+    // Option Chain Table
+    // ======================================================================
+    function handleChainQuotes(data) {
+        if (!data || !data.strikes) return;
+        state.chainMeta = {
+            spot_price: data.spot_price,
+            annual_vol: data.annual_vol,
+            call_wall: data.call_wall,
+            put_wall: data.put_wall,
+            gamma_flip: data.gamma_flip,
+        };
+        state.chainLastUpdateMs = data.timestamp_iso ? Date.parse(data.timestamp_iso) : Date.now();
+        updateChainUpdateAge();
+        state.chainData = {};
+        for (const row of data.strikes) {
+            state.chainData[row.strike] = row;
+        }
+        renderChainTable();
+        updateStrategyPrices();
+    }
+
+    function handleChainTick(data) {
+        if (!data || !data.ticks) return;
+        state.chainLastUpdateMs = data.timestamp_iso ? Date.parse(data.timestamp_iso) : Date.now();
+        updateChainUpdateAge();
+        for (const t of data.ticks) {
+            const row = state.chainData[t.strike];
+            if (!row) continue;
+            const side = t.right === 'C' ? 'call' : 'put';
+            const fields = {bid: 'bid', ask: 'ask', bid_size: 'bid_size', ask_size: 'ask_size',
+                            volume: 'volume', last: 'last', delta: 'delta', gamma: 'gamma', iv: 'iv'};
+            for (const [src, dst] of Object.entries(fields)) {
+                if (t[src] !== undefined) {
+                    const key = `${side}_${dst}`;
+                    const fullKey = `${t.strike}_${t.right}_${dst}`;
+                    const oldVal = row[key];
+                    row[key] = t[src];
+                    // Flash animation on cell update
+                    const cellId = `chain_${t.strike}_${side}_${dst}`;
+                    const cell = document.getElementById(cellId);
+                    if (cell && t[src] !== null && oldVal !== t[src]) {
+                        cell.textContent = formatChainVal(dst, t[src]);
+                        cell.classList.remove('flash-up', 'flash-down');
+                        void cell.offsetWidth; // force reflow
+                        if (oldVal !== null && oldVal !== undefined) {
+                            cell.classList.add(t[src] > oldVal ? 'flash-up' : 'flash-down');
+                        }
+                    }
+                }
+            }
+        }
+        updateStrategyPrices();
+    }
+
+    function formatChainVal(field, val) {
+        if (val === null || val === undefined) return '—';
+        if (field === 'bid' || field === 'ask' || field === 'last') return val.toFixed(2);
+        if (field === 'delta') return val.toFixed(3);
+        if (field === 'gamma') return val.toFixed(4);
+        if (field === 'iv') return val.toFixed(1) + '%';
+        if (field === 'bid_size' || field === 'ask_size' || field === 'volume' || field === 'oi')
+            return val.toLocaleString();
+        return String(val);
+    }
+
+    function updateChainUpdateAge() {
+        const el = document.getElementById('chainLastUpdateInfo');
+        if (!el) return;
+        if (!state.chainLastUpdateMs) {
+            el.textContent = 'Last update: —';
+            return;
+        }
+        const sec = Math.max(0, Math.floor((Date.now() - state.chainLastUpdateMs) / 1000));
+        el.textContent = `Last update: +${sec}s`;
+    }
+
+    function hasSelectedLeg(strike, right, action) {
+        return state.strategyLegs.some(l => l.strike === strike && l.right === right && l.action === action);
+    }
+
+    function refreshSelectionHighlights() {
+        document.querySelectorAll('.cell-selected-bid').forEach(el => el.classList.remove('cell-selected-bid'));
+        document.querySelectorAll('.cell-selected-ask').forEach(el => el.classList.remove('cell-selected-ask'));
+        for (const leg of state.strategyLegs) {
+            const side = leg.right === 'C' ? 'call' : 'put';
+            const actionSide = leg.action === 'BUY' ? 'ask' : 'bid';
+            const cell = document.getElementById(`chain_${leg.strike}_${side}_${actionSide}`);
+            if (cell) {
+                cell.classList.add(leg.action === 'BUY' ? 'cell-selected-ask' : 'cell-selected-bid');
+            }
+        }
+    }
+
+    function renderChainTable() {
+        const tbody = document.getElementById('chainBody');
+        const allStrikes = Object.keys(state.chainData).map(Number).sort((a, b) => a - b);
+        const spot = state.chainMeta ? state.chainMeta.spot_price : state.currentSpot;
+        const annualVol = (state.chainMeta && state.chainMeta.annual_vol) ? state.chainMeta.annual_vol : 0.20;
+        const dailyStd = (spot > 0) ? (spot * annualVol / Math.sqrt(252)) : 0;
+        const lowerBound = spot > 0 ? (spot - 5 * dailyStd - 60) : -Infinity;
+        const upperBound = spot > 0 ? (spot + 5 * dailyStd + 60) : Infinity;
+        const strikes = allStrikes.filter(s => s >= lowerBound && s <= upperBound);
+        if (strikes.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="19" style="text-align:center;color:#475569;padding:40px;">Waiting for option chain data...</td></tr>';
+            document.getElementById('chainRangeInfo').textContent = 'Visible range: —';
+            return;
+        }
+
+        const cw = state.chainMeta ? state.chainMeta.call_wall : null;
+        const pw = state.chainMeta ? state.chainMeta.put_wall : null;
+        const gf = state.chainMeta ? state.chainMeta.gamma_flip : null;
+        const atmStrike = spot > 0 ? strikes.reduce((a, b) => Math.abs(a - spot) < Math.abs(b - spot) ? a : b) : null;
+        document.getElementById('chainRangeInfo').textContent =
+            `Visible range: ${Math.round(lowerBound)} to ${Math.round(upperBound)} (5σ ± 60)`;
+
+        // Build rows
+        let html = '';
+        for (const strike of strikes) {
+            const r = state.chainData[strike];
+            let rowClass = '';
+            let tags = '';
+            const callItmClass = (spot > 0 && strike < spot) ? 'itm-call' : '';
+            const putItmClass = (spot > 0 && strike > spot) ? 'itm-put' : '';
+            if (strike === atmStrike) rowClass = 'row-atm';
+            if (cw !== null && strike === cw) { rowClass = 'row-call-wall'; tags += '<span class="strike-tag strike-tag-cw">CW</span>'; }
+            if (pw !== null && strike === pw) { rowClass = 'row-put-wall'; tags += '<span class="strike-tag strike-tag-pw">PW</span>'; }
+            if (gf !== null && Math.abs(strike - gf) < 2.5) { rowClass = rowClass || 'row-gamma-flip'; tags += '<span class="strike-tag strike-tag-gf">GF</span>'; }
+
+            html += `<tr class="${rowClass}" data-strike="${strike}">`;
+            // === Call side (right-to-left: IV, Vol, OI, Gamma, Delta, AskSz, Ask, Bid, BidSz) ===
+            html += td('call', 'iv', strike, r.call_iv, callItmClass);
+            html += td('call', 'volume', strike, r.call_volume, callItmClass);
+            html += td('call', 'oi', strike, r.call_oi, callItmClass);
+            html += td('call', 'gamma', strike, r.call_gamma, callItmClass);
+            html += td('call', 'delta', strike, r.call_delta, callItmClass);
+            html += td('call', 'ask_size', strike, r.call_ask_size, callItmClass);
+            html += `<td class="cell-ask ${callItmClass} ${hasSelectedLeg(strike, 'C', 'BUY') ? 'cell-selected-ask' : ''}" id="chain_${strike}_call_ask" onclick="addLeg(${strike},'C','BUY')" title="Buy ${strike}C">${fv('ask', r.call_ask)}</td>`;
+            html += `<td class="cell-bid ${callItmClass} ${hasSelectedLeg(strike, 'C', 'SELL') ? 'cell-selected-bid' : ''}" id="chain_${strike}_call_bid" onclick="addLeg(${strike},'C','SELL')" title="Sell ${strike}C">${fv('bid', r.call_bid)}</td>`;
+            html += td('call', 'bid_size', strike, r.call_bid_size, callItmClass);
+            // === Strike center ===
+            html += `<td class="strike-col">${strike}${tags}</td>`;
+            // === Put side (left-to-right: BidSz, Bid, Ask, AskSz, Delta, Gamma, OI, Vol, IV) ===
+            html += td('put', 'bid_size', strike, r.put_bid_size, putItmClass);
+            html += `<td class="cell-bid ${putItmClass} ${hasSelectedLeg(strike, 'P', 'SELL') ? 'cell-selected-bid' : ''}" id="chain_${strike}_put_bid" onclick="addLeg(${strike},'P','SELL')" title="Sell ${strike}P">${fv('bid', r.put_bid)}</td>`;
+            html += `<td class="cell-ask ${putItmClass} ${hasSelectedLeg(strike, 'P', 'BUY') ? 'cell-selected-ask' : ''}" id="chain_${strike}_put_ask" onclick="addLeg(${strike},'P','BUY')" title="Buy ${strike}P">${fv('ask', r.put_ask)}</td>`;
+            html += td('put', 'ask_size', strike, r.put_ask_size, putItmClass);
+            html += td('put', 'delta', strike, r.put_delta, putItmClass);
+            html += td('put', 'gamma', strike, r.put_gamma, putItmClass);
+            html += td('put', 'oi', strike, r.put_oi, putItmClass);
+            html += td('put', 'volume', strike, r.put_volume, putItmClass);
+            html += td('put', 'iv', strike, r.put_iv, putItmClass);
+            html += '</tr>';
+        }
+        tbody.innerHTML = html;
+    }
+
+    function td(side, field, strike, val, extraClass = '') {
+        return `<td class="${extraClass}" id="chain_${strike}_${side}_${field}">${fv(field, val)}</td>`;
+    }
+    function fv(field, val) { return formatChainVal(field, val); }
+
+    function scrollToATM() {
+        const spot = state.chainMeta ? state.chainMeta.spot_price : state.currentSpot;
+        if (spot <= 0) return;
+        const wrap = document.getElementById('chainTableWrap');
+        const row = wrap.querySelector('tr.row-atm');
+        if (row) {
+            // Scroll so ATM is roughly centered
+            const rowTop = row.offsetTop;
+            const wrapH = wrap.clientHeight;
+            wrap.scrollTop = rowTop - wrapH / 2 + row.clientHeight / 2;
+        }
+    }
+
+    // ======================================================================
+    // Strategy Builder
+    // ======================================================================
+    function addLeg(strike, right, action) {
+        // Check if same strike+right already exists
+        const existing = state.strategyLegs.find(l => l.strike === strike && l.right === right);
+        if (existing) {
+            if (existing.action === action) {
+                existing.qty++;
+            } else {
+                // Opposite action: reduce qty or flip
+                existing.qty--;
+                if (existing.qty <= 0) {
+                    existing.action = action;
+                    existing.qty = 1;
+                }
+            }
+        } else {
+            state.strategyLegs.push({
+                id: state.nextLegId++,
+                strike, right, action,
+                qty: 1,
+            });
+        }
+        renderStrategy();
+    }
+
+    function removeLeg(legId) {
+        state.strategyLegs = state.strategyLegs.filter(l => l.id !== legId);
+        renderStrategy();
+    }
+
+    function updateLegQty(legId, newQty) {
+        const leg = state.strategyLegs.find(l => l.id === legId);
+        if (!leg) return;
+        const q = parseInt(newQty);
+        if (q > 0) {
+            leg.qty = q;
+        } else {
+            removeLeg(legId);
+            return;
+        }
+        renderStrategy();
+    }
+
+    function clearStrategy() {
+        state.strategyLegs = [];
+        renderStrategy();
+    }
+
+    function bumpAllQty(delta) {
+        if (state.strategyLegs.length === 0) return;
+        for (const leg of state.strategyLegs) {
+            leg.qty = Math.max(1, leg.qty + delta);
+        }
+        renderStrategy();
+    }
+
+    function manualRefreshChain() {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send('refresh_chain');
+        }
+    }
+
+    function getLegQuote(leg) {
+        const r = state.chainData[leg.strike];
+        if (!r) return { bid: null, ask: null, last: null };
+        const side = leg.right === 'C' ? 'call' : 'put';
+        return {
+            bid: r[side + '_bid'] ?? null,
+            ask: r[side + '_ask'] ?? null,
+            last: r[side + '_last'] ?? null,
+        };
+    }
+
+    function renderStrategy() {
+        const content = document.getElementById('strategyContent');
+        const summary = document.getElementById('strategySummary');
+        const countEl = document.getElementById('strategyLegCount');
+        const emptyEl = document.getElementById('strategyEmpty');
+
+        if (state.strategyLegs.length === 0) {
+            content.innerHTML = '<div class="strategy-empty" id="strategyEmpty">Click <span style="color:#4ade80">Ask</span> to buy or <span style="color:#f87171">Bid</span> to sell an option</div>';
+            summary.style.display = 'none';
+            countEl.textContent = '';
+            refreshSelectionHighlights();
+            return;
+        }
+
+        countEl.textContent = `(${state.strategyLegs.length} leg${state.strategyLegs.length > 1 ? 's' : ''})`;
+
+        let html = '<table class="strategy-legs"><thead><tr>';
+        html += '<th>Action</th><th>Strike</th><th>Type</th><th>Qty</th>';
+        html += '<th>Bid</th><th>Ask</th><th>Mid</th><th></th>';
+        html += '</tr></thead><tbody>';
+
+        for (const leg of state.strategyLegs) {
+            const q = getLegQuote(leg);
+            const mid = (q.bid !== null && q.ask !== null) ? ((q.bid + q.ask) / 2).toFixed(2) : '—';
+            const actionClass = leg.action === 'BUY' ? 'leg-buy' : 'leg-sell';
+            html += '<tr>';
+            html += `<td class="${actionClass}">${leg.action}</td>`;
+            html += `<td>${leg.strike}</td>`;
+            html += `<td>${leg.right === 'C' ? 'Call' : 'Put'}</td>`;
+            html += `<td><span class="qty-group"><button class="qty-btn" onclick="bumpAllQty(-1)" title="Decrease all legs">-</button><input type="number" class="leg-qty" value="${leg.qty}" min="1" onchange="updateLegQty(${leg.id}, this.value)"><button class="qty-btn" onclick="bumpAllQty(1)" title="Increase all legs">+</button></span></td>`;
+            html += `<td>${q.bid !== null ? q.bid.toFixed(2) : '—'}</td>`;
+            html += `<td>${q.ask !== null ? q.ask.toFixed(2) : '—'}</td>`;
+            html += `<td>${mid}</td>`;
+            html += `<td><span class="leg-remove" onclick="removeLeg(${leg.id})">✕</span></td>`;
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        content.innerHTML = html;
+        refreshSelectionHighlights();
+
+        // Compute combo pricing
+        computeCombo();
+        summary.style.display = '';
+    }
+
+    function updateStrategyPrices() {
+        if (state.strategyLegs.length === 0) return;
+        // Re-render leg prices and recompute combo
+        renderStrategy();
+    }
+
+    function computeCombo() {
+        const legs = state.strategyLegs;
+        if (legs.length === 0) return;
+
+        // Combo Bid = worst fill if you want to buy the combo:
+        //   BUY legs → pay ask, SELL legs → receive bid
+        // Combo Ask = worst fill if you want to sell the combo:
+        //   BUY legs → pay bid (to close), SELL legs → receive ask
+        // We define from the BUYER's perspective of the combo:
+        //   Combo natural debit (what you'd pay at market) = sum of (BUY_ask - SELL_bid) per leg
+        //   Combo credit (what you'd receive) = sum of (SELL_ask - BUY_bid) per leg
+
+        let comboBid = 0, comboAsk = 0;
+        let allValid = true;
+
+        for (const leg of legs) {
+            const q = getLegQuote(leg);
+            if (q.bid === null || q.ask === null) { allValid = false; break; }
+            if (leg.action === 'BUY') {
+                // Buying: you pay ask, combo bid contribution is negative (cost)
+                comboBid += leg.qty * q.bid;   // If YOU want to sell the combo, close buys at bid
+                comboAsk += leg.qty * q.ask;   // If YOU want to buy the combo, buys cost ask
+            } else {
+                // Selling: you receive bid
+                comboBid -= leg.qty * q.ask;   // If selling combo, close shorts at ask (cost)
+                comboAsk -= leg.qty * q.bid;   // If buying combo, shorts give you bid (credit)
+            }
+        }
+
+        // comboBid = what you'd receive selling the combo
+        // comboAsk = what you'd pay buying the combo
+        // Flip sign convention: positive = credit to you
+
+        const comboBidEl = document.getElementById('comboBid');
+        const comboAskEl = document.getElementById('comboAsk');
+        const comboMidEl = document.getElementById('comboMid');
+        const comboNetEl = document.getElementById('comboNet');
+
+        if (!allValid) {
+            comboBidEl.textContent = '—';
+            comboAskEl.textContent = '—';
+            comboMidEl.textContent = '—';
+            comboNetEl.textContent = '—';
+        } else {
+            // Convention: positive value = debit (you pay), negative = credit (you receive)
+            // comboAsk is the cost to enter the position
+            // Net: negative comboAsk = credit, positive = debit
+            const netCost = comboAsk;  // cost to enter: positive = debit
+            const bid = comboBid;
+            const ask = comboAsk;
+            const mid = (bid + ask) / 2;
+
+            comboBidEl.textContent = bid.toFixed(2);
+            comboAskEl.textContent = ask.toFixed(2);
+            comboMidEl.textContent = mid.toFixed(2);
+
+            if (netCost > 0) {
+                comboNetEl.textContent = 'Debit ' + netCost.toFixed(2);
+                comboNetEl.className = 'summary-value summary-debit';
+            } else {
+                comboNetEl.textContent = 'Credit ' + Math.abs(netCost).toFixed(2);
+                comboNetEl.className = 'summary-value summary-credit';
+            }
+
+            // Max profit / loss / breakeven
+            computePayoff(mid);
+        }
+    }
+
+    function computePayoff(premium) {
+        const legs = state.strategyLegs;
+        const maxProfitEl = document.getElementById('comboMaxProfit');
+        const maxLossEl = document.getElementById('comboMaxLoss');
+        const breakevenEl = document.getElementById('comboBreakeven');
+
+        if (legs.length === 0) return;
+
+        // Iterate spot prices from min_strike - 50 to max_strike + 50
+        const allStrikes = legs.map(l => l.strike);
+        const lo = Math.min(...allStrikes) - 100;
+        const hi = Math.max(...allStrikes) + 100;
+        const step = 0.5;
+
+        let maxProfit = -Infinity;
+        let maxLoss = Infinity;
+        const breakevens = [];
+        let prevPnl = null;
+
+        for (let S = lo; S <= hi; S += step) {
+            let pnl = -premium * 100; // cost of entry (premium per contract × 100 multiplier)
+            for (const leg of legs) {
+                let intrinsic = 0;
+                if (leg.right === 'C') {
+                    intrinsic = Math.max(0, S - leg.strike);
+                } else {
+                    intrinsic = Math.max(0, leg.strike - S);
+                }
+                const sign = leg.action === 'BUY' ? 1 : -1;
+                pnl += sign * leg.qty * intrinsic * 100; // × 100 multiplier
+            }
+
+            if (pnl > maxProfit) maxProfit = pnl;
+            if (pnl < maxLoss) maxLoss = pnl;
+
+            // Detect zero-crossing for breakeven
+            if (prevPnl !== null && ((prevPnl < 0 && pnl >= 0) || (prevPnl >= 0 && pnl < 0))) {
+                // Linear interpolation
+                const be = S - step + step * Math.abs(prevPnl) / (Math.abs(prevPnl) + Math.abs(pnl));
+                breakevens.push(be.toFixed(1));
+            }
+            prevPnl = pnl;
+        }
+
+        // Check for unlimited risk/reward
+        const hasNakedShort = legs.some(l => l.action === 'SELL');
+        const hasBuy = legs.some(l => l.action === 'BUY');
+
+        // If only sells with no offsetting buys on same side, loss could be unlimited
+        const isSpread = legs.length >= 2;
+
+        if (maxProfit > 1e8) {
+            maxProfitEl.textContent = 'Unlimited';
+            maxProfitEl.className = 'summary-value summary-credit';
+        } else {
+            maxProfitEl.textContent = (maxProfit >= 0 ? '+' : '') + '$' + Math.abs(maxProfit).toLocaleString(undefined, {maximumFractionDigits: 0});
+            maxProfitEl.className = 'summary-value ' + (maxProfit >= 0 ? 'summary-credit' : 'summary-debit');
+        }
+
+        if (maxLoss < -1e8) {
+            maxLossEl.textContent = 'Unlimited';
+            maxLossEl.className = 'summary-value summary-debit';
+        } else {
+            maxLossEl.textContent = (maxLoss >= 0 ? '+' : '-') + '$' + Math.abs(maxLoss).toLocaleString(undefined, {maximumFractionDigits: 0});
+            maxLossEl.className = 'summary-value ' + (maxLoss >= 0 ? 'summary-credit' : 'summary-debit');
+        }
+
+        if (breakevens.length > 0) {
+            breakevenEl.textContent = breakevens.join(', ');
+        } else {
+            breakevenEl.textContent = '—';
+        }
+    }
+
     function handleMessage(msg) {
         switch (msg.type) {
             case 'init':
@@ -1126,14 +2061,19 @@
                 state.esDerived = msg.data.es_derived || false;
                 updateGexChart();
                 updateSmileChart();
-                updatePriceChart();  // redraw level lines
+                updatePriceChart();
                 updateBadges();
+                break;
+            case 'chain_quotes':
+                handleChainQuotes(msg.data);
+                break;
+            case 'chain_tick':
+                handleChainTick(msg.data);
                 break;
             case 'status':
                 updateStatus(msg.data);
                 break;
             case 'ping':
-                // keepalive, ignore
                 break;
             default:
                 console.log('Unknown message type:', msg.type);
@@ -1173,6 +2113,11 @@
 
         updateStatus(data);
         updateBadges();
+
+        // Restore option chain data for Tab 2
+        if (data.chain_quotes) {
+            handleChainQuotes(data.chain_quotes);
+        }
     }
 
     // ======================================================================
@@ -1234,6 +2179,8 @@
             Plotly.Plots.resize('gexChart');
             Plotly.Plots.resize('smileChart');
         });
+
+        state.chainAgeTimer = setInterval(updateChainUpdateAge, 1000);
 
         connectWS();
     });
