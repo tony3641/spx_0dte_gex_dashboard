@@ -29,13 +29,14 @@ A real-time Gamma Exposure (GEX) dashboard for SPX 0DTE options, powered by Inte
 The server binds to all network interfaces (`0.0.0.0`), so it's accessible from both localhost and your local IP address:
 
 - **Localhost only**: `http://localhost:8000`
-- **Local network**: `http://<your-local-ip>:8000` (e.g., `http://192.168.1.100:8000`)
+- **Local network**: `http://<your-local-ip>:8000`
 
 The exact URLs are printed to the console when the server starts. You can override the listening address with the `SERVER_HOST` environment variable if needed.
 
 ## Screenshot
 
 ![Dashboard Screenshot](docs/screenshot.png)
+![Option Chain w/ Strategy Builder](docs/screenshot2.png)
 
 The dashboard displays three interactive charts:
 
@@ -58,6 +59,10 @@ Two-row subplot showing:
 - Hover displays: Strike, IV %, Delta, Charm (delta decay rate), Efficiency metric
 
 **Real-time zoom sync:** Pan/zoom either the GEX or Smile chart → both charts update their x-axis range simultaneously.
+
+### 4. Real-time Option Chain Streaming
+- Livsestreaming 0 DTE option chain with greeks
+- Markers on Put Wall, Call Wall, and Gamma Flip location
 
 ### Status Bar
 Real-time status indicators:
