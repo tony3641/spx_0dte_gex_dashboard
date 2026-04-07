@@ -104,6 +104,15 @@ spx_derived = spx_last_close × (1 + (es_now − es_baseline) / es_baseline)
 
 ---
 
+### Strategy Builder Delta + Strike Sigma UX
+- Added combined strategy delta in the Strategy Builder summary and per-leg delta display in the strategy table.
+- Backend now includes expiry-based sigma metadata in `chain_quotes` (`expiration_raw`, `tte_years`, `sigma_move`) plus per-strike `sigma_distance_abs` and `sigma_distance_signed`.
+- Frontend renders strike-cell sigma buckets and hover tooltips, and updated wall marker borders so Call Wall has a green left border, Put Wall has a red right border, and the ATM strike is marked with white borders on both sides.
+
+**Files:** `server.py`, `static/index.html`.
+
+---
+
 ### Chain Fetch Progress — Startup Spinner Overlay
 During the initial chain fetch (before any GEX data is available), the GEX chart panel shows a centred rotating loading circle with a darkened background overlay.
 

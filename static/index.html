@@ -341,6 +341,9 @@
             border-left: 1px solid #1e293b;
             border-right: 1px solid #1e293b;
         }
+        .chain-table td.strike-col.strike-sigma-1 { background: #1e3a8a; }
+        .chain-table td.strike-col.strike-sigma-2 { background: #334f85; }
+        .chain-table td.strike-col.strike-sigma-3 { background: #4b6288; }
 
         /* Clickable bid/ask cells */
         .chain-table td.cell-bid {
@@ -384,11 +387,11 @@
         .chain-table tr.row-call-wall { background: #052e1680; }
         .chain-table tr.row-call-wall td.strike-col { border-left: 3px solid #22c55e; }
         .chain-table tr.row-put-wall  { background: #2a0a0a80; }
-        .chain-table tr.row-put-wall td.strike-col  { border-left: 3px solid #ef4444; }
+        .chain-table tr.row-put-wall td.strike-col  { border-right: 3px solid #ef4444; }
         .chain-table tr.row-gamma-flip { background: #1a140080; }
         .chain-table tr.row-gamma-flip td.strike-col { border-left: 3px solid #eab308; }
         .chain-table tr.row-atm       { background: #1e293b80; }
-        .chain-table tr.row-atm td.strike-col        { border-left: 3px solid #f8fafc; font-size: 13px; }
+        .chain-table tr.row-atm td.strike-col        { border-left: 3px solid #f8fafc; border-right: 3px solid #f8fafc; font-size: 13px; }
 
         /* Strike labels for wall/flip */
         .strike-tag {
@@ -731,6 +734,10 @@
                 <div class="summary-item">
                     <span class="summary-label">Net Debit/Credit</span>
                     <span class="summary-value" id="comboNet">—</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">Combined Delta</span>
+                    <span class="summary-value" id="comboDelta">—</span>
                 </div>
                 <div class="summary-item">
                     <span class="summary-label">Max Profit</span>
@@ -1611,6 +1618,9 @@
         state.chainMeta = {
             spot_price: data.spot_price,
             annual_vol: data.annual_vol,
+            expiration_raw: data.expiration_raw,
+            tte_years: data.tte_years,
+            sigma_move: data.sigma_move,
             call_wall: data.call_wall,
             put_wall: data.put_wall,
             gamma_flip: data.gamma_flip,
@@ -1734,16 +1744,20 @@
         let html = '';
         for (const strike of strikes) {
             const r = state.chainData[strike];
-            let rowClass = '';
+            const rowClasses = [];
             let tags = '';
             const callItmClass = (spot > 0 && strike < spot) ? 'itm-call' : '';
             const putItmClass = (spot > 0 && strike > spot) ? 'itm-put' : '';
-            if (strike === atmStrike) rowClass = 'row-atm';
-            if (cw !== null && strike === cw) { rowClass = 'row-call-wall'; tags += '<span class="strike-tag strike-tag-cw">CW</span>'; }
-            if (pw !== null && strike === pw) { rowClass = 'row-put-wall'; tags += '<span class="strike-tag strike-tag-pw">PW</span>'; }
-            if (gf !== null && Math.abs(strike - gf) < 2.5) { rowClass = rowClass || 'row-gamma-flip'; tags += '<span class="strike-tag strike-tag-gf">GF</span>'; }
+            const sigmaAbs = r.sigma_distance_abs;
+            const sigmaSigned = r.sigma_distance_signed;
+            const strikeSigmaClass = getStrikeSigmaClass(sigmaAbs);
+            const strikeSigmaTitle = buildStrikeSigmaTitle(strike, sigmaSigned, sigmaAbs, spot);
+            if (strike === atmStrike) rowClasses.push('row-atm');
+            if (cw !== null && strike === cw) { rowClasses.push('row-call-wall'); tags += '<span class="strike-tag strike-tag-cw">CW</span>'; }
+            if (pw !== null && strike === pw) { rowClasses.push('row-put-wall'); tags += '<span class="strike-tag strike-tag-pw">PW</span>'; }
+            if (gf !== null && Math.abs(strike - gf) < 2.5) { rowClasses.push('row-gamma-flip'); tags += '<span class="strike-tag strike-tag-gf">GF</span>'; }
 
-            html += `<tr class="${rowClass}" data-strike="${strike}">`;
+            html += `<tr class="${rowClasses.join(' ')}" data-strike="${strike}">`;
             // === Call side (right-to-left: IV, Vol, OI, Gamma, Delta, AskSz, Ask, Bid, BidSz) ===
             html += td('call', 'iv', strike, r.call_iv, callItmClass);
             html += td('call', 'volume', strike, r.call_volume, callItmClass);
@@ -1755,7 +1769,7 @@
             html += `<td class="cell-bid ${callItmClass} ${hasSelectedLeg(strike, 'C', 'SELL') ? 'cell-selected-bid' : ''}" id="chain_${strike}_call_bid" onclick="addLeg(${strike},'C','SELL')" title="Sell ${strike}C">${fv('bid', r.call_bid)}</td>`;
             html += td('call', 'bid_size', strike, r.call_bid_size, callItmClass);
             // === Strike center ===
-            html += `<td class="strike-col">${strike}${tags}</td>`;
+            html += `<td class="strike-col ${strikeSigmaClass}" title="${strikeSigmaTitle}">${strike}${tags}</td>`;
             // === Put side (left-to-right: BidSz, Bid, Ask, AskSz, Delta, Gamma, OI, Vol, IV) ===
             html += td('put', 'bid_size', strike, r.put_bid_size, putItmClass);
             html += `<td class="cell-bid ${putItmClass} ${hasSelectedLeg(strike, 'P', 'SELL') ? 'cell-selected-bid' : ''}" id="chain_${strike}_put_bid" onclick="addLeg(${strike},'P','SELL')" title="Sell ${strike}P">${fv('bid', r.put_bid)}</td>`;
@@ -1769,6 +1783,30 @@
             html += '</tr>';
         }
         tbody.innerHTML = html;
+    }
+
+    function getStrikeSigmaClass(sigmaAbs) {
+        if (sigmaAbs === null || sigmaAbs === undefined || !isFinite(sigmaAbs)) return '';
+        if (sigmaAbs <= 1) return 'strike-sigma-1';
+        if (sigmaAbs <= 2) return 'strike-sigma-2';
+        if (sigmaAbs <= 3) return 'strike-sigma-3';
+        return '';
+    }
+
+    function buildStrikeSigmaTitle(strike, sigmaSigned, sigmaAbs, spot) {
+        let signed = sigmaSigned;
+        let abs = sigmaAbs;
+        if ((signed === null || signed === undefined || !isFinite(signed)) &&
+            state.chainMeta && state.chainMeta.sigma_move && state.chainMeta.sigma_move > 0 && spot > 0) {
+            signed = (strike - spot) / state.chainMeta.sigma_move;
+            abs = Math.abs(signed);
+        }
+        if (abs === null || abs === undefined || !isFinite(abs)) {
+            return `Strike ${strike} (sigma distance unavailable)`;
+        }
+        const signPrefix = signed >= 0 ? '+' : '';
+        const direction = signed >= 0 ? 'above' : 'below';
+        return `Strike ${strike}: ${signPrefix}${signed.toFixed(2)}σ (${abs.toFixed(2)}σ ${direction} spot ${spot.toFixed(2)})`;
     }
 
     function td(side, field, strike, val, extraClass = '') {
@@ -1864,6 +1902,21 @@
         };
     }
 
+    function getLegDelta(leg) {
+        const r = state.chainData[leg.strike];
+        if (!r) return null;
+        const side = leg.right === 'C' ? 'call' : 'put';
+        const rawDelta = r[side + '_delta'];
+        if (rawDelta === null || rawDelta === undefined || !isFinite(rawDelta)) return null;
+        const actionSign = leg.action === 'BUY' ? 1 : -1;
+        return rawDelta * leg.qty * 100 * actionSign;
+    }
+
+    function formatSignedNumber(val, decimals = 1) {
+        const sign = val > 0 ? '+' : '';
+        return sign + val.toFixed(decimals);
+    }
+
     function renderStrategy() {
         const content = document.getElementById('strategyContent');
         const summary = document.getElementById('strategySummary');
@@ -1882,12 +1935,14 @@
 
         let html = '<table class="strategy-legs"><thead><tr>';
         html += '<th>Action</th><th>Strike</th><th>Type</th><th>Qty</th>';
-        html += '<th>Bid</th><th>Ask</th><th>Mid</th><th></th>';
+        html += '<th>Bid</th><th>Ask</th><th>Mid</th><th>Delta</th><th></th>';
         html += '</tr></thead><tbody>';
 
         for (const leg of state.strategyLegs) {
             const q = getLegQuote(leg);
             const mid = (q.bid !== null && q.ask !== null) ? ((q.bid + q.ask) / 2).toFixed(2) : '—';
+            const legDelta = getLegDelta(leg);
+            const legDeltaClass = legDelta === null ? '' : (legDelta > 0 ? 'summary-credit' : (legDelta < 0 ? 'summary-debit' : ''));
             const actionClass = leg.action === 'BUY' ? 'leg-buy' : 'leg-sell';
             html += '<tr>';
             html += `<td class="${actionClass}">${leg.action}</td>`;
@@ -1897,6 +1952,7 @@
             html += `<td>${q.bid !== null ? q.bid.toFixed(2) : '—'}</td>`;
             html += `<td>${q.ask !== null ? q.ask.toFixed(2) : '—'}</td>`;
             html += `<td>${mid}</td>`;
+            html += `<td class="${legDeltaClass}">${legDelta !== null ? formatSignedNumber(legDelta, 1) : '—'}</td>`;
             html += `<td><span class="leg-remove" onclick="removeLeg(${leg.id})">✕</span></td>`;
             html += '</tr>';
         }
@@ -1929,10 +1985,21 @@
 
         let comboBid = 0, comboAsk = 0;
         let allValid = true;
+        let combinedDelta = 0;
+        let allDeltaValid = true;
 
         for (const leg of legs) {
             const q = getLegQuote(leg);
-            if (q.bid === null || q.ask === null) { allValid = false; break; }
+            const legDelta = getLegDelta(leg);
+            if (legDelta === null) {
+                allDeltaValid = false;
+            } else {
+                combinedDelta += legDelta;
+            }
+            if (q.bid === null || q.ask === null) {
+                allValid = false;
+                continue;
+            }
             if (leg.action === 'BUY') {
                 // Buying: you pay ask, combo bid contribution is negative (cost)
                 comboBid += leg.qty * q.bid;   // If YOU want to sell the combo, close buys at bid
@@ -1952,6 +2019,15 @@
         const comboAskEl = document.getElementById('comboAsk');
         const comboMidEl = document.getElementById('comboMid');
         const comboNetEl = document.getElementById('comboNet');
+        const comboDeltaEl = document.getElementById('comboDelta');
+
+        if (allDeltaValid) {
+            comboDeltaEl.textContent = formatSignedNumber(combinedDelta, 1);
+            comboDeltaEl.className = 'summary-value ' + (combinedDelta > 0 ? 'summary-credit' : (combinedDelta < 0 ? 'summary-debit' : ''));
+        } else {
+            comboDeltaEl.textContent = '—';
+            comboDeltaEl.className = 'summary-value';
+        }
 
         if (!allValid) {
             comboBidEl.textContent = '—';

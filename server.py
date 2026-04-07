@@ -628,7 +628,7 @@ async def chain_fetch_loop():
                 # Store raw chain data and broadcast chain_quotes for Tab 2
                 state.chain_data = options
                 state.chain_quotes_cache = build_chain_quotes(
-                    options, state.spx_price, gex_result, state.annual_vol)
+                    options, state.spx_price, gex_result, state.annual_vol, state.expiration)
                 state.chain_quotes_cache["scope"] = "full"
                 logger.info(
                     f"Broadcasting full chain_quotes: rows={len(state.chain_quotes_cache.get('strikes', []))}, "
@@ -718,12 +718,32 @@ async def status_push_loop():
 
 def build_chain_quotes(options: List[OptionData], spot_price: float,
                        gex_result: Optional[GEXResult] = None,
-                       annual_vol: float = 0.20) -> dict:
+                       annual_vol: float = 0.20,
+                       expiration: str = "") -> dict:
     """Serialize a list of OptionData into the chain_quotes payload.
 
     Returns a dict shaped for the 'chain_quotes' WebSocket message, with one
     row per strike (calls on left, puts on right).
     """
+    sigma_tte_years = 0.0
+    if expiration:
+        try:
+            exp_date = datetime.strptime(expiration, "%Y%m%d").date()
+            now = now_et()
+            if exp_date == now.date():
+                close_dt = now.replace(hour=16, minute=0, second=0, microsecond=0)
+                mins_left = max((close_dt - now).total_seconds() / 60.0, 1.0)
+                sigma_tte_years = mins_left / (390.0 * 252.0)
+            else:
+                days_left = (exp_date - now.date()).days
+                sigma_tte_years = max(days_left, 1) / 252.0
+        except Exception:
+            sigma_tte_years = 0.0
+
+    sigma_move = None
+    if spot_price > 0 and annual_vol and sigma_tte_years > 0:
+        sigma_move = spot_price * annual_vol * math.sqrt(sigma_tte_years)
+
     calls = {}
     puts = {}
     for o in options:
@@ -736,7 +756,17 @@ def build_chain_quotes(options: List[OptionData], spot_price: float,
 
     rows = []
     for s in all_strikes:
-        row = {"strike": s}
+        sigma_abs = None
+        sigma_signed = None
+        if sigma_move and sigma_move > 0:
+            sigma_signed = (s - spot_price) / sigma_move
+            sigma_abs = abs(sigma_signed)
+
+        row = {
+            "strike": s,
+            "sigma_distance_abs": round(sigma_abs, 4) if sigma_abs is not None else None,
+            "sigma_distance_signed": round(sigma_signed, 4) if sigma_signed is not None else None,
+        }
         c = calls.get(s)
         p = puts.get(s)
         if c:
@@ -769,6 +799,9 @@ def build_chain_quotes(options: List[OptionData], spot_price: float,
         "strikes": rows,
         "spot_price": round(spot_price, 2),
         "annual_vol": annual_vol,
+        "expiration_raw": expiration,
+        "tte_years": round(sigma_tte_years, 8),
+        "sigma_move": round(sigma_move, 4) if sigma_move is not None else None,
         "call_wall": call_wall,
         "put_wall": put_wall,
         "gamma_flip": gamma_flip,
@@ -1013,6 +1046,7 @@ async def chain_stream_loop():
                     spot_price=state.spx_price,
                     gex_result=state.gex_result,
                     annual_vol=state.annual_vol,
+                    expiration=state.expiration,
                 )
                 live_quotes["timestamp_iso"] = now_iso
                 live_quotes["scope"] = "stream"
