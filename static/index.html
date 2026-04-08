@@ -42,6 +42,7 @@
             align-items: center;
             gap: 6px;
         }
+        .status-item.clickable { cursor: pointer; }
         .status-label { color: #64748b; }
         .status-value { color: #94a3b8; font-weight: 500; }
         .dot {
@@ -578,7 +579,7 @@
     <div class="header">
         <h1><span>SPX</span> 0DTE GEX Dashboard</h1>
         <div class="status-bar">
-            <div class="status-item">
+            <div class="status-item clickable" id="connStatusItem" onclick="promptReconnectIb()" title="Click to reconnect IB on a custom port">
                 <span class="dot" id="connDot"></span>
                 <span class="status-value" id="connStatus">Connecting...</span>
             </div>
@@ -786,7 +787,13 @@
         prevCellValues: {},   // for flash animation: "strike_right_field" → prev value
         chainLastUpdateMs: null,
         chainAgeTimer: null,
+        chainViewportCenterStrike: null,
+        chainViewportPendingStrike: null,
+        chainViewportLastSentMs: 0,
+        chainViewportSendTimer: null,
     };
+
+    const CHAIN_VIEWPORT_SEND_THROTTLE_MS = 200;
 
     // ======================================================================
     // Chart setup
@@ -1440,6 +1447,7 @@
         if (data.connected) {
             dot.className = 'dot dot-green';
             connText.textContent = 'IB Connected';
+            document.getElementById('loadingOverlay').classList.add('hidden');
         } else {
             dot.className = 'dot dot-red';
             connText.textContent = 'IB Disconnected';
@@ -1496,6 +1504,39 @@
         }
     }
 
+    function promptReconnectIb() {
+        const portText = prompt('Enter IB API port number:', '7497');
+        if (portText === null) return;
+        const port = parseInt(portText.trim(), 10);
+        if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+            alert('Please enter a valid port number between 1 and 65535.');
+            return;
+        }
+        reconnectIb(port);
+    }
+
+    async function reconnectIb(port) {
+        try {
+            const response = await fetch('/api/reconnect_ib', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ port }),
+            });
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => null);
+                const message = errorData?.detail || response.statusText || 'Unknown error';
+                throw new Error(message);
+            }
+            const result = await response.json();
+            document.getElementById('overlayMsg').textContent = `Reconnecting IB on port ${result.port}...`;
+            document.getElementById('loadingOverlay').classList.remove('hidden');
+            alert(`Reconnect request sent for port ${result.port}.`);
+        } catch (e) {
+            console.error('IB reconnect failed', e);
+            alert('IB reconnect failed: ' + e.message);
+        }
+    }
+
     function updateModeBadge() {
         const badge = document.getElementById('modeBadge');
         const text  = document.getElementById('modeBadgeText');
@@ -1535,6 +1576,9 @@
             state.wsConnected = true;
             document.getElementById('loadingOverlay').classList.add('hidden');
             ws.send(state.activeTab === 'chain' ? 'set_tab:chain' : 'set_tab:dashboard');
+            if (state.activeTab === 'chain') {
+                setTimeout(() => { reportChainViewportCenter(true); }, 120);
+            }
             if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
         };
 
@@ -1600,6 +1644,7 @@
             dashboard.classList.remove('active');
             chain.classList.add('active');
             scrollToATM();
+            setTimeout(() => { reportChainViewportCenter(true); }, 80);
         }
     }
 
@@ -1643,6 +1688,9 @@
 
         console.debug(`chain_quotes scope=${scope} rows=${data.strikes.length} mergedRows=${Object.keys(state.chainData).length}`);
         renderChainTable();
+        if (state.activeTab === 'chain') {
+            reportChainViewportCenter(scope === 'full');
+        }
         updateStrategyPrices();
     }
 
@@ -1824,7 +1872,73 @@
             const rowTop = row.offsetTop;
             const wrapH = wrap.clientHeight;
             wrap.scrollTop = rowTop - wrapH / 2 + row.clientHeight / 2;
+            reportChainViewportCenter(true);
         }
+    }
+
+    function getChainViewportCenterStrike() {
+        const wrap = document.getElementById('chainTableWrap');
+        if (!wrap) return null;
+
+        const rows = wrap.querySelectorAll('tbody tr[data-strike]');
+        if (!rows || rows.length === 0) return null;
+
+        const centerY = wrap.scrollTop + (wrap.clientHeight / 2);
+        let bestStrike = null;
+        let bestDist = Number.POSITIVE_INFINITY;
+
+        for (const row of rows) {
+            const strike = Number(row.getAttribute('data-strike'));
+            if (!Number.isFinite(strike)) continue;
+            const rowCenterY = row.offsetTop + (row.offsetHeight / 2);
+            const dist = Math.abs(rowCenterY - centerY);
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestStrike = strike;
+            }
+        }
+
+        return Number.isFinite(bestStrike) ? bestStrike : null;
+    }
+
+    function flushViewportCenterSend(force = false) {
+        if (state.chainViewportPendingStrike === null) return;
+        if (!(ws && ws.readyState === WebSocket.OPEN)) return;
+        if (state.activeTab !== 'chain') return;
+
+        const strike = state.chainViewportPendingStrike;
+        if (!Number.isFinite(strike) || strike <= 0) return;
+        if (!force && state.chainViewportCenterStrike === strike) return;
+
+        state.chainViewportCenterStrike = strike;
+        state.chainViewportLastSentMs = Date.now();
+        ws.send(`viewport_center:${strike.toFixed(1)}`);
+    }
+
+    function reportChainViewportCenter(force = false) {
+        if (state.activeTab !== 'chain') return;
+
+        const strike = getChainViewportCenterStrike();
+        if (!Number.isFinite(strike) || strike <= 0) return;
+
+        state.chainViewportPendingStrike = strike;
+
+        const now = Date.now();
+        const elapsed = now - state.chainViewportLastSentMs;
+        if (force || elapsed >= CHAIN_VIEWPORT_SEND_THROTTLE_MS) {
+            if (state.chainViewportSendTimer) {
+                clearTimeout(state.chainViewportSendTimer);
+                state.chainViewportSendTimer = null;
+            }
+            flushViewportCenterSend(force);
+            return;
+        }
+
+        if (state.chainViewportSendTimer) return;
+        state.chainViewportSendTimer = setTimeout(() => {
+            state.chainViewportSendTimer = null;
+            flushViewportCenterSend(false);
+        }, CHAIN_VIEWPORT_SEND_THROTTLE_MS - elapsed);
     }
 
     // ======================================================================
@@ -2273,9 +2387,17 @@
             Plotly.Plots.resize('priceChart');
             Plotly.Plots.resize('gexChart');
             Plotly.Plots.resize('smileChart');
+            if (state.activeTab === 'chain') {
+                reportChainViewportCenter(true);
+            }
         });
 
         state.chainAgeTimer = setInterval(updateChainUpdateAge, 1000);
+
+        const chainWrap = document.getElementById('chainTableWrap');
+        if (chainWrap) {
+            chainWrap.addEventListener('scroll', () => { reportChainViewportCenter(false); });
+        }
 
         connectWS();
     });

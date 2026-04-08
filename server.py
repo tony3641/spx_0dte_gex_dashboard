@@ -13,7 +13,9 @@ import json
 import logging
 import math
 import os
+import signal
 import sys
+import time
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -27,7 +29,7 @@ import nest_asyncio
 
 import uvicorn
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -38,7 +40,7 @@ from market_hours import (
     find_next_expiration, get_expiration_display, ET,
     is_cboe_options_open, last_trading_date,
 )
-from chain_fetcher import fetch_option_chain, get_chain_params
+from chain_fetcher import fetch_option_chain, get_chain_params, clear_qualification_cache
 from gex_calculator import compute_gex, gex_result_to_dict, GEXResult, OptionData
 
 # ---------------------------------------------------------------------------
@@ -107,6 +109,8 @@ class AppState:
     force_chain_fetch_event: Optional[asyncio.Event] = None
     active_tab: str = "dashboard"              # "dashboard" | "chain"
     manual_refresh_requested: bool = False
+    viewport_center_strike: float = 0.0         # client viewport center strike for chain tab
+    viewport_center_last_ts: float = 0.0        # monotonic timestamp of accepted center update
 
 state = AppState()
 
@@ -192,12 +196,20 @@ def on_pending_tickers(tickers):
         if spx_id and getattr(contract, 'conId', None) == spx_id:
             price = ticker.marketPrice()
             if price is not None and not math.isnan(price) and price > 0:
-                state.spx_price = price
-                state.live_price = price
-                state.es_derived = False
-                if state.data_mode != "live":
-                    state.data_mode = "live"
-                    logger.info("Switched to LIVE data mode")
+                # SPX index ticks should only drive spot/mode during RTH.
+                # Outside RTH (GTH/CURB/CLOSED), keep historical mode and
+                # let ES-derived spot drive off-hours positioning.
+                if is_within_rth():
+                    state.spx_price = price
+                    state.live_price = price
+                    state.es_derived = False
+                    if state.data_mode != "live":
+                        state.data_mode = "live"
+                        logger.info("Switched to LIVE data mode")
+                else:
+                    if state.data_mode == "live":
+                        state.data_mode = "historical"
+                        logger.info("Exited RTH: switched to HISTORICAL mode")
 
         elif es_id and getattr(contract, 'conId', None) == es_id:
             price = ticker.marketPrice()
@@ -216,6 +228,7 @@ def on_pending_tickers(tickers):
                         and state.spx_last_close > 0):
                     pct = (price - state.es_at_spx_close) / state.es_at_spx_close
                     state.spx_price = round(state.spx_last_close * (1.0 + pct), 2)
+                    state.live_price = state.spx_price
                     state.es_derived = True
 
 
@@ -422,8 +435,9 @@ async def price_push_loop():
                 current_minute = None
                 continue
 
-            # Only push live ticks when the market is open and streaming
-            if state.live_price <= 0:
+            # Only push chart bars during RTH live mode.
+            # In GTH we keep the chart fixed to the last full RTH session.
+            if state.live_price <= 0 or not is_within_rth() or state.data_mode != "live":
                 continue
 
             now = now_et()
@@ -692,6 +706,11 @@ async def status_push_loop():
     while True:
         try:
             await asyncio.sleep(5)
+
+            # Enforce mode by session clock: outside RTH must remain historical.
+            if not is_within_rth() and state.data_mode == "live":
+                state.data_mode = "historical"
+
             status = {
                 "type": "status",
                 "data": {
@@ -814,6 +833,7 @@ def build_chain_quotes(options: List[OptionData], spot_price: float,
 # 1 option contract ~= 1 line. 2 contracts per strike (call+put).
 CHAIN_STREAM_MAX_LINES = int(os.getenv("CHAIN_STREAM_MAX_LINES", "96"))
 CHAIN_STREAM_UPDATE_INTERVAL = float(os.getenv("CHAIN_STREAM_UPDATE_INTERVAL", "0.5"))
+VIEWPORT_CENTER_MIN_INTERVAL = float(os.getenv("VIEWPORT_CENTER_MIN_INTERVAL", "0.2"))
 
 
 async def chain_stream_loop():
@@ -832,6 +852,7 @@ async def chain_stream_loop():
     last_expiration = ""
     last_sub_count = -1
     last_tick_log_ts = 0.0
+    last_center_log = ""
 
     def _norm_key(strike: float, right: str):
         return (round(float(strike), 1), str(right).upper())
@@ -876,8 +897,17 @@ async def chain_stream_loop():
                 last_expiration = state.expiration
                 logger.info(f"Chain stream expiration switched to {state.expiration}; reset subscriptions")
 
-            # Determine desired strikes by nearest distance to current spot.
+            # Determine desired strikes by nearest distance to viewport center
+            # when user is on chain tab; otherwise fall back to current spot.
             spot = state.spx_price
+            viewport_center = state.viewport_center_strike if state.active_tab == "chain" else 0.0
+            focus_center = viewport_center if viewport_center > 0 else spot
+            center_source = "viewport" if viewport_center > 0 else "spot"
+            center_log = f"{center_source}:{focus_center:.1f}"
+            if center_log != last_center_log:
+                last_center_log = center_log
+                logger.info(f"Chain stream center -> {center_source} {focus_center:.1f}")
+
             # Prefer strikes seen in the most recent successful chain fetch,
             # since they are known to qualify for this expiration.
             available_pairs = {
@@ -893,7 +923,7 @@ async def chain_stream_loop():
                 continue
 
             max_strikes = max(1, CHAIN_STREAM_MAX_LINES // 2)
-            nearest_strikes = sorted(avail, key=lambda s: (abs(s - spot), s))[:max_strikes]
+            nearest_strikes = sorted(avail, key=lambda s: (abs(s - focus_center), s))[:max_strikes]
             desired = set(nearest_strikes)
 
             # Keys currently subscribed
@@ -1209,6 +1239,72 @@ async def get_state():
     }
 
 
+@app.post("/api/reconnect_ib")
+async def reconnect_ib(payload: dict):
+    """Reconnect to the IB API using a specified port number."""
+    if payload is None:
+        raise HTTPException(status_code=400, detail="Request JSON body required")
+    port = payload.get("port")
+    if port is None:
+        raise HTTPException(status_code=400, detail="Port number is required")
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Port must be an integer")
+    if port <= 0 or port > 65535:
+        raise HTTPException(status_code=400, detail="Port must be between 1 and 65535")
+    global IB_PORT
+    old_port = IB_PORT
+    IB_PORT = port
+
+    logger.info(f"Reconnecting to IB on port {IB_PORT} (was {old_port})")
+    state.connected = False
+    if state.chain_fetch_active is not None:
+        state.chain_fetch_active.clear()
+
+    for key, contract in list(state.chain_stream_contracts.items()):
+        try:
+            ib.cancelMktData(contract)
+        except Exception:
+            pass
+    state.chain_stream_tickers.clear()
+    state.chain_stream_contracts.clear()
+    state.chain_stream_unknown_keys.clear()
+
+    try:
+        if ib.isConnected():
+            ib.disconnect()
+            logger.info("Disconnected IB before reconnecting")
+    except Exception as e:
+        logger.warning(f"Error disconnecting IB before reconnect: {e}")
+
+    try:
+        await connect_ib()
+        await setup_spx_subscription()
+        await setup_chain_info()
+        state.manual_refresh_requested = True
+        if state.force_chain_fetch_event is not None:
+            state.force_chain_fetch_event.set()
+        await broadcast({"type": "status", "data": {
+            "connected": state.connected,
+            "market_status": market_status(),
+            "expiration": get_expiration_display(state.expiration) if state.expiration else "N/A",
+            "chain_fetching": state.chain_fetching,
+            "last_chain_update": state.last_chain_update or "Never",
+            "spot_price": round(state.spx_price, 2),
+            "price_history_len": len(state.price_history),
+            "data_mode": state.data_mode,
+            "historical_date": state.historical_date,
+            "es_derived": state.es_derived,
+            "es_price": round(state.es_price, 2) if state.es_price > 0 else None,
+        }})
+    except Exception as e:
+        logger.error(f"Reconnect IB failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"status": "ok", "port": IB_PORT}
+
+
 # ---------------------------------------------------------------------------
 # WebSocket endpoint
 # ---------------------------------------------------------------------------
@@ -1246,15 +1342,30 @@ async def websocket_endpoint(ws: WebSocket):
                 # Handle client messages (e.g., force refresh)
                 if msg == "refresh_chain":
                     logger.info("Client requested chain refresh")
+                    clear_qualification_cache("option-tab manual refresh")
                     state.manual_refresh_requested = True
                     if state.force_chain_fetch_event is not None:
                         state.force_chain_fetch_event.set()
                 elif msg == "set_tab:chain":
                     state.active_tab = "chain"
+                    state.viewport_center_strike = 0.0
                     logger.info("Client active tab: chain")
                 elif msg == "set_tab:dashboard":
                     state.active_tab = "dashboard"
+                    state.viewport_center_strike = 0.0
                     logger.info("Client active tab: dashboard")
+                elif msg.startswith("viewport_center:"):
+                    try:
+                        strike = float(msg.split(":", 1)[1])
+                    except (TypeError, ValueError):
+                        continue
+                    if not math.isfinite(strike) or strike <= 0:
+                        continue
+                    now_mono = time.monotonic()
+                    if (now_mono - state.viewport_center_last_ts) < VIEWPORT_CENTER_MIN_INTERVAL:
+                        continue
+                    state.viewport_center_last_ts = now_mono
+                    state.viewport_center_strike = round(strike, 1)
             except asyncio.TimeoutError:
                 # Send keepalive ping
                 try:
@@ -1294,6 +1405,30 @@ if __name__ == "__main__":
         loop="none",  # Don't create a new loop; use ours
     )
     server = uvicorn.Server(config)
+
+    shutdown_requested = {"value": False}
+
+    def _handle_shutdown_signal(signum, _frame):
+        try:
+            signame = signal.Signals(signum).name
+        except Exception:
+            signame = str(signum)
+
+        if not shutdown_requested["value"]:
+            shutdown_requested["value"] = True
+            logger.info(f"Shutdown signal received ({signame}); stopping server gracefully...")
+            server.should_exit = True
+        else:
+            logger.warning(f"Second shutdown signal received ({signame}); forcing exit...")
+            server.force_exit = True
+
+    for sig_name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _handle_shutdown_signal)
+            except Exception as e:
+                logger.debug(f"Unable to register handler for {sig_name}: {e}")
     
     # Log accessible URLs
     logger.info(f"Server starting on {SERVER_HOST}:{SERVER_PORT}")
@@ -1303,4 +1438,18 @@ if __name__ == "__main__":
     else:
         logger.info(f"  Access at       : http://{SERVER_HOST}:{SERVER_PORT}")
     
-    loop.run_until_complete(server.serve())
+    try:
+        loop.run_until_complete(server.serve())
+    except KeyboardInterrupt:
+        # Safety net for environments where signal handlers are intercepted.
+        logger.info("KeyboardInterrupt received; shutting down...")
+        server.should_exit = True
+    finally:
+        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+        logger.info("Server shutdown complete")

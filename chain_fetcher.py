@@ -39,6 +39,13 @@ class QualificationCache:
 _qualification_cache = QualificationCache()
 
 
+def clear_qualification_cache(reason: str = "manual refresh") -> None:
+    """Clear qualified/unknown contract cache so next fetch re-qualifies from scratch."""
+    global _qualification_cache
+    _qualification_cache = QualificationCache()
+    logger.info(f"Qualification cache cleared ({reason})")
+
+
 def _contract_key(expiration: str, strike: float, right: str) -> str:
     return f"{expiration}:{strike:.1f}:{right}"
 

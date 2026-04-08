@@ -6,6 +6,75 @@ All significant feature additions and bug fixes made to the SPX 0DTE GEX Dashboa
 
 ## Bug Fixes
 
+### Session: April 7, 2026 - RTH/GTH Mode, Refresh Cache, Graceful Shutdown, Viewport-Centered Chain Stream
+
+#### GTH incorrectly showing LIVE mode and updating SPX intraday bars
+**Problem:** During Global Trading Hours (GTH), the dashboard still showed LIVE mode and continued intraday bar updates as if SPX were in-session.
+
+**Root cause:** SPX ticker updates unconditionally flipped `data_mode` to `"live"`, and the bar push loop did not strictly gate updates to RTH-only behavior.
+
+**Fix (`server.py`):**
+- SPX tick processing now sets live mode only during RTH (`is_within_rth()`).
+- Outside RTH, mode is forced/kept as historical.
+- Intraday bar generation now runs only when `data_mode == "live"` and during RTH.
+- Status loop includes a safety guard to keep non-RTH mode historical.
+
+Result: in GTH, dashboard mode remains historical and intraday chart stays on the last completed regular session.
+
+#### Off-hours GEX spot did not consistently reflect ES-derived SPX regime
+**Problem:** In off-hours contexts, behavior could drift back toward SPX-live assumptions.
+
+**Fix (`server.py`):**
+- Preserved ES-derived spot path for non-live mode and prevented SPX off-hours ticks from forcing live mode.
+
+Result: GEX off-hours spot behavior stays aligned with ES-derived SPX logic.
+
+#### Manual option-tab refresh did not guarantee full qualification reset
+**Problem:** Manual refresh from the Option Chain tab did not explicitly clear qualification cache state before re-fetching.
+
+**Fix (`chain_fetcher.py`, `server.py`):**
+- Added `clear_qualification_cache(reason=...)` helper.
+- On `refresh_chain` WebSocket command, server now clears qualification cache before triggering refresh.
+
+Result: manual refresh now forces clean re-qualification from scratch.
+
+#### Ctrl+C / terminate shutdown handling
+**Problem:** Server shutdown relied mainly on default behavior and could be less explicit under different termination paths.
+
+**Fix (`server.py`):**
+- Added signal handlers for `SIGINT`, `SIGTERM`, and `SIGBREAK` (Windows where available).
+- First signal requests graceful exit (`server.should_exit = True`), second signal forces exit.
+- Added final loop teardown path: cancel pending tasks, await cancellation, shutdown async generators, close event loop.
+
+Result: cleaner and more deterministic service shutdown on Ctrl+C / terminate.
+
+---
+
+## Features
+
+### Session: April 7, 2026 - Viewport-Centered Option Chain Livestream
+
+**Goal:** Stream live option quotes around the strikes the user is currently viewing, not only around current SPX.
+
+**Backend (`server.py`):**
+- Added viewport center state: `viewport_center_strike`, `viewport_center_last_ts`.
+- Added WebSocket message handling for `viewport_center:<strike>`.
+- Added server-side throttling (`VIEWPORT_CENTER_MIN_INTERVAL`, default 0.2s).
+- `chain_stream_loop()` selection center now uses viewport center when available on chain tab, otherwise falls back to spot.
+
+**Frontend (`static/index.html`):**
+- Added center-strike detection from `#chainTableWrap` visible midpoint.
+- Added throttled center reporting to server (200ms client throttle).
+- Sends center updates on:
+  - option-chain scroll,
+  - chain tab activation,
+  - chain table rerender,
+  - ATM auto-scroll,
+  - WebSocket reconnect,
+  - window resize (while on chain tab).
+
+Result: as users scroll the option chain, live subscriptions migrate to strikes near the visible center of the screen.
+
 ### OI Always Zero
 **Problem:** Server logged "OI is all zeros" despite real open-interest data being visible in TWS.
 
