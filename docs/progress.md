@@ -4,6 +4,17 @@ All significant feature additions and bug fixes made to the SPX 0DTE GEX Dashboa
 
 ---
 
+## Session: April 10, 2026 - Current update
+
+- Added a broad backend refactor and new core service modules: `account_manager.py`, `app_state.py`, `chain_manager.py`, `config.py`, `ib_connection.py`, `order_manager.py`, `price_bars.py`, `risk_free.py`, `ws_handler.py`.
+- Introduced a full frontend asset refresh in `static/css/` and `static/js/`, including updated option chain behavior, charts, order entry, strategy builder, session handling, and websocket integration.
+- Added test coverage under `tests/` for account manager, chain fetcher, config, market hours, order placement, and risk-free functionality.
+- Updated tracked code in `.gitignore`, `chain_fetcher.py`, `gex_calculator.py`, `requirements.txt`, `server.py`, and `static/index.html`.
+- `.gitignore` now ignores `_old.*` and `*todo*` artifacts.
+- Refreshed `requirements.txt` for the revised backend and new test dependencies.
+
+---
+
 ## Bug Fixes
 
 ### Session: April 7, 2026 - RTH/GTH Mode, Refresh Cache, Graceful Shutdown, Viewport-Centered Chain Stream

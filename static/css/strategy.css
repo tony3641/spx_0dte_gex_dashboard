@@ -1,0 +1,117 @@
+        /* ======================================================
+           Strategy Builder Panel
+           ====================================================== */
+        .strategy-panel {
+            background: #111827;
+            border-top: 1px solid #1e293b;
+            max-height: 280px;
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+        .strategy-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 16px;
+            background: #0f172a;
+            border-bottom: 1px solid #1e293b;
+        }
+        .strategy-header h3 {
+            font-size: 13px;
+            font-weight: 600;
+            color: #e2e8f0;
+        }
+        .strategy-clear-btn {
+            font-size: 11px;
+            color: #64748b;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 4px;
+            padding: 3px 10px;
+            cursor: pointer;
+        }
+        .strategy-clear-btn:hover { color: #f87171; border-color: #f87171; }
+
+        .strategy-legs {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .strategy-legs th {
+            background: #0f172a;
+            color: #64748b;
+            font-weight: 600;
+            padding: 5px 8px;
+            text-align: left;
+            border-bottom: 1px solid #1e293b;
+            font-size: 11px;
+        }
+        .strategy-legs td {
+            padding: 5px 8px;
+            border-bottom: 1px solid #111827;
+            color: #cbd5e1;
+        }
+        .strategy-legs .leg-buy  { color: #4ade80; font-weight: 700; }
+        .strategy-legs .leg-sell { color: #f87171; font-weight: 700; }
+        .leg-remove {
+            cursor: pointer;
+            color: #64748b;
+            font-size: 14px;
+            padding: 0 4px;
+        }
+        .leg-remove:hover { color: #f87171; }
+        .leg-qty {
+            width: 40px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: #e2e8f0;
+            text-align: center;
+            border-radius: 3px;
+            padding: 2px;
+            font-size: 12px;
+        }
+        .qty-group {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .qty-btn {
+            width: 18px;
+            height: 18px;
+            border-radius: 3px;
+            border: 1px solid #334155;
+            background: #0b1220;
+            color: #94a3b8;
+            cursor: pointer;
+            font-size: 12px;
+            line-height: 14px;
+            padding: 0;
+        }
+        .qty-btn:hover { color: #e2e8f0; border-color: #64748b; }
+
+        .strategy-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            padding: 10px 16px;
+            border-top: 1px solid #1e293b;
+            font-size: 12px;
+        }
+        .summary-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .summary-label { color: #64748b; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+        .summary-value { color: #e2e8f0; font-weight: 600; font-variant-numeric: tabular-nums; }
+        .summary-credit { color: #4ade80; }
+        .summary-debit  { color: #f87171; }
+        .strategy-empty {
+            padding: 16px;
+            text-align: center;
+            color: #475569;
+            font-size: 12px;
+        }
+
+
+

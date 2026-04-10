@@ -31,3 +31,6 @@ Thumbs.db
 # IB session / secrets
 *.pkl
 *.json.bak
+
+*_old.*
+*todo*

@@ -1,0 +1,43 @@
+        /* ======================================================
+           Mobile / phone portrait <= 600 px
+           ====================================================== */
+        @media (max-width: 600px) {
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 4px;
+                padding: 6px 12px;
+            }
+            .header h1 { font-size: 15px; }
+            .status-bar {
+                flex-wrap: wrap;
+                gap: 4px 14px;
+            }
+            .levels-strip {
+                padding: 4px 8px;
+                gap: 3px;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+            }
+            .levels-strip::-webkit-scrollbar { display: none; }
+            .level-badge {
+                padding: 3px 8px;
+                font-size: 11px;
+            }
+            .charts-container {
+                height: calc(100svh - 150px);
+                padding: 4px;
+                gap: 4px;
+            }
+            .chart-title {
+                font-size: 11px;
+                top: 4px;
+                left: 8px;
+            }
+            .tab-btn { padding: 6px 14px; font-size: 12px; }
+            .chain-table { font-size: 10px; }
+            .chain-table th { font-size: 9px; padding: 4px 2px; }
+            .chain-table td { padding: 3px 2px; }
+            .chain-container { height: calc(100svh - 150px); }
+            .chain-controls { padding: 6px 8px; font-size: 11px; }
+        }

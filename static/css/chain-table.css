@@ -1,0 +1,157 @@
+        .chain-container {
+            display: none;
+            flex-direction: column;
+            height: calc(100vh - 134px);
+            padding: 0;
+            overflow: hidden;
+        }
+        .chain-container.active { display: flex; }
+
+        .chain-controls {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: #0f172a;
+            border-bottom: 1px solid #1e293b;
+            font-size: 12px;
+            color: #94a3b8;
+        }
+        .chain-refresh-btn {
+            background: #1e293b;
+            color: #e2e8f0;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 5px 10px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .chain-refresh-btn:hover {
+            border-color: #3b82f6;
+            color: #3b82f6;
+        }
+
+        .chain-table-wrap {
+            flex: 1;
+            overflow: auto;
+            position: relative;
+        }
+        .chain-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            table-layout: fixed;
+        }
+        .chain-table thead {
+            position: sticky;
+            top: 0;
+            z-index: 5;
+        }
+        .chain-table th {
+            background: #111827;
+            color: #64748b;
+            font-weight: 600;
+            padding: 6px 4px;
+            text-align: right;
+            border-bottom: 1px solid #1e293b;
+            font-size: 11px;
+            white-space: nowrap;
+        }
+        .chain-table th.strike-hdr {
+            text-align: center;
+            background: #1e293b;
+            color: #e2e8f0;
+            font-size: 12px;
+            position: relative;
+        }
+        .chain-table th.call-side { color: #4ade80; }
+        .chain-table th.put-side  { color: #f87171; }
+
+        .chain-table td {
+            padding: 4px 5px;
+            text-align: right;
+            border-bottom: 1px solid #111827;
+            color: #cbd5e1;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        .chain-table td.strike-col {
+            text-align: center;
+            font-weight: 700;
+            color: #e2e8f0;
+            background: #0f172a;
+            border-left: 1px solid #1e293b;
+            border-right: 1px solid #1e293b;
+        }
+        .chain-table td.strike-col.strike-sigma-1 { background: #1e3a8a; }
+        .chain-table td.strike-col.strike-sigma-2 { background: #334f85; }
+        .chain-table td.strike-col.strike-sigma-3 { background: #4b6288; }
+
+        /* Clickable bid/ask cells */
+        .chain-table td.cell-bid {
+            cursor: pointer;
+            color: #f87171;
+        }
+        .chain-table td.cell-bid:hover {
+            background: #7f1d1d;
+            color: #fca5a5;
+        }
+        .chain-table td.cell-ask {
+            cursor: pointer;
+            color: #4ade80;
+        }
+        .chain-table td.cell-ask:hover {
+            background: #14532d;
+            color: #86efac;
+        }
+
+        /* ITM shading (per-side) */
+        .chain-table td.itm-call {
+            background: #0b3b1e;
+        }
+        .chain-table td.itm-put {
+            background: #3b0b12;
+        }
+
+        /* Selected leg side (clicked bid/ask) */
+        .chain-table td.cell-selected-bid {
+            background: #7f1d1d !important;
+            color: #fecaca;
+            box-shadow: inset 0 0 0 1px #ef4444;
+        }
+        .chain-table td.cell-selected-ask {
+            background: #14532d !important;
+            color: #bbf7d0;
+            box-shadow: inset 0 0 0 1px #22c55e;
+        }
+
+        /* Row highlights for walls / flip / ATM */
+        .chain-table tr.row-call-wall { background: #052e1680; }
+        .chain-table tr.row-call-wall td.strike-col { border-left: 3px solid #22c55e; }
+        .chain-table tr.row-put-wall  { background: #2a0a0a80; }
+        .chain-table tr.row-put-wall td.strike-col  { border-right: 3px solid #ef4444; }
+        .chain-table tr.row-gamma-flip { background: #1a140080; }
+        .chain-table tr.row-gamma-flip td.strike-col { border-left: 3px solid #eab308; }
+        .chain-table tr.row-atm       { background: #1e293b80; }
+        .chain-table tr.row-atm td.strike-col        { border-left: 3px solid #f8fafc; border-right: 3px solid #f8fafc; font-size: 13px; }
+
+        /* Strike labels for wall/flip */
+        .strike-tag {
+            display: inline-block;
+            font-size: 9px;
+            font-weight: 600;
+            padding: 1px 4px;
+            border-radius: 3px;
+            margin-left: 4px;
+            vertical-align: middle;
+        }
+        .strike-tag-cw { background: #16a34a40; color: #4ade80; }
+        .strike-tag-pw { background: #dc262640; color: #f87171; }
+        .strike-tag-gf { background: #ca8a0440; color: #facc15; }
+
+        /* Flash animation on value change */
+        @keyframes flash-green { 0% { background: #16a34a60; } 100% { background: transparent; } }
+        @keyframes flash-red   { 0% { background: #dc262660; } 100% { background: transparent; } }
+        .flash-up  { animation: flash-green 0.6s ease-out; }
+        .flash-down{ animation: flash-red 0.6s ease-out; }
+

@@ -1,0 +1,172 @@
+        /* Charts container */
+        .charts-container {
+            display: grid;
+            grid-template-columns: 1fr;
+            grid-template-rows: 1fr 1fr 1fr;
+            height: calc(100vh - 134px);
+            padding: 8px;
+            gap: 8px;
+        }
+        .chart-panel {
+            background: #111827;
+            border-radius: 8px;
+            border: 1px solid #1e293b;
+            overflow: hidden;
+            position: relative;
+        }
+        .chart-title {
+            position: absolute;
+            top: 8px;
+            left: 12px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #94a3b8;
+            z-index: 10;
+            pointer-events: none;
+        }
+
+        /* Inline help tooltip for chart titles */
+        .chart-title .help {
+            pointer-events: auto;
+            display: inline-block;
+            margin-left: 8px;
+            vertical-align: middle;
+            background: #1e293b;
+            color: #94a3b8;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            line-height: 18px;
+            text-align: center;
+            font-size: 12px;
+            cursor: default;
+            position: relative;
+        }
+        .chart-title .help:focus { outline: 2px solid #334155; }
+        .chart-title .help .tooltip {
+            display: none;
+            position: absolute;
+            top: 26px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #0b1220;
+            color: #e2e8f0;
+            padding: 8px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            width: 300px;
+            box-shadow: 0 6px 18px rgba(2,6,23,0.6);
+            z-index: 40;
+            text-align: left;
+            line-height: 1.25;
+        }
+        .chart-title .help .tooltip::after {
+            content: '';
+            position: absolute;
+            top: -6px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-width: 6px;
+            border-style: solid;
+            border-color: transparent transparent #0b1220 transparent;
+        }
+        .chart-title .help:hover .tooltip,
+        .chart-title .help:focus .tooltip {
+            display: block;
+        }
+
+        #priceChart, #gexChart, #smileChart {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* GEX chain-fetch loading overlay */
+        .gex-loading {
+            position: absolute;
+            inset: 0;
+            z-index: 20;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            background: rgba(10, 14, 23, 0.78);
+            border-radius: 8px;
+            backdrop-filter: blur(2px);
+        }
+        .gex-loading.hidden { display: none; }
+        .gex-loading-spinner {
+            width: 44px; height: 44px;
+            border: 3px solid #1e293b;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        .gex-loading-text {
+            font-size: 13px;
+            font-weight: 500;
+            color: #94a3b8;
+            letter-spacing: 0.03em;
+        }
+        .gex-loading-sub {
+            font-size: 11px;
+            color: #475569;
+            margin-top: -8px;
+        }
+
+        /* Overlay for loading/disconnected */
+        .overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: #0a0e17e0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .overlay.hidden { display: none; }
+        .overlay .spinner {
+            width: 36px; height: 36px;
+            border: 3px solid #1e293b;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .overlay .msg {
+            font-size: 14px;
+            color: #94a3b8;
+        }
+
+        /* ======================================================
+           Tab bar
+           ====================================================== */
+        .tab-bar {
+            display: flex;
+            gap: 0;
+            padding: 0 20px;
+            background: #0f172a;
+            border-bottom: 1px solid #1e293b;
+        }
+        .tab-btn {
+            padding: 8px 24px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #64748b;
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            cursor: pointer;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .tab-btn:hover { color: #94a3b8; }
+        .tab-btn.active {
+            color: #3b82f6;
+            border-bottom-color: #3b82f6;
+        }
+
+        /* ======================================================
+           Option Chain Table (Tab 2)
+           ====================================================== */

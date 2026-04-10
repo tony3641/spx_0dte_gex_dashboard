@@ -276,7 +276,7 @@ async def _snapshot_batch(ib: IB, contracts: List[Option], timeout: float = 12.0
 
 
 def _safe_int(val) -> int:
-    """Convert to int, treating None/NaN/inf as 0."""
+    """Convert to int, treating None/NaN/inf/negative sentinel values as 0."""
     if val is None:
         return 0
     try:
@@ -286,7 +286,10 @@ def _safe_int(val) -> int:
     except (TypeError, ValueError):
         pass
     try:
-        return int(val)
+        result = int(val)
+        if result < 0:
+            return 0
+        return result
     except (TypeError, ValueError):
         return 0
 
@@ -304,30 +307,58 @@ def _safe_float(val):
     return val
 
 
+def _normalize_iv(iv_val):
+    """Normalize IV to decimal form (e.g. 0.18), tolerating percent-like inputs."""
+    iv = _safe_float(iv_val)
+    if iv is None or iv <= 0:
+        return None
+    if iv > 3.0:
+        iv = iv / 100.0
+    return iv
+
+
+def _pick_greek_value(ticker: Ticker, field: str):
+    """Pick first valid greek field from model/last/bid/ask greeks."""
+    for source in (
+        getattr(ticker, 'modelGreeks', None),
+        getattr(ticker, 'lastGreeks', None),
+        getattr(ticker, 'bidGreeks', None),
+        getattr(ticker, 'askGreeks', None),
+    ):
+        if source is None:
+            continue
+        value = _safe_float(getattr(source, field, None))
+        if value is not None:
+            return value
+    return None
+
+
 def _ticker_to_option_data(ticker: Ticker) -> Optional[OptionData]:
     """Convert an IB Ticker to our OptionData model."""
     contract = ticker.contract
     if not hasattr(contract, 'strike') or not hasattr(contract, 'right'):
         return None
 
-    # Prefer modelGreeks, fall back to lastGreeks
-    greeks = ticker.modelGreeks or ticker.lastGreeks
-
-    gamma = None
-    delta = None
-    implied_vol = None
-
-    if greeks is not None:
-        gamma = _safe_float(greeks.gamma)
-        delta = _safe_float(greeks.delta)
-        implied_vol = _safe_float(greeks.impliedVol)
+    gamma = _pick_greek_value(ticker, 'gamma')
+    delta = _pick_greek_value(ticker, 'delta')
+    implied_vol = _normalize_iv(_pick_greek_value(ticker, 'impliedVol'))
+    if implied_vol is None:
+        implied_vol = _normalize_iv(getattr(ticker, 'impliedVolatility', None))
 
     # Open interest — generic tick 101 populates callOpenInterest (tick 27) / putOpenInterest (tick 28)
-    # on the individual option Ticker (both float, nan when not received).
+    # on the individual option Ticker. Some IB responses may populate the other field
+    # or use `openInterest` instead.
     if contract.right == 'P':
-        oi = _safe_int(ticker.putOpenInterest)
+        oi = _safe_int(getattr(ticker, 'putOpenInterest', None))
+        if oi == 0:
+            oi = _safe_int(getattr(ticker, 'callOpenInterest', None))
     else:
-        oi = _safe_int(ticker.callOpenInterest)
+        oi = _safe_int(getattr(ticker, 'callOpenInterest', None))
+        if oi == 0:
+            oi = _safe_int(getattr(ticker, 'putOpenInterest', None))
+
+    if oi == 0:
+        oi = _safe_int(getattr(ticker, 'openInterest', None))
 
     volume = _safe_int(ticker.volume)
 

@@ -5,574 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SPX 0DTE Option Dashboard</title>
     <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            background: #0a0e17;
-            color: #e0e6ed;
-            overflow-x: hidden;
-        }
-
-        /* Header bar */
-        .header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 8px 20px;
-            background: #111827;
-            border-bottom: 1px solid #1e293b;
-        }
-        .header h1 {
-            font-size: 18px;
-            font-weight: 600;
-            color: #f8fafc;
-        }
-        .header h1 span { color: #3b82f6; }
-
-        /* Status bar */
-        .status-bar {
-            display: flex;
-            gap: 24px;
-            align-items: center;
-            font-size: 12px;
-        }
-        .status-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .status-item.clickable { cursor: pointer; }
-        .status-label { color: #64748b; }
-        .status-value { color: #94a3b8; font-weight: 500; }
-        .dot {
-            width: 8px; height: 8px;
-            border-radius: 50%;
-            display: inline-block;
-        }
-        .dot-green { background: #22c55e; box-shadow: 0 0 6px #22c55e80; }
-        .dot-red { background: #ef4444; box-shadow: 0 0 6px #ef444480; }
-        .dot-yellow { background: #eab308; box-shadow: 0 0 6px #eab30880; }
-
-        /* Key levels strip */
-        .levels-strip {
-            display: flex;
-            gap: 4px;
-            padding: 6px 20px;
-            background: #0f172a;
-            border-bottom: 1px solid #1e293b;
-            overflow-x: auto;
-        }
-        .level-badge {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 4px 12px;
-            border-radius: 6px;
-            font-size: 12px;
-            font-weight: 600;
-            white-space: nowrap;
-        }
-        .level-badge .label { opacity: 0.7; font-weight: 400; }
-        .badge-spot { background: #1e293b; color: #f8fafc; }
-        .badge-call-wall { background: #052e16; color: #4ade80; border: 1px solid #16a34a40; }
-        .badge-put-wall { background: #2a0a0a; color: #f87171; border: 1px solid #dc262640; }
-        .badge-gamma-flip { background: #1a1400; color: #facc15; border: 1px solid #ca8a0440; }
-        .badge-max-pain { background: #0c1a3d; color: #60a5fa; border: 1px solid #2563eb40; }
-        .badge-mode-live { background: #052e16; color: #4ade80; border: 1px solid #16a34a40; }
-        .badge-mode-hist { background: #1a1400; color: #facc15; border: 1px solid #ca8a0440; }
-        .badge-net-gex { background: #1e293b; color: #e2e8f0; border: 1px solid #33415540; }
-        .badge-converging { background: #052e16; color: #4ade80; border: 1px solid #16a34a60; }
-        .badge-diverging  { background: #2a0a0a; color: #f87171; border: 1px solid #dc262660; }
-
-        /* Charts container */
-        .charts-container {
-            display: grid;
-            grid-template-columns: 1fr;
-            grid-template-rows: 1fr 1fr 1fr;
-            height: calc(100vh - 134px);
-            padding: 8px;
-            gap: 8px;
-        }
-        .chart-panel {
-            background: #111827;
-            border-radius: 8px;
-            border: 1px solid #1e293b;
-            overflow: hidden;
-            position: relative;
-        }
-        .chart-title {
-            position: absolute;
-            top: 8px;
-            left: 12px;
-            font-size: 13px;
-            font-weight: 600;
-            color: #94a3b8;
-            z-index: 10;
-            pointer-events: none;
-        }
-
-        /* Inline help tooltip for chart titles */
-        .chart-title .help {
-            pointer-events: auto;
-            display: inline-block;
-            margin-left: 8px;
-            vertical-align: middle;
-            background: #1e293b;
-            color: #94a3b8;
-            border-radius: 50%;
-            width: 18px;
-            height: 18px;
-            line-height: 18px;
-            text-align: center;
-            font-size: 12px;
-            cursor: default;
-            position: relative;
-        }
-        .chart-title .help:focus { outline: 2px solid #334155; }
-        .chart-title .help .tooltip {
-            display: none;
-            position: absolute;
-            top: 26px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #0b1220;
-            color: #e2e8f0;
-            padding: 8px 10px;
-            border-radius: 6px;
-            font-size: 12px;
-            width: 300px;
-            box-shadow: 0 6px 18px rgba(2,6,23,0.6);
-            z-index: 40;
-            text-align: left;
-            line-height: 1.25;
-        }
-        .chart-title .help .tooltip::after {
-            content: '';
-            position: absolute;
-            top: -6px;
-            left: 50%;
-            transform: translateX(-50%);
-            border-width: 6px;
-            border-style: solid;
-            border-color: transparent transparent #0b1220 transparent;
-        }
-        .chart-title .help:hover .tooltip,
-        .chart-title .help:focus .tooltip {
-            display: block;
-        }
-
-        #priceChart, #gexChart, #smileChart {
-            width: 100%;
-            height: 100%;
-        }
-
-        /* GEX chain-fetch loading overlay */
-        .gex-loading {
-            position: absolute;
-            inset: 0;
-            z-index: 20;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            gap: 14px;
-            background: rgba(10, 14, 23, 0.78);
-            border-radius: 8px;
-            backdrop-filter: blur(2px);
-        }
-        .gex-loading.hidden { display: none; }
-        .gex-loading-spinner {
-            width: 44px; height: 44px;
-            border: 3px solid #1e293b;
-            border-top: 3px solid #3b82f6;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-        .gex-loading-text {
-            font-size: 13px;
-            font-weight: 500;
-            color: #94a3b8;
-            letter-spacing: 0.03em;
-        }
-        .gex-loading-sub {
-            font-size: 11px;
-            color: #475569;
-            margin-top: -8px;
-        }
-
-        /* Overlay for loading/disconnected */
-        .overlay {
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: #0a0e17e0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-            flex-direction: column;
-            gap: 12px;
-        }
-        .overlay.hidden { display: none; }
-        .overlay .spinner {
-            width: 36px; height: 36px;
-            border: 3px solid #1e293b;
-            border-top: 3px solid #3b82f6;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .overlay .msg {
-            font-size: 14px;
-            color: #94a3b8;
-        }
-
-        /* ======================================================
-           Tab bar
-           ====================================================== */
-        .tab-bar {
-            display: flex;
-            gap: 0;
-            padding: 0 20px;
-            background: #0f172a;
-            border-bottom: 1px solid #1e293b;
-        }
-        .tab-btn {
-            padding: 8px 24px;
-            font-size: 13px;
-            font-weight: 600;
-            color: #64748b;
-            background: transparent;
-            border: none;
-            border-bottom: 2px solid transparent;
-            cursor: pointer;
-            transition: color 0.15s, border-color 0.15s;
-        }
-        .tab-btn:hover { color: #94a3b8; }
-        .tab-btn.active {
-            color: #3b82f6;
-            border-bottom-color: #3b82f6;
-        }
-
-        /* ======================================================
-           Option Chain Table (Tab 2)
-           ====================================================== */
-        .chain-container {
-            display: none;
-            flex-direction: column;
-            height: calc(100vh - 134px);
-            padding: 0;
-            overflow: hidden;
-        }
-        .chain-container.active { display: flex; }
-
-        .chain-controls {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 8px 12px;
-            background: #0f172a;
-            border-bottom: 1px solid #1e293b;
-            font-size: 12px;
-            color: #94a3b8;
-        }
-        .chain-refresh-btn {
-            background: #1e293b;
-            color: #e2e8f0;
-            border: 1px solid #334155;
-            border-radius: 6px;
-            padding: 5px 10px;
-            font-size: 11px;
-            cursor: pointer;
-        }
-        .chain-refresh-btn:hover {
-            border-color: #3b82f6;
-            color: #3b82f6;
-        }
-
-        .chain-table-wrap {
-            flex: 1;
-            overflow: auto;
-            position: relative;
-        }
-        .chain-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
-            table-layout: fixed;
-        }
-        .chain-table thead {
-            position: sticky;
-            top: 0;
-            z-index: 5;
-        }
-        .chain-table th {
-            background: #111827;
-            color: #64748b;
-            font-weight: 600;
-            padding: 6px 4px;
-            text-align: right;
-            border-bottom: 1px solid #1e293b;
-            font-size: 11px;
-            white-space: nowrap;
-        }
-        .chain-table th.strike-hdr {
-            text-align: center;
-            background: #1e293b;
-            color: #e2e8f0;
-            font-size: 12px;
-            position: relative;
-        }
-        .chain-table th.call-side { color: #4ade80; }
-        .chain-table th.put-side  { color: #f87171; }
-
-        .chain-table td {
-            padding: 4px 5px;
-            text-align: right;
-            border-bottom: 1px solid #111827;
-            color: #cbd5e1;
-            font-variant-numeric: tabular-nums;
-            white-space: nowrap;
-        }
-        .chain-table td.strike-col {
-            text-align: center;
-            font-weight: 700;
-            color: #e2e8f0;
-            background: #0f172a;
-            border-left: 1px solid #1e293b;
-            border-right: 1px solid #1e293b;
-        }
-        .chain-table td.strike-col.strike-sigma-1 { background: #1e3a8a; }
-        .chain-table td.strike-col.strike-sigma-2 { background: #334f85; }
-        .chain-table td.strike-col.strike-sigma-3 { background: #4b6288; }
-
-        /* Clickable bid/ask cells */
-        .chain-table td.cell-bid {
-            cursor: pointer;
-            color: #f87171;
-        }
-        .chain-table td.cell-bid:hover {
-            background: #7f1d1d;
-            color: #fca5a5;
-        }
-        .chain-table td.cell-ask {
-            cursor: pointer;
-            color: #4ade80;
-        }
-        .chain-table td.cell-ask:hover {
-            background: #14532d;
-            color: #86efac;
-        }
-
-        /* ITM shading (per-side) */
-        .chain-table td.itm-call {
-            background: #0b3b1e;
-        }
-        .chain-table td.itm-put {
-            background: #3b0b12;
-        }
-
-        /* Selected leg side (clicked bid/ask) */
-        .chain-table td.cell-selected-bid {
-            background: #7f1d1d !important;
-            color: #fecaca;
-            box-shadow: inset 0 0 0 1px #ef4444;
-        }
-        .chain-table td.cell-selected-ask {
-            background: #14532d !important;
-            color: #bbf7d0;
-            box-shadow: inset 0 0 0 1px #22c55e;
-        }
-
-        /* Row highlights for walls / flip / ATM */
-        .chain-table tr.row-call-wall { background: #052e1680; }
-        .chain-table tr.row-call-wall td.strike-col { border-left: 3px solid #22c55e; }
-        .chain-table tr.row-put-wall  { background: #2a0a0a80; }
-        .chain-table tr.row-put-wall td.strike-col  { border-right: 3px solid #ef4444; }
-        .chain-table tr.row-gamma-flip { background: #1a140080; }
-        .chain-table tr.row-gamma-flip td.strike-col { border-left: 3px solid #eab308; }
-        .chain-table tr.row-atm       { background: #1e293b80; }
-        .chain-table tr.row-atm td.strike-col        { border-left: 3px solid #f8fafc; border-right: 3px solid #f8fafc; font-size: 13px; }
-
-        /* Strike labels for wall/flip */
-        .strike-tag {
-            display: inline-block;
-            font-size: 9px;
-            font-weight: 600;
-            padding: 1px 4px;
-            border-radius: 3px;
-            margin-left: 4px;
-            vertical-align: middle;
-        }
-        .strike-tag-cw { background: #16a34a40; color: #4ade80; }
-        .strike-tag-pw { background: #dc262640; color: #f87171; }
-        .strike-tag-gf { background: #ca8a0440; color: #facc15; }
-
-        /* Flash animation on value change */
-        @keyframes flash-green { 0% { background: #16a34a60; } 100% { background: transparent; } }
-        @keyframes flash-red   { 0% { background: #dc262660; } 100% { background: transparent; } }
-        .flash-up  { animation: flash-green 0.6s ease-out; }
-        .flash-down{ animation: flash-red 0.6s ease-out; }
-
-        /* ======================================================
-           Strategy Builder Panel
-           ====================================================== */
-        .strategy-panel {
-            background: #111827;
-            border-top: 1px solid #1e293b;
-            max-height: 280px;
-            overflow-y: auto;
-            flex-shrink: 0;
-        }
-        .strategy-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 8px 16px;
-            background: #0f172a;
-            border-bottom: 1px solid #1e293b;
-        }
-        .strategy-header h3 {
-            font-size: 13px;
-            font-weight: 600;
-            color: #e2e8f0;
-        }
-        .strategy-clear-btn {
-            font-size: 11px;
-            color: #64748b;
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 4px;
-            padding: 3px 10px;
-            cursor: pointer;
-        }
-        .strategy-clear-btn:hover { color: #f87171; border-color: #f87171; }
-
-        .strategy-legs {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
-        }
-        .strategy-legs th {
-            background: #0f172a;
-            color: #64748b;
-            font-weight: 600;
-            padding: 5px 8px;
-            text-align: left;
-            border-bottom: 1px solid #1e293b;
-            font-size: 11px;
-        }
-        .strategy-legs td {
-            padding: 5px 8px;
-            border-bottom: 1px solid #111827;
-            color: #cbd5e1;
-        }
-        .strategy-legs .leg-buy  { color: #4ade80; font-weight: 700; }
-        .strategy-legs .leg-sell { color: #f87171; font-weight: 700; }
-        .leg-remove {
-            cursor: pointer;
-            color: #64748b;
-            font-size: 14px;
-            padding: 0 4px;
-        }
-        .leg-remove:hover { color: #f87171; }
-        .leg-qty {
-            width: 40px;
-            background: #0f172a;
-            border: 1px solid #334155;
-            color: #e2e8f0;
-            text-align: center;
-            border-radius: 3px;
-            padding: 2px;
-            font-size: 12px;
-        }
-        .qty-group {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-        }
-        .qty-btn {
-            width: 18px;
-            height: 18px;
-            border-radius: 3px;
-            border: 1px solid #334155;
-            background: #0b1220;
-            color: #94a3b8;
-            cursor: pointer;
-            font-size: 12px;
-            line-height: 14px;
-            padding: 0;
-        }
-        .qty-btn:hover { color: #e2e8f0; border-color: #64748b; }
-
-        .strategy-summary {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 16px;
-            padding: 10px 16px;
-            border-top: 1px solid #1e293b;
-            font-size: 12px;
-        }
-        .summary-item {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-        .summary-label { color: #64748b; font-size: 10px; font-weight: 600; text-transform: uppercase; }
-        .summary-value { color: #e2e8f0; font-weight: 600; font-variant-numeric: tabular-nums; }
-        .summary-credit { color: #4ade80; }
-        .summary-debit  { color: #f87171; }
-        .strategy-empty {
-            padding: 16px;
-            text-align: center;
-            color: #475569;
-            font-size: 12px;
-        }
-
-        /* ======================================================
-           Mobile / phone portrait  ≤ 600 px
-           ====================================================== */
-        @media (max-width: 600px) {
-            .header {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 4px;
-                padding: 6px 12px;
-            }
-            .header h1 { font-size: 15px; }
-            .status-bar {
-                flex-wrap: wrap;
-                gap: 4px 14px;
-            }
-            .levels-strip {
-                padding: 4px 8px;
-                gap: 3px;
-                -webkit-overflow-scrolling: touch;
-                scrollbar-width: none;
-            }
-            .levels-strip::-webkit-scrollbar { display: none; }
-            .level-badge {
-                padding: 3px 8px;
-                font-size: 11px;
-            }
-            .charts-container {
-                height: calc(100svh - 150px);
-                padding: 4px;
-                gap: 4px;
-            }
-            .chart-title {
-                font-size: 11px;
-                top: 4px;
-                left: 8px;
-            }
-            .tab-btn { padding: 6px 14px; font-size: 12px; }
-            .chain-table { font-size: 10px; }
-            .chain-table th { font-size: 9px; padding: 4px 2px; }
-            .chain-table td { padding: 3px 2px; }
-            .chain-container { height: calc(100svh - 150px); }
-            .chain-controls { padding: 6px 8px; font-size: 11px; }
-        }
-    </style>
+    <link rel="stylesheet" href="/static/css/theme.css">
+    <link rel="stylesheet" href="/static/css/layout.css">
+    <link rel="stylesheet" href="/static/css/charts.css">
+    <link rel="stylesheet" href="/static/css/chain-table.css">
+    <link rel="stylesheet" href="/static/css/strategy.css">
+    <link rel="stylesheet" href="/static/css/account.css">
+    <link rel="stylesheet" href="/static/css/order-entry.css">
+    <link rel="stylesheet" href="/static/css/mobile.css">
 </head>
 <body>
     <!-- Header -->
@@ -585,15 +25,15 @@
             </div>
             <div class="status-item">
                 <span class="status-label">Market:</span>
-                <span class="status-value" id="marketStatus">—</span>
+                <span class="status-value" id="marketStatus">-</span>
             </div>
             <div class="status-item">
                 <span class="status-label">Expiration:</span>
-                <span class="status-value" id="expDisplay">—</span>
+                <span class="status-value" id="expDisplay">-</span>
             </div>
             <div class="status-item">
                 <span class="status-label">Last GEX:</span>
-                <span class="status-value" id="lastGexUpdate">—</span>
+                <span class="status-value" id="lastGexUpdate">-</span>
             </div>
         </div>
     </div>
@@ -602,33 +42,33 @@
     <div class="levels-strip" id="levelsStrip">
         <div class="level-badge badge-spot">
             <span class="label">SPX</span>
-            <span id="spotBadge">—</span>
+            <span id="spotBadge">-</span>
         </div>
         <div class="level-badge" id="modeBadge" style="display:none;">
-            <span id="modeBadgeText">—</span>
+            <span id="modeBadgeText">-</span>
         </div>
         <div class="level-badge badge-call-wall">
             <span class="label">Call Wall</span>
-            <span id="callWallBadge">—</span>
+            <span id="callWallBadge">-</span>
         </div>
         <div class="level-badge badge-put-wall">
             <span class="label">Put Wall</span>
-            <span id="putWallBadge">—</span>
+            <span id="putWallBadge">-</span>
         </div>
         <div class="level-badge badge-gamma-flip">
             <span class="label">Gamma Flip</span>
-            <span id="gammaFlipBadge">—</span>
+            <span id="gammaFlipBadge">-</span>
         </div>
         <div class="level-badge badge-max-pain">
             <span class="label">Max Pain</span>
-            <span id="maxPainBadge">—</span>
+            <span id="maxPainBadge">-</span>
         </div>
         <div class="level-badge badge-net-gex">
             <span class="label">Net GEX</span>
-            <span id="netGexBadge">—</span>
+            <span id="netGexBadge">-</span>
         </div>
         <div class="level-badge" id="mmRegimeBadge" style="display:none;">
-            <span id="mmRegimeText">—</span>
+            <span id="mmRegimeText">-</span>
         </div>
     </div>
 
@@ -636,6 +76,7 @@
     <div class="tab-bar">
         <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
         <button class="tab-btn" data-tab="chain" onclick="switchTab('chain')">Option Chain</button>
+        <button class="tab-btn" data-tab="account" onclick="switchTab('account')">Account</button>
     </div>
 
     <!-- Charts (Tab 1) -->
@@ -652,7 +93,7 @@
             </div>
             <div class="gex-loading hidden" id="gexLoading">
                 <div class="gex-loading-spinner"></div>
-                <div class="gex-loading-text" id="gexLoadingText">Fetching option chain…</div>
+                <div class="gex-loading-text" id="gexLoadingText">Fetching option chain...</div>
                 <div class="gex-loading-sub" id="gexLoadingSub"></div>
             </div>
             <div id="gexChart"></div>
@@ -660,12 +101,12 @@
         <div class="chart-panel">
             <div class="chart-title">IV Smile & Delta-Decay Efficiency
                 <span class="help" tabindex="0" aria-label="IV Smile help">?
-                    <span class="tooltip" role="tooltip">Delta-decay efficiency = |charm| ÷ |delta|.<br>Computed from short finite-difference decay (15-minute step) of option delta; it represents the rate at which an option's delta changes relative to its current delta magnitude.<br>Higher values indicate faster delta erosion per unit delta — useful for assessing hedging sensitivity to time decay and short-term rebalancing cost.</span>
+                    <span class="tooltip" role="tooltip">Delta-decay efficiency = |charm| - |delta|.<br>Computed from short finite-difference decay (15-minute step) of option delta; it represents the rate at which an option's delta changes relative to its current delta magnitude.<br>Higher values indicate faster delta erosion per unit delta - useful for assessing hedging sensitivity to time decay and short-term rebalancing cost.</span>
                 </span>
             </div>
             <div class="gex-loading hidden" id="smileLoading">
                 <div class="gex-loading-spinner"></div>
-                <div class="gex-loading-text" id="smileLoadingText">Fetching option chain…</div>
+                <div class="gex-loading-text" id="smileLoadingText">Fetching option chain...</div>
                 <div class="gex-loading-sub" id="smileLoadingSub"></div>
             </div>
             <div id="smileChart"></div>
@@ -676,8 +117,8 @@
     <div class="chain-container" id="chainTab">
         <div class="chain-controls">
             <div>
-                <div id="chainRangeInfo">Visible range: —</div>
-                <div id="chainLastUpdateInfo" style="font-size:11px;color:#64748b;">Last update: —</div>
+                <div id="chainRangeInfo">Visible range: -</div>
+                <div id="chainLastUpdateInfo" style="font-size:11px;color:#64748b;">Last update: -</div>
             </div>
             <button class="chain-refresh-btn" onclick="manualRefreshChain()">Manual Update</button>
         </div>
@@ -722,39 +163,201 @@
             <div class="strategy-summary" id="strategySummary" style="display:none;">
                 <div class="summary-item">
                     <span class="summary-label">Combo Bid</span>
-                    <span class="summary-value" id="comboBid">—</span>
-                </div>
-                <div class="summary-item">
-                    <span class="summary-label">Combo Ask</span>
-                    <span class="summary-value" id="comboAsk">—</span>
+                    <span class="summary-value" id="comboBid">-</span>
                 </div>
                 <div class="summary-item">
                     <span class="summary-label">Combo Mid</span>
-                    <span class="summary-value" id="comboMid">—</span>
+                    <span class="summary-value" id="comboMid">-</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">Combo Ask</span>
+                    <span class="summary-value" id="comboAsk">-</span>
                 </div>
                 <div class="summary-item">
                     <span class="summary-label">Net Debit/Credit</span>
-                    <span class="summary-value" id="comboNet">—</span>
+                    <span class="summary-value" id="comboNet">-</span>
                 </div>
                 <div class="summary-item">
                     <span class="summary-label">Combined Delta</span>
-                    <span class="summary-value" id="comboDelta">—</span>
+                    <span class="summary-value" id="comboDelta">-</span>
                 </div>
                 <div class="summary-item">
                     <span class="summary-label">Max Profit</span>
-                    <span class="summary-value" id="comboMaxProfit">—</span>
+                    <span class="summary-value" id="comboMaxProfit">-</span>
                 </div>
                 <div class="summary-item">
                     <span class="summary-label">Max Loss</span>
-                    <span class="summary-value" id="comboMaxLoss">—</span>
+                    <span class="summary-value" id="comboMaxLoss">-</span>
                 </div>
                 <div class="summary-item">
                     <span class="summary-label">Breakeven</span>
-                    <span class="summary-value" id="comboBreakeven">—</span>
+                    <span class="summary-value" id="comboBreakeven">-</span>
                 </div>
+            </div>
+            <!-- Order entry row (only visible when strategy has legs) -->
+            <div class="order-entry-row" id="orderEntryRow" style="display:none;">
+                <span class="order-entry-label">Limit Price</span>
+                <input type="number" step="0.05" class="order-lmt-input" id="stratLmtPrice" placeholder="0.00" title="Combo limit price (negative for credit spreads)"
+                    oninput="this.dataset.autofilled='false'; updatePriceInputStep(this)"
+                    onchange="this.value=_roundSpxPrice(this.value).toFixed(2); updatePriceInputStep(this)">
+                <button class="btn-place-order" id="stratPlaceBtn" onclick="placeStrategyOrder()">Place Order</button>
+                <div class="stop-loss-sep"></div>
+                <label class="stop-loss-label" title="Attach a stop-limit bracket order (supported for single-leg and spreads)">
+                    <input type="checkbox" id="stopLossEnabled" onchange="toggleStopLossInput()"> Stop Loss
+                </label>
+                <input type="number" step="0.05" class="order-lmt-input" id="stopLossStop" placeholder="Stop" title="Stop trigger price (negative for credit)" disabled
+                    oninput="updatePriceInputStep(this)"
+                    onchange="this.value=_roundSpxPrice(this.value).toFixed(2); updatePriceInputStep(this)">
+                <input type="number" step="0.05" class="order-lmt-input" id="stopLossLimit" placeholder="Limit" title="Limit price for stop-limit (negative for credit)" disabled
+                    oninput="updatePriceInputStep(this)"
+                    onchange="this.value=_roundSpxPrice(this.value).toFixed(2); updatePriceInputStep(this)">
+                <span id="outsideRthBadge" class="outside-rth-badge" style="display:none;">Extended Hours</span>
+                <span class="order-entry-label" id="orderEntryHint" style="color:#475569;font-size:11px;"></span>
             </div>
         </div>
     </div>
+
+    <!-- Account Tab (Tab 3) -->
+    <div class="account-container" id="accountTab">
+        <!-- Account Summary Strip -->
+        <div class="account-summary-strip" id="accountSummaryStrip">
+            <div class="acct-badge">
+                <span class="acct-badge-label">Net Liq</span>
+                <span class="acct-badge-value" id="acctNetLiq">-</span>
+            </div>
+            <div class="acct-badge">
+                <span class="acct-badge-label">Excess Liq</span>
+                <span class="acct-badge-value" id="acctExcessLiq">-</span>
+            </div>
+            <div class="acct-badge">
+                <span class="acct-badge-label">Avail Funds</span>
+                <span class="acct-badge-value" id="acctAvailFunds">-</span>
+            </div>
+            <div class="acct-badge">
+                <span class="acct-badge-label">Buying Power</span>
+                <span class="acct-badge-value" id="acctBuyingPower">-</span>
+            </div>
+            <div class="acct-badge">
+                <span class="acct-badge-label">Maint Margin</span>
+                <span class="acct-badge-value" id="acctMaintMargin">-</span>
+            </div>
+            <div class="acct-badge">
+                <span class="acct-badge-label">Gross PV</span>
+                <span class="acct-badge-value" id="acctGrossPV">-</span>
+            </div>
+            <div class="acct-badge">
+                <span class="acct-badge-label">Unrealized P&amp;L</span>
+                <span class="acct-badge-value" id="acctUnPnl">-</span>
+            </div>
+            <div class="acct-badge">
+                <span class="acct-badge-label">Realized P&amp;L</span>
+                <span class="acct-badge-value" id="acctRePnl">-</span>
+            </div>
+        </div>
+
+        <!-- Positions -->
+        <div class="acct-section">
+            <div class="acct-section-header">
+                <span class="acct-section-title">Positions <span id="posCount" style="color:#64748b;font-size:11px;"></span></span>
+            </div>
+            <div class="acct-table-wrap">
+                <table class="acct-table" id="positionsTable">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Type</th>
+                            <th>Expiry</th>
+                            <th>Strike</th>
+                            <th>Right</th>
+                            <th>Qty</th>
+                            <th>Avg Cost</th>
+                            <th>Mkt Price</th>
+                            <th>Mkt Value</th>
+                            <th>Unrealized P&amp;L</th>
+                            <th>Realized P&amp;L</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="positionsBody">
+                        <tr><td colspan="12" class="acct-empty">No positions</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Open Orders -->
+        <div class="acct-section">
+            <div class="acct-section-header">
+                <span class="acct-section-title">Open Orders <span id="ordersCount" style="color:#64748b;font-size:11px;"></span></span>
+            </div>
+            <div class="acct-table-wrap">
+                <table class="acct-table" id="ordersTable">
+                    <thead>
+                        <tr>
+                            <th>Order ID</th>
+                            <th>Symbol</th>
+                            <th>Expiry</th>
+                            <th>Strike</th>
+                            <th>Right</th>
+                            <th>Action</th>
+                            <th>Qty</th>
+                            <th>Type</th>
+                            <th>Limit</th>
+                            <th>Status</th>
+                            <th>Filled</th>
+                            <th>Avg Fill</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ordersBody">
+                        <tr><td colspan="13" class="acct-empty">No open orders</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Today's Executions -->
+        <div class="acct-section">
+            <div class="acct-section-header">
+                <span class="acct-section-title">Today&apos;s Executions <span id="exeCount" style="color:#64748b;font-size:11px;"></span></span>
+            </div>
+            <div class="acct-table-wrap">
+                <table class="acct-table" id="executionsTable">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Symbol</th>
+                            <th>Expiry</th>
+                            <th>Strike</th>
+                            <th>Right</th>
+                            <th>Side</th>
+                            <th>Qty</th>
+                            <th>Price</th>
+                            <th>Commission</th>
+                        </tr>
+                    </thead>
+                    <tbody id="executionsBody">
+                        <tr><td colspan="9" class="acct-empty">No executions today</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Order Confirmation Modal -->
+    <div class="order-modal-backdrop hidden" id="orderModalBackdrop">
+        <div class="order-modal">
+            <div class="order-modal-title" id="orderModalTitle">Confirm Order</div>
+            <div class="order-modal-body" id="orderModalBody"></div>
+            <div class="order-modal-footer">
+                <button class="order-modal-cancel" onclick="dismissOrderModal()">Cancel</button>
+                <button class="order-modal-confirm" id="orderModalConfirmBtn" onclick="confirmOrder()">Confirm Order</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Order status toast -->
+    <div class="order-toast hidden" id="orderToast"></div>
 
     <!-- Loading overlay -->
     <div class="overlay" id="loadingOverlay">
@@ -762,1645 +365,15 @@
         <div class="msg" id="overlayMsg">Connecting to server...</div>
     </div>
 
-    <script>
-    // ======================================================================
-    // State
-    // ======================================================================
-    const state = {
-        bars: [],          // [{time, open, high, low, close}]
-        gex: null,         // latest gex data
-        wsConnected: false,
-        ibConnected: false,
-        priceChartReady: false,
-        gexChartReady: false,
-        smileChartReady: false,
-        dataMode: 'initializing',   // 'live' | 'historical' | 'initializing'
-        historicalDate: '',
-        currentSpot: 0,    // most up-to-date spot (live SPX or ES-derived)
-        esDerived: false,  // true when currentSpot is ES-derived
-        // Option chain tab state
-        activeTab: 'dashboard',
-        chainData: {},        // keyed by strike: {strike, call_bid, call_ask, ...}
-        chainMeta: null,      // {spot_price, call_wall, put_wall, gamma_flip}
-        strategyLegs: [],     // [{id, action, strike, right, qty, ...}]
-        nextLegId: 1,
-        prevCellValues: {},   // for flash animation: "strike_right_field" → prev value
-        chainLastUpdateMs: null,
-        chainAgeTimer: null,
-        chainViewportCenterStrike: null,
-        chainViewportPendingStrike: null,
-        chainViewportLastSentMs: 0,
-        chainViewportSendTimer: null,
-    };
-
-    const CHAIN_VIEWPORT_SEND_THROTTLE_MS = 200;
-
-    // ======================================================================
-    // Chart setup
-    // ======================================================================
-    const CHART_BG = '#111827';
-    const GRID_COLOR = '#1e293b';
-    const TEXT_COLOR = '#94a3b8';
-
-    // ======================================================================
-    // Responsive helpers
-    // ======================================================================
-    function isMobile() { return window.innerWidth < 600; }
-
-    function mobilePriceMargin() {
-        return isMobile() ? { t: 28, r: 50, b: 32, l: 40 } : { t: 36, r: 80, b: 40, l: 60 };
-    }
-    function mobileGexMargin() {
-        return isMobile() ? { t: 28, r: 30, b: 32, l: 40 } : { t: 36, r: 60, b: 40, l: 60 };
-    }
-    function mobileSmileMargin() {
-        return isMobile()
-            ? { t: 20, r: 40, b: 20, l: 40 }
-            : { t: 28, r: 60, b: 30, l: 60 };
-    }
-    function mobileAxisFontSize() { return isMobile() ? 9 : 11; }
-
-    const priceLayout = {
-        paper_bgcolor: CHART_BG,
-        plot_bgcolor: CHART_BG,
-        margin: { t: 36, r: 80, b: 40, l: 60 },
-        xaxis: {
-            color: TEXT_COLOR,
-            gridcolor: GRID_COLOR,
-            tickformat: '%H:%M',
-            type: 'date',
-            rangeslider: { visible: false },
-        },
-        yaxis: {
-            color: TEXT_COLOR,
-            gridcolor: GRID_COLOR,
-            side: 'right',
-            tickformat: ',.2f',
-        },
-        showlegend: false,
-        shapes: [],
-        annotations: [],
-    };
-
-    const gexLayout = {
-        paper_bgcolor: CHART_BG,
-        plot_bgcolor: CHART_BG,
-        margin: { t: 36, r: 60, b: 40, l: 60 },
-        barmode: 'relative',
-        xaxis: {
-            color: TEXT_COLOR,
-            gridcolor: GRID_COLOR,
-            title: { text: 'Strike', font: { color: TEXT_COLOR, size: 11 } },
-        },
-        yaxis: {
-            color: TEXT_COLOR,
-            gridcolor: GRID_COLOR,
-            title: { text: 'GEX ($)', font: { color: TEXT_COLOR, size: 11 } },
-        },
-        showlegend: true,
-        legend: {
-            x: 0.01, y: 0.99,
-            font: { color: TEXT_COLOR, size: 11 },
-            bgcolor: 'rgba(0,0,0,0)',
-        },
-        shapes: [],
-        annotations: [],
-    };
-
-    function initPriceChart() {
-        Plotly.newPlot('priceChart', [{
-            x: [],
-            open: [],
-            high: [],
-            low: [],
-            close: [],
-            type: 'candlestick',
-            name: 'SPX',
-            increasing: { line: { color: '#22c55e' }, fillcolor: '#22c55e' },
-            decreasing: { line: { color: '#ef4444' }, fillcolor: '#ef4444' },
-        }], { ...priceLayout, margin: mobilePriceMargin() }, {
-            responsive: true,
-            displayModeBar: false,
-        });
-        state.priceChartReady = true;
-    }
-
-    function initGexChart() {
-        const fs = mobileAxisFontSize();
-        const layout = {
-            ...gexLayout,
-            margin: mobileGexMargin(),
-            xaxis: { ...gexLayout.xaxis, title: { text: 'Strike', font: { color: TEXT_COLOR, size: fs } } },
-            yaxis: { ...gexLayout.yaxis, title: { text: 'GEX ($)', font: { color: TEXT_COLOR, size: fs } } },
-            legend: { ...gexLayout.legend, font: { color: TEXT_COLOR, size: fs } },
-        };
-        Plotly.newPlot('gexChart', [
-            {
-                x: [], y: [],
-                type: 'bar',
-                name: 'Call GEX',
-                marker: { color: '#22c55e80' },
-            },
-            {
-                x: [], y: [],
-                type: 'bar',
-                name: 'Put GEX',
-                marker: { color: '#ef444480' },
-            },
-            {
-                x: [], y: [],
-                type: 'scatter',
-                mode: 'lines+markers',
-                name: 'Net GEX',
-                line: { color: '#facc15', width: 1.5 },
-                marker: { color: '#facc15', size: 3 },
-            },
-        ], layout, {
-            responsive: true,
-            displayModeBar: false,
-        });
-        state.gexChartReady = true;
-    }
-
-    function initSmileChart() {
-        const fs = mobileAxisFontSize();
-        const m = mobileSmileMargin();
-        const layout = {
-            paper_bgcolor: CHART_BG,
-            plot_bgcolor: CHART_BG,
-            margin: m,
-            showlegend: true,
-            legend: {
-                x: 0.01, y: 1.0,
-                font: { color: TEXT_COLOR, size: fs },
-                bgcolor: 'rgba(0,0,0,0)',
-                orientation: 'h',
-            },
-            grid: { rows: 2, columns: 1, subplots: [['xy'], ['x2y3']], roworder: 'top to bottom', ygap: 0.12 },
-            // Top subplot: Calls
-            xaxis:  { color: TEXT_COLOR, gridcolor: GRID_COLOR, showticklabels: false, matches: 'x2' },
-            yaxis:  { color: TEXT_COLOR, gridcolor: GRID_COLOR, title: { text: 'Call IV %', font: { color: '#4ade80', size: fs } }, side: 'left' },
-            yaxis2: { color: TEXT_COLOR, gridcolor: 'rgba(0,0,0,0)', title: { text: 'Efficiency', font: { color: '#facc15', size: fs } }, side: 'right', overlaying: 'y', showgrid: false },
-            // Bottom subplot: Puts
-            xaxis2: { color: TEXT_COLOR, gridcolor: GRID_COLOR, title: { text: 'Strike', font: { color: TEXT_COLOR, size: fs } } },
-            yaxis3: { color: TEXT_COLOR, gridcolor: GRID_COLOR, title: { text: 'Put IV %', font: { color: '#f87171', size: fs } }, side: 'left' },
-            yaxis4: { color: TEXT_COLOR, gridcolor: 'rgba(0,0,0,0)', title: { text: 'Efficiency', font: { color: '#facc15', size: fs } }, side: 'right', overlaying: 'y3', showgrid: false },
-            annotations: [
-                { text: 'CALLS', xref: 'paper', yref: 'paper', x: 0.5, y: 1.01, showarrow: false, font: { color: '#4ade80', size: 11, weight: 'bold' } },
-                { text: 'PUTS',  xref: 'paper', yref: 'paper', x: 0.5, y: 0.46, showarrow: false, font: { color: '#f87171', size: 11, weight: 'bold' } },
-            ],
-            shapes: [],
-        };
-        // 4 traces:  call IV, call eff, put IV, put eff
-        Plotly.newPlot('smileChart', [
-            { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Call IV', line: { color: '#4ade80', width: 2 }, xaxis: 'x', yaxis: 'y' },
-            { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Call Eff', line: { color: '#facc15', width: 1.5, dash: 'dot' }, xaxis: 'x', yaxis: 'y2' },
-            { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Put IV', line: { color: '#f87171', width: 2 }, xaxis: 'x2', yaxis: 'y3' },
-            { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Put Eff', line: { color: '#facc15', width: 1.5, dash: 'dot' }, xaxis: 'x2', yaxis: 'y4' },
-        ], layout, { responsive: true, displayModeBar: false });
-        state.smileChartReady = true;
-    }
-
-    // ======================================================================
-    // Chart update functions
-    // ======================================================================
-    function updatePriceChart() {
-        if (!state.priceChartReady || state.bars.length === 0) return;
-
-        const times  = state.bars.map(b => b.time);
-        const opens  = state.bars.map(b => b.open);
-        const highs  = state.bars.map(b => b.high);
-        const lows   = state.bars.map(b => b.low);
-        const closes = state.bars.map(b => b.close);
-
-        // Detect session boundary: first bar of the most-recent calendar date
-        let sessionStartTime = null;
-        if (state.bars.length > 1) {
-            const lastDate = state.bars[state.bars.length - 1].time.substring(0, 10);
-            for (let i = 0; i < state.bars.length; i++) {
-                if (state.bars[i].time.substring(0, 10) === lastDate) {
-                    // Only draw the line when there are prev-day bars
-                    if (i > 0) sessionStartTime = state.bars[i].time;
-                    break;
-                }
-            }
-        }
-
-        // Build horizontal level lines
-        const shapes = [];
-        const annotations = [];
-
-        // Session-boundary vertical line
-        if (sessionStartTime) {
-            const sessionDate = sessionStartTime.substring(0, 10);
-            shapes.push({
-                type: 'line',
-                xref: 'x', x0: sessionStartTime, x1: sessionStartTime,
-                yref: 'paper', y0: 0, y1: 1,
-                line: { color: '#475569', width: 1.5, dash: 'dashdot' },
-            });
-            annotations.push({
-                xref: 'x', x: sessionStartTime,
-                yref: 'paper', y: 0.99,
-                text: `▶ ${sessionDate}`,
-                showarrow: false,
-                font: { color: '#94a3b8', size: 10 },
-                xanchor: 'left',
-                bgcolor: 'rgba(17,24,39,0.85)',
-                borderpad: 3,
-            });
-        }
-
-        if (state.gex) {
-            const levels = [
-                { val: state.gex.call_wall, color: '#22c55e', label: 'Call Wall', dash: 'solid' },
-                { val: state.gex.put_wall, color: '#ef4444', label: 'Put Wall', dash: 'solid' },
-                { val: state.gex.gamma_flip, color: '#eab308', label: 'Gamma Flip', dash: 'dash' },
-                { val: state.gex.max_pain, color: '#3b82f6', label: 'Max Pain', dash: 'dash' },
-            ];
-
-            for (const lv of levels) {
-                if (lv.val == null) continue;
-                shapes.push({
-                    type: 'line',
-                    xref: 'paper', x0: 0, x1: 1,
-                    yref: 'y', y0: lv.val, y1: lv.val,
-                    line: { color: lv.color, width: 1.5, dash: lv.dash },
-                });
-                annotations.push({
-                    xref: 'paper', x: 1.01,
-                    yref: 'y', y: lv.val,
-                    text: `${lv.label} ${lv.val}`,
-                    showarrow: false,
-                    font: { color: lv.color, size: 10 },
-                    xanchor: 'left',
-                });
-            }
-        }
-
-        Plotly.react('priceChart', [{
-            x: times,
-            open: opens,
-            high: highs,
-            low: lows,
-            close: closes,
-            type: 'candlestick',
-            name: 'SPX',
-            increasing: { line: { color: '#22c55e' }, fillcolor: '#22c55e' },
-            decreasing: { line: { color: '#ef4444' }, fillcolor: '#ef4444' },
-        }], {
-            ...priceLayout,
-            shapes,
-            annotations,
-        });
-    }
-
-    function appendBar(bar) {
-        state.bars.push(bar);
-        if (state.bars.length > 7200) {
-            state.bars = state.bars.slice(-7200);
-        }
-        updatePriceChart();
-    }
-
-    function updateLastBar(bar) {
-        if (state.bars.length === 0) {
-            state.bars.push(bar);
-        } else {
-            // Replace the last bar (same minute)
-            const last = state.bars[state.bars.length - 1];
-            if (last.time === bar.time) {
-                state.bars[state.bars.length - 1] = bar;
-            } else {
-                state.bars.push(bar);
-            }
-        }
-        updatePriceChart();
-    }
-
-    function handleChainProgress(data) {
-        const gexOverlay  = document.getElementById('gexLoading');
-        const gexTextEl   = document.getElementById('gexLoadingText');
-        const gexSubEl    = document.getElementById('gexLoadingSub');
-        const smileOverlay = document.getElementById('smileLoading');
-        const smileTextEl  = document.getElementById('smileLoadingText');
-        const smileSubEl   = document.getElementById('smileLoadingSub');
-
-        if (data.phase === 'done') {
-            gexOverlay.classList.add('hidden');
-            smileOverlay.classList.add('hidden');
-            return;
-        }
-
-        // Only show during the very first fetch — suppress spinner for recurring updates
-        if (state.gex) return;
-
-        gexOverlay.classList.remove('hidden');
-        smileOverlay.classList.remove('hidden');
-
-        const phaseText = {
-            starting:   'Fetching option chain…',
-            qualifying: 'Qualifying contracts…',
-            fetching:   'Streaming market data…',
-            computing:  'Computing GEX…',
-        };
-        const text = phaseText[data.phase] || 'Fetching option chain…';
-        gexTextEl.textContent = text;
-        smileTextEl.textContent = text;
-
-        if (data.phase === 'fetching') {
-            const subText = `Batch ${data.batch} of ${data.total_batches}`;
-            gexSubEl.textContent = subText;
-            smileSubEl.textContent = subText;
-        } else {
-            gexSubEl.textContent = '';
-            smileSubEl.textContent = '';
-        }
-    }
-
-    function updateGexChart() {
-        if (!state.gexChartReady || !state.gex || !state.gex.gex_bars) return;
-
-        const bars = state.gex.gex_bars;
-        const strikes = bars.map(b => b.strike);
-        const callGex = bars.map(b => b.call_gex);
-        const putGex = bars.map(b => b.put_gex);
-        const netGexPerBar = bars.map(b => b.net_gex);
-
-        // Vertical line at current spot
-        const shapes = [];
-        const annotations = [];
-
-        // Use latest currentSpot (updated via status msgs) so the line moves in
-        // real-time as ES moves, rather than waiting for the next chain fetch.
-        const spotForLine = state.currentSpot > 0 ? state.currentSpot : (state.gex.spot_price || 0);
-        const spotLabel = state.esDerived
-            ? `ES derived SPX: ${spotForLine}`
-            : `SPX: ${spotForLine}`;
-
-        if (spotForLine > 0) {
-            shapes.push({
-                type: 'line',
-                xref: 'x', x0: spotForLine, x1: spotForLine,
-                yref: 'paper', y0: 0, y1: 1,
-                line: { color: '#f8fafc', width: 2, dash: 'dot' },
-            });
-            annotations.push({
-                x: spotForLine,
-                yref: 'paper', y: 1.02,
-                text: spotLabel,
-                showarrow: false,
-                font: { color: state.esDerived ? '#facc15' : '#f8fafc', size: 10 },
-            });
-        }
-
-        // Mark key strikes on GEX chart
-        const keyLevels = [
-            { val: state.gex.call_wall, color: '#22c55e', label: 'CW' },
-            { val: state.gex.put_wall, color: '#ef4444', label: 'PW' },
-            { val: state.gex.gamma_flip, color: '#eab308', label: 'GF' },
-            { val: state.gex.max_pain, color: '#3b82f6', label: 'MP' },
-        ];
-
-        for (const lv of keyLevels) {
-            if (lv.val == null) continue;
-            shapes.push({
-                type: 'line',
-                xref: 'x', x0: lv.val, x1: lv.val,
-                yref: 'paper', y0: 0, y1: 1,
-                line: { color: lv.color, width: 1.5, dash: 'dash' },
-            });
-            annotations.push({
-                x: lv.val,
-                yref: 'paper', y: -0.06,
-                text: lv.label,
-                showarrow: false,
-                font: { color: lv.color, size: 10, },
-            });
-        }
-
-        // Net GEX + regime annotation in top-right of chart
-        const netGex = state.gex.total_net_gex;
-        if (netGex != null) {
-            const isPositive = netGex >= 0;
-            const regimeLabel = isPositive ? '▼ CONVERGING' : '▲ DIVERGING';
-            const regimeColor = isPositive ? '#4ade80' : '#f87171';
-            const callOI = state.gex.total_call_oi;
-            const putOI = state.gex.total_put_oi;
-            const callOIStr = (callOI != null && callOI > 0) ? callOI.toLocaleString() : '—';
-            const putOIStr = (putOI != null && putOI > 0) ? putOI.toLocaleString() : '—';
-            
-            // P/C OI Ratio
-            let pcRatioStr = '—';
-            let pcRatioColor = '#94a3b8';
-            if (callOI > 0) {
-                const pcRatio = putOI / callOI;
-                pcRatioStr = pcRatio.toFixed(2);
-                pcRatioColor = pcRatio <= 1 ? '#4ade80' : '#f87171';
-            }
-            
-            // GEX Skew %
-            let gexSkewStr = '—';
-            let gexSkewColor = '#94a3b8';
-            const totalCallG = state.gex.total_call_gex || 0;
-            const totalPutG = Math.abs(state.gex.total_put_gex || 0);
-            const totalGross = totalCallG + totalPutG;
-            if (totalGross > 0) {
-                const pct = (totalCallG / totalGross * 100);
-                gexSkewStr = pct.toFixed(0) + '%';
-                gexSkewColor = pct >= 50 ? '#4ade80' : '#f87171';
-            }
-            
-            annotations.push({
-                xref: 'paper', x: 0.98,
-                yref: 'paper', y: 0.99,
-                text: `Net GEX: <b>${fmtGex(netGex)}</b>   <span style="color:${regimeColor}">${regimeLabel}</span><br>Call OI/Put OI: <span style="color:#4ade80"><b>${callOIStr}</b></span>/<span style="color:#f87171"><b>${putOIStr}</b></span><br>P/C OI: <span style="color:${pcRatioColor}"><b>${pcRatioStr}</b></span>   Call GEX%: <span style="color:${gexSkewColor}"><b>${gexSkewStr}</b></span>`,
-                showarrow: false,
-                font: { color: '#e2e8f0', size: 12 },
-                xanchor: 'right',
-                yanchor: 'top',
-                bgcolor: '#1a202c',
-                bordercolor: isPositive ? '#16a34a' : '#dc2626',
-                borderwidth: 2,
-                borderpad: 8,
-                borderradius: 4,
-            });
-        }
-
-        // Calculate common range from all smile data if available
-        let commonRange = null;
-        if (state.gex && state.gex.smile_data && state.gex.smile_data.length > 0) {
-            const smileStrikes = state.gex.smile_data.map(d => d.strike).filter(s => s != null);
-            if (smileStrikes.length > 0) {
-                const minSmile = Math.min(...smileStrikes);
-                const maxSmile = Math.max(...smileStrikes);
-                // Add 1% padding
-                const range = maxSmile - minSmile;
-                commonRange = [minSmile - range * 0.01, maxSmile + range * 0.01];
-            }
-        }
-
-        Plotly.react('gexChart', [
-            {
-                x: strikes,
-                y: callGex,
-                type: 'bar',
-                name: 'Call GEX',
-                marker: { color: strikes.map(() => '#22c55e80') },
-                customdata: bars.map(b => [fmtGex(b.call_gex), (b.call_oi ?? 0).toLocaleString(), (b.call_vol ?? 0).toLocaleString()]),
-                hovertemplate: '<b>Strike: %{x}</b><br>Call GEX: %{customdata[0]}<br>Call OI: %{customdata[1]}<br>Call Vol: %{customdata[2]}<extra></extra>',
-            },
-            {
-                x: strikes,
-                y: putGex,
-                type: 'bar',
-                name: 'Put GEX',
-                marker: { color: strikes.map(() => '#ef444480') },
-                customdata: bars.map(b => [fmtGex(b.put_gex), (b.put_oi ?? 0).toLocaleString(), (b.put_vol ?? 0).toLocaleString()]),
-                hovertemplate: '<b>Strike: %{x}</b><br>Put GEX: %{customdata[0]}<br>Put OI: %{customdata[1]}<br>Put Vol: %{customdata[2]}<extra></extra>',
-            },
-            {
-                x: strikes,
-                y: netGexPerBar,
-                type: 'scatter',
-                mode: 'lines+markers',
-                name: 'Net GEX',
-                line: { color: '#facc15', width: 1.5 },
-                marker: { color: '#facc15', size: 3 },
-                customdata: bars.map(b => [fmtGex(b.net_gex)]),
-                hovertemplate: '<b>Strike: %{x}</b><br>Net GEX: %{customdata[0]}<extra></extra>',
-            },
-        ], {
-            ...gexLayout,
-            shapes,
-            annotations,
-            xaxis: { ...gexLayout.xaxis, range: commonRange },
-        });
-    }
-
-    function updateSmileChart() {
-        if (!state.smileChartReady || !state.gex || !state.gex.smile_data) return;
-
-        const sd = state.gex.smile_data;
-        if (sd.length === 0) return;
-
-        // Separate call and put data (filter nulls)
-        const callStrikes = [], callIV = [], callEff = [], callCustom = [];
-        const putStrikes  = [], putIV  = [], putEff  = [], putCustom = [];
-
-        for (const d of sd) {
-            if (d.call_iv != null) {
-                callStrikes.push(d.strike);
-                callIV.push(d.call_iv);
-                callEff.push(d.call_efficiency);
-                callCustom.push([
-                    d.call_delta != null ? d.call_delta.toFixed(4) : '—',
-                    d.call_charm != null ? d.call_charm.toFixed(6) : '—',
-                    d.call_efficiency != null ? d.call_efficiency.toFixed(4) : '—',
-                ]);
-            }
-            if (d.put_iv != null) {
-                putStrikes.push(d.strike);
-                putIV.push(d.put_iv);
-                putEff.push(d.put_efficiency);
-                putCustom.push([
-                    d.put_delta != null ? d.put_delta.toFixed(4) : '—',
-                    d.put_charm != null ? d.put_charm.toFixed(6) : '—',
-                    d.put_efficiency != null ? d.put_efficiency.toFixed(4) : '—',
-                ]);
-            }
-        }
-
-        // Calculate common range from all smile data
-        let commonRange = null;
-        const smileStrikes = sd.map(d => d.strike).filter(s => s != null);
-        if (smileStrikes.length > 0) {
-            const minSmile = Math.min(...smileStrikes);
-            const maxSmile = Math.max(...smileStrikes);
-            // Add 1% padding
-            const range = maxSmile - minSmile;
-            commonRange = [minSmile - range * 0.01, maxSmile + range * 0.01];
-        }
-
-        // Spot + key level vertical lines for both subplots
-        const shapes = [];
-        const spotForLine = state.currentSpot > 0 ? state.currentSpot : (state.gex.spot_price || 0);
-        const addVertical = (xref, val, color, dash) => {
-            if (val == null || val <= 0) return;
-            shapes.push({
-                type: 'line', xref: xref, x0: val, x1: val,
-                yref: 'paper', y0: 0, y1: 1,
-                line: { color: color, width: 1, dash: dash },
-            });
-        };
-        // Draw on both x-axes
-        for (const xr of ['x', 'x2']) {
-            addVertical(xr, spotForLine, '#f8fafc', 'dot');
-            addVertical(xr, state.gex.call_wall, '#22c55e', 'dash');
-            addVertical(xr, state.gex.put_wall, '#ef4444', 'dash');
-            addVertical(xr, state.gex.gamma_flip, '#eab308', 'dash');
-        }
-
-        // Preserve the CALLS / PUTS subtitle annotations
-        const annotations = [
-            { text: 'CALLS', xref: 'paper', yref: 'paper', x: 0.5, y: 1.01, showarrow: false, font: { color: '#4ade80', size: 11 } },
-            { text: 'PUTS',  xref: 'paper', yref: 'paper', x: 0.5, y: 0.46, showarrow: false, font: { color: '#f87171', size: 11 } },
-        ];
-
-        const hoverCall = '<b>Strike: %{x}</b><br>Call IV: %{y:.1f}%<br>Delta: %{customdata[0]}<br>Charm: %{customdata[1]}<br>Efficiency: %{customdata[2]}<extra></extra>';
-        const hoverCallEff = '<b>Strike: %{x}</b><br>Efficiency: %{y:.4f}<extra></extra>';
-        const hoverPut = '<b>Strike: %{x}</b><br>Put IV: %{y:.1f}%<br>Delta: %{customdata[0]}<br>Charm: %{customdata[1]}<br>Efficiency: %{customdata[2]}<extra></extra>';
-        const hoverPutEff = '<b>Strike: %{x}</b><br>Efficiency: %{y:.4f}<extra></extra>';
-
-        Plotly.react('smileChart', [
-            { x: callStrikes, y: callIV, type: 'scatter', mode: 'lines', name: 'Call IV',
-              line: { color: '#4ade80', width: 2 }, xaxis: 'x', yaxis: 'y',
-              customdata: callCustom, hovertemplate: hoverCall },
-            { x: callStrikes, y: callEff, type: 'scatter', mode: 'lines', name: 'Call Eff',
-              line: { color: '#facc15', width: 1.5, dash: 'dot' }, xaxis: 'x', yaxis: 'y2',
-              hovertemplate: hoverCallEff },
-            { x: putStrikes, y: putIV, type: 'scatter', mode: 'lines', name: 'Put IV',
-              line: { color: '#f87171', width: 2 }, xaxis: 'x2', yaxis: 'y3',
-              customdata: putCustom, hovertemplate: hoverPut },
-            { x: putStrikes, y: putEff, type: 'scatter', mode: 'lines', name: 'Put Eff',
-              line: { color: '#facc15', width: 1.5, dash: 'dot' }, xaxis: 'x2', yaxis: 'y4',
-              hovertemplate: hoverPutEff },
-        ], {
-            paper_bgcolor: CHART_BG,
-            plot_bgcolor: CHART_BG,
-            margin: mobileSmileMargin(),
-            showlegend: true,
-            legend: {
-                x: 0.01, y: 1.0,
-                font: { color: TEXT_COLOR, size: mobileAxisFontSize() },
-                bgcolor: 'rgba(0,0,0,0)',
-                orientation: 'h',
-            },
-            grid: { rows: 2, columns: 1, subplots: [['xy'], ['x2y3']], roworder: 'top to bottom', ygap: 0.12 },
-            xaxis:  { color: TEXT_COLOR, gridcolor: GRID_COLOR, showticklabels: false, matches: 'x2', range: commonRange },
-            yaxis:  { color: TEXT_COLOR, gridcolor: GRID_COLOR, title: { text: 'Call IV %', font: { color: '#4ade80', size: mobileAxisFontSize() } }, side: 'left' },
-            yaxis2: { color: TEXT_COLOR, gridcolor: 'rgba(0,0,0,0)', title: { text: 'Efficiency', font: { color: '#facc15', size: mobileAxisFontSize() } }, side: 'right', overlaying: 'y', showgrid: false },
-            xaxis2: { color: TEXT_COLOR, gridcolor: GRID_COLOR, title: { text: 'Strike', font: { color: TEXT_COLOR, size: mobileAxisFontSize() } }, range: commonRange },
-            yaxis3: { color: TEXT_COLOR, gridcolor: GRID_COLOR, title: { text: 'Put IV %', font: { color: '#f87171', size: mobileAxisFontSize() } }, side: 'left' },
-            yaxis4: { color: TEXT_COLOR, gridcolor: 'rgba(0,0,0,0)', title: { text: 'Efficiency', font: { color: '#facc15', size: mobileAxisFontSize() } }, side: 'right', overlaying: 'y3', showgrid: false },
-            shapes,
-            annotations,
-        });
-    }
-
-    // ======================================================================
-    // Badge updates
-    // ======================================================================
-    function fmtGex(val) {
-        // Format GEX in billions (B) or millions (M) for readability
-        if (val == null) return '—';
-        const abs = Math.abs(val);
-        const sign = val < 0 ? '-' : '+';
-        if (abs >= 1e9)  return sign + (abs / 1e9).toFixed(2) + 'B';
-        if (abs >= 1e6)  return sign + (abs / 1e6).toFixed(1) + 'M';
-        if (abs >= 1e3)  return sign + (abs / 1e3).toFixed(0) + 'K';
-        return sign + abs.toFixed(0);
-    }
-
-    function updateBadges() {
-        const spot = state.bars.length > 0 ? state.bars[state.bars.length - 1].close : null;
-        document.getElementById('spotBadge').textContent = spot ? spot.toFixed(2) : '—';
-
-        if (state.gex) {
-            document.getElementById('callWallBadge').textContent =
-                state.gex.call_wall != null ? state.gex.call_wall.toFixed(0) : '—';
-            document.getElementById('putWallBadge').textContent =
-                state.gex.put_wall != null ? state.gex.put_wall.toFixed(0) : '—';
-            document.getElementById('gammaFlipBadge').textContent =
-                state.gex.gamma_flip != null ? state.gex.gamma_flip.toFixed(1) : '—';
-            document.getElementById('maxPainBadge').textContent =
-                state.gex.max_pain != null ? state.gex.max_pain.toFixed(0) : '—';
-
-            // Net GEX value
-            const netGex = state.gex.total_net_gex;
-            document.getElementById('netGexBadge').textContent = fmtGex(netGex);
-
-            // MM Hedging regime
-            const regimeBadge = document.getElementById('mmRegimeBadge');
-            const regimeText  = document.getElementById('mmRegimeText');
-            if (netGex != null) {
-                regimeBadge.style.display = '';
-                if (netGex >= 0) {
-                    regimeBadge.className = 'level-badge badge-converging';
-                    regimeText.innerHTML  = '▼ MM: CONVERGING';
-                    regimeText.title      = 'Positive GEX: dealers are net long gamma. They sell into rallies and buy dips — market-stabilising.';
-                } else {
-                    regimeBadge.className = 'level-badge badge-diverging';
-                    regimeText.innerHTML  = '▲ MM: DIVERGING';
-                    regimeText.title      = 'Negative GEX: dealers are net short gamma. They chase moves in the same direction — market-amplifying.';
-                }
-            } else {
-                regimeBadge.style.display = 'none';
-            }
-        }
-    }
-
-    function updateStatus(data) {
-        // Connection dot
-        const dot = document.getElementById('connDot');
-        const connText = document.getElementById('connStatus');
-        if (data.connected) {
-            dot.className = 'dot dot-green';
-            connText.textContent = 'IB Connected';
-            document.getElementById('loadingOverlay').classList.add('hidden');
-        } else {
-            dot.className = 'dot dot-red';
-            connText.textContent = 'IB Disconnected';
-        }
-
-        // Market status
-        const ms = document.getElementById('marketStatus');
-        const msVal = data.market_status || '—';
-        ms.textContent = msVal;
-        if (msVal === 'RTH') ms.style.color = '#22c55e';
-        else if (msVal === 'GTH' || msVal === 'CURB') ms.style.color = '#eab308';
-        else ms.style.color = '#94a3b8';
-
-        // Expiration
-        document.getElementById('expDisplay').textContent = data.expiration || '—';
-
-        // Last GEX update
-        if (data.last_chain_update) {
-            document.getElementById('lastGexUpdate').textContent = data.last_chain_update;
-        }
-
-        // Data mode badge & chart title
-        if (data.data_mode) {
-            state.dataMode = data.data_mode;
-            state.historicalDate = data.historical_date || '';
-            updateModeBadge();
-        }
-
-        // Update ES-derived spot in real-time (between chain fetches)
-        if (data.spot_price > 0) {
-            const prevSpot = state.currentSpot;
-            const prevDerived = state.esDerived;
-            state.currentSpot = data.spot_price;
-            state.esDerived = data.es_derived || false;
-            // Re-render GEX spot line if spot or regime changed
-            if (state.gexChartReady && state.gex &&
-                (state.currentSpot !== prevSpot || state.esDerived !== prevDerived)) {
-                updateGexChart();
-                updateSmileChart();
-            }
-        }
-
-        // Sync loading overlay with chain_fetching flag
-        // (mainly for reconnects where the client missed the starting event)
-        if (data.chain_fetching === true && !state.gex) {
-            const gexOverlay = document.getElementById('gexLoading');
-            const smileOverlay = document.getElementById('smileLoading');
-            document.getElementById('gexLoadingText').textContent = 'Fetching option chain…';
-            document.getElementById('gexLoadingSub').textContent = '';
-            document.getElementById('smileLoadingText').textContent = 'Fetching option chain…';
-            document.getElementById('smileLoadingSub').textContent = '';
-            gexOverlay.classList.remove('hidden');
-            smileOverlay.classList.remove('hidden');
-        }
-    }
-
-    function promptReconnectIb() {
-        const portText = prompt('Enter IB API port number:', '7497');
-        if (portText === null) return;
-        const port = parseInt(portText.trim(), 10);
-        if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-            alert('Please enter a valid port number between 1 and 65535.');
-            return;
-        }
-        reconnectIb(port);
-    }
-
-    async function reconnectIb(port) {
-        try {
-            const response = await fetch('/api/reconnect_ib', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ port }),
-            });
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => null);
-                const message = errorData?.detail || response.statusText || 'Unknown error';
-                throw new Error(message);
-            }
-            const result = await response.json();
-            document.getElementById('overlayMsg').textContent = `Reconnecting IB on port ${result.port}...`;
-            document.getElementById('loadingOverlay').classList.remove('hidden');
-            alert(`Reconnect request sent for port ${result.port}.`);
-        } catch (e) {
-            console.error('IB reconnect failed', e);
-            alert('IB reconnect failed: ' + e.message);
-        }
-    }
-
-    function updateModeBadge() {
-        const badge = document.getElementById('modeBadge');
-        const text  = document.getElementById('modeBadgeText');
-        const title = document.getElementById('priceChartTitle');
-
-        if (state.dataMode === 'live') {
-            badge.style.display = '';
-            badge.className = 'level-badge badge-mode-live';
-            text.textContent = '\u25CF LIVE';
-            title.textContent = 'SPX Intraday \u2014 Live';
-        } else if (state.dataMode === 'historical') {
-            badge.style.display = '';
-            badge.className = 'level-badge badge-mode-hist';
-            text.textContent = '\u25CB HISTORICAL ' + state.historicalDate;
-            title.textContent = 'SPX Intraday \u2014 ' + state.historicalDate + ' (last session)';
-        } else {
-            badge.style.display = 'none';
-            title.textContent = 'SPX Intraday';
-        }
-    }
-
-    // ======================================================================
-    // WebSocket
-    // ======================================================================
-    let ws = null;
-    let reconnectTimer = null;
-
-    function connectWS() {
-        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const url = `${proto}//${location.host}/ws`;
-        console.log('Connecting to', url);
-
-        ws = new WebSocket(url);
-
-        ws.onopen = () => {
-            console.log('WebSocket connected');
-            state.wsConnected = true;
-            document.getElementById('loadingOverlay').classList.add('hidden');
-            ws.send(state.activeTab === 'chain' ? 'set_tab:chain' : 'set_tab:dashboard');
-            if (state.activeTab === 'chain') {
-                setTimeout(() => { reportChainViewportCenter(true); }, 120);
-            }
-            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-        };
-
-        ws.onclose = () => {
-            console.log('WebSocket closed');
-            state.wsConnected = false;
-            document.getElementById('connDot').className = 'dot dot-red';
-            document.getElementById('connStatus').textContent = 'Disconnected';
-            // Show overlay with reconnecting message
-            document.getElementById('overlayMsg').textContent = 'Reconnecting...';
-            document.getElementById('loadingOverlay').classList.remove('hidden');
-            scheduleReconnect();
-        };
-
-        ws.onerror = (e) => {
-            console.error('WebSocket error', e);
-        };
-
-        ws.onmessage = (event) => {
-            try {
-                const msg = JSON.parse(event.data);
-                handleMessage(msg);
-            } catch (e) {
-                const snippet = typeof event.data === 'string' ? event.data.slice(0, 240) : '[non-string payload]';
-                console.error('Failed to parse message', e, snippet);
-            }
-        };
-    }
-
-    function scheduleReconnect() {
-        if (reconnectTimer) return;
-        reconnectTimer = setTimeout(() => {
-            reconnectTimer = null;
-            connectWS();
-        }, 3000);
-    }
-
-    // ======================================================================
-    // Tab switching
-    // ======================================================================
-    function switchTab(tab) {
-        state.activeTab = tab;
-        document.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.tab === tab);
-        });
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(tab === 'chain' ? 'set_tab:chain' : 'set_tab:dashboard');
-        }
-        const dashboard = document.getElementById('dashboardTab');
-        const chain = document.getElementById('chainTab');
-        if (tab === 'dashboard') {
-            dashboard.style.display = '';
-            dashboard.classList.add('active');
-            chain.classList.remove('active');
-            // Trigger Plotly resize since charts were hidden
-            setTimeout(() => {
-                Plotly.Plots.resize('priceChart');
-                Plotly.Plots.resize('gexChart');
-                Plotly.Plots.resize('smileChart');
-            }, 50);
-        } else {
-            dashboard.style.display = 'none';
-            dashboard.classList.remove('active');
-            chain.classList.add('active');
-            scrollToATM();
-            setTimeout(() => { reportChainViewportCenter(true); }, 80);
-        }
-    }
-
-    // ======================================================================
-    // Option Chain Table
-    // ======================================================================
-    function handleChainQuotes(data) {
-        if (!data || !data.strikes) return;
-        const scope = data.scope || 'full';
-
-        if (scope === 'full' && data.strikes.length === 0 && Object.keys(state.chainData).length > 0) {
-            console.warn('Ignoring empty full chain_quotes payload; preserving existing chain table data');
-            return;
-        }
-
-        state.chainMeta = {
-            spot_price: data.spot_price,
-            annual_vol: data.annual_vol,
-            expiration_raw: data.expiration_raw,
-            tte_years: data.tte_years,
-            sigma_move: data.sigma_move,
-            call_wall: data.call_wall,
-            put_wall: data.put_wall,
-            gamma_flip: data.gamma_flip,
-        };
-        state.chainLastUpdateMs = data.timestamp_iso ? Date.parse(data.timestamp_iso) : Date.now();
-        updateChainUpdateAge();
-
-        // Full payload replaces all rows; stream payload merges to avoid table wipe.
-        if (scope === 'full' || Object.keys(state.chainData).length === 0) {
-            state.chainData = {};
-            for (const row of data.strikes) {
-                state.chainData[row.strike] = row;
-            }
-        } else {
-            for (const row of data.strikes) {
-                const existing = state.chainData[row.strike] || { strike: row.strike };
-                state.chainData[row.strike] = { ...existing, ...row };
-            }
-        }
-
-        console.debug(`chain_quotes scope=${scope} rows=${data.strikes.length} mergedRows=${Object.keys(state.chainData).length}`);
-        renderChainTable();
-        if (state.activeTab === 'chain') {
-            reportChainViewportCenter(scope === 'full');
-        }
-        updateStrategyPrices();
-    }
-
-    function handleChainTick(data) {
-        if (!data || !data.ticks) return;
-        state.chainLastUpdateMs = data.timestamp_iso ? Date.parse(data.timestamp_iso) : Date.now();
-        updateChainUpdateAge();
-        for (const t of data.ticks) {
-            const row = state.chainData[t.strike];
-            if (!row) continue;
-            const side = t.right === 'C' ? 'call' : 'put';
-            const fields = {bid: 'bid', ask: 'ask', bid_size: 'bid_size', ask_size: 'ask_size',
-                            volume: 'volume', last: 'last', delta: 'delta', gamma: 'gamma', iv: 'iv'};
-            for (const [src, dst] of Object.entries(fields)) {
-                if (t[src] !== undefined) {
-                    const key = `${side}_${dst}`;
-                    const fullKey = `${t.strike}_${t.right}_${dst}`;
-                    const oldVal = row[key];
-                    row[key] = t[src];
-                    // Flash animation on cell update
-                    const cellId = `chain_${t.strike}_${side}_${dst}`;
-                    const cell = document.getElementById(cellId);
-                    if (cell && t[src] !== null && oldVal !== t[src]) {
-                        cell.textContent = formatChainVal(dst, t[src]);
-                        cell.classList.remove('flash-up', 'flash-down');
-                        void cell.offsetWidth; // force reflow
-                        if (oldVal !== null && oldVal !== undefined) {
-                            cell.classList.add(t[src] > oldVal ? 'flash-up' : 'flash-down');
-                        }
-                    }
-                }
-            }
-        }
-        updateStrategyPrices();
-    }
-
-    function formatChainVal(field, val) {
-        if (val === null || val === undefined) return '—';
-        if (field === 'bid' || field === 'ask' || field === 'last') return val.toFixed(2);
-        if (field === 'delta') return val.toFixed(3);
-        if (field === 'gamma') return val.toFixed(4);
-        if (field === 'iv') return val.toFixed(1) + '%';
-        if (field === 'bid_size' || field === 'ask_size' || field === 'volume' || field === 'oi')
-            return val.toLocaleString();
-        return String(val);
-    }
-
-    function updateChainUpdateAge() {
-        const el = document.getElementById('chainLastUpdateInfo');
-        if (!el) return;
-        if (!state.chainLastUpdateMs) {
-            el.textContent = 'Last update: —';
-            return;
-        }
-        const sec = Math.max(0, Math.floor((Date.now() - state.chainLastUpdateMs) / 1000));
-        el.textContent = `Last update: +${sec}s`;
-    }
-
-    function hasSelectedLeg(strike, right, action) {
-        return state.strategyLegs.some(l => l.strike === strike && l.right === right && l.action === action);
-    }
-
-    function refreshSelectionHighlights() {
-        document.querySelectorAll('.cell-selected-bid').forEach(el => el.classList.remove('cell-selected-bid'));
-        document.querySelectorAll('.cell-selected-ask').forEach(el => el.classList.remove('cell-selected-ask'));
-        for (const leg of state.strategyLegs) {
-            const side = leg.right === 'C' ? 'call' : 'put';
-            const actionSide = leg.action === 'BUY' ? 'ask' : 'bid';
-            const cell = document.getElementById(`chain_${leg.strike}_${side}_${actionSide}`);
-            if (cell) {
-                cell.classList.add(leg.action === 'BUY' ? 'cell-selected-ask' : 'cell-selected-bid');
-            }
-        }
-    }
-
-    function renderChainTable() {
-        const tbody = document.getElementById('chainBody');
-        const allStrikes = Object.keys(state.chainData).map(Number).sort((a, b) => a - b);
-        const spot = state.chainMeta ? state.chainMeta.spot_price : state.currentSpot;
-        const annualVol = (state.chainMeta && state.chainMeta.annual_vol) ? state.chainMeta.annual_vol : 0.20;
-        const dailyStd = (spot > 0) ? (spot * annualVol / Math.sqrt(252)) : 0;
-        const lowerBound = spot > 0 ? (spot - 5 * dailyStd - 60) : -Infinity;
-        const upperBound = spot > 0 ? (spot + 5 * dailyStd + 60) : Infinity;
-        const strikes = allStrikes.filter(s => s >= lowerBound && s <= upperBound);
-        if (strikes.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="19" style="text-align:center;color:#475569;padding:40px;">Waiting for option chain data...</td></tr>';
-            document.getElementById('chainRangeInfo').textContent = 'Visible range: —';
-            return;
-        }
-
-        const cw = state.chainMeta ? state.chainMeta.call_wall : null;
-        const pw = state.chainMeta ? state.chainMeta.put_wall : null;
-        const gf = state.chainMeta ? state.chainMeta.gamma_flip : null;
-        const atmStrike = spot > 0 ? strikes.reduce((a, b) => Math.abs(a - spot) < Math.abs(b - spot) ? a : b) : null;
-        document.getElementById('chainRangeInfo').textContent =
-            `Visible range: ${Math.round(lowerBound)} to ${Math.round(upperBound)} (5σ ± 60)`;
-
-        // Build rows
-        let html = '';
-        for (const strike of strikes) {
-            const r = state.chainData[strike];
-            const rowClasses = [];
-            let tags = '';
-            const callItmClass = (spot > 0 && strike < spot) ? 'itm-call' : '';
-            const putItmClass = (spot > 0 && strike > spot) ? 'itm-put' : '';
-            const sigmaAbs = r.sigma_distance_abs;
-            const sigmaSigned = r.sigma_distance_signed;
-            const strikeSigmaClass = getStrikeSigmaClass(sigmaAbs);
-            const strikeSigmaTitle = buildStrikeSigmaTitle(strike, sigmaSigned, sigmaAbs, spot);
-            if (strike === atmStrike) rowClasses.push('row-atm');
-            if (cw !== null && strike === cw) { rowClasses.push('row-call-wall'); tags += '<span class="strike-tag strike-tag-cw">CW</span>'; }
-            if (pw !== null && strike === pw) { rowClasses.push('row-put-wall'); tags += '<span class="strike-tag strike-tag-pw">PW</span>'; }
-            if (gf !== null && Math.abs(strike - gf) < 2.5) { rowClasses.push('row-gamma-flip'); tags += '<span class="strike-tag strike-tag-gf">GF</span>'; }
-
-            html += `<tr class="${rowClasses.join(' ')}" data-strike="${strike}">`;
-            // === Call side (right-to-left: IV, Vol, OI, Gamma, Delta, AskSz, Ask, Bid, BidSz) ===
-            html += td('call', 'iv', strike, r.call_iv, callItmClass);
-            html += td('call', 'volume', strike, r.call_volume, callItmClass);
-            html += td('call', 'oi', strike, r.call_oi, callItmClass);
-            html += td('call', 'gamma', strike, r.call_gamma, callItmClass);
-            html += td('call', 'delta', strike, r.call_delta, callItmClass);
-            html += td('call', 'ask_size', strike, r.call_ask_size, callItmClass);
-            html += `<td class="cell-ask ${callItmClass} ${hasSelectedLeg(strike, 'C', 'BUY') ? 'cell-selected-ask' : ''}" id="chain_${strike}_call_ask" onclick="addLeg(${strike},'C','BUY')" title="Buy ${strike}C">${fv('ask', r.call_ask)}</td>`;
-            html += `<td class="cell-bid ${callItmClass} ${hasSelectedLeg(strike, 'C', 'SELL') ? 'cell-selected-bid' : ''}" id="chain_${strike}_call_bid" onclick="addLeg(${strike},'C','SELL')" title="Sell ${strike}C">${fv('bid', r.call_bid)}</td>`;
-            html += td('call', 'bid_size', strike, r.call_bid_size, callItmClass);
-            // === Strike center ===
-            html += `<td class="strike-col ${strikeSigmaClass}" title="${strikeSigmaTitle}">${strike}${tags}</td>`;
-            // === Put side (left-to-right: BidSz, Bid, Ask, AskSz, Delta, Gamma, OI, Vol, IV) ===
-            html += td('put', 'bid_size', strike, r.put_bid_size, putItmClass);
-            html += `<td class="cell-bid ${putItmClass} ${hasSelectedLeg(strike, 'P', 'SELL') ? 'cell-selected-bid' : ''}" id="chain_${strike}_put_bid" onclick="addLeg(${strike},'P','SELL')" title="Sell ${strike}P">${fv('bid', r.put_bid)}</td>`;
-            html += `<td class="cell-ask ${putItmClass} ${hasSelectedLeg(strike, 'P', 'BUY') ? 'cell-selected-ask' : ''}" id="chain_${strike}_put_ask" onclick="addLeg(${strike},'P','BUY')" title="Buy ${strike}P">${fv('ask', r.put_ask)}</td>`;
-            html += td('put', 'ask_size', strike, r.put_ask_size, putItmClass);
-            html += td('put', 'delta', strike, r.put_delta, putItmClass);
-            html += td('put', 'gamma', strike, r.put_gamma, putItmClass);
-            html += td('put', 'oi', strike, r.put_oi, putItmClass);
-            html += td('put', 'volume', strike, r.put_volume, putItmClass);
-            html += td('put', 'iv', strike, r.put_iv, putItmClass);
-            html += '</tr>';
-        }
-        tbody.innerHTML = html;
-    }
-
-    function getStrikeSigmaClass(sigmaAbs) {
-        if (sigmaAbs === null || sigmaAbs === undefined || !isFinite(sigmaAbs)) return '';
-        if (sigmaAbs <= 1) return 'strike-sigma-1';
-        if (sigmaAbs <= 2) return 'strike-sigma-2';
-        if (sigmaAbs <= 3) return 'strike-sigma-3';
-        return '';
-    }
-
-    function buildStrikeSigmaTitle(strike, sigmaSigned, sigmaAbs, spot) {
-        let signed = sigmaSigned;
-        let abs = sigmaAbs;
-        if ((signed === null || signed === undefined || !isFinite(signed)) &&
-            state.chainMeta && state.chainMeta.sigma_move && state.chainMeta.sigma_move > 0 && spot > 0) {
-            signed = (strike - spot) / state.chainMeta.sigma_move;
-            abs = Math.abs(signed);
-        }
-        if (abs === null || abs === undefined || !isFinite(abs)) {
-            return `Strike ${strike} (sigma distance unavailable)`;
-        }
-        const signPrefix = signed >= 0 ? '+' : '';
-        const direction = signed >= 0 ? 'above' : 'below';
-        return `Strike ${strike}: ${signPrefix}${signed.toFixed(2)}σ (${abs.toFixed(2)}σ ${direction} spot ${spot.toFixed(2)})`;
-    }
-
-    function td(side, field, strike, val, extraClass = '') {
-        return `<td class="${extraClass}" id="chain_${strike}_${side}_${field}">${fv(field, val)}</td>`;
-    }
-    function fv(field, val) { return formatChainVal(field, val); }
-
-    function scrollToATM() {
-        const spot = state.chainMeta ? state.chainMeta.spot_price : state.currentSpot;
-        if (spot <= 0) return;
-        const wrap = document.getElementById('chainTableWrap');
-        const row = wrap.querySelector('tr.row-atm');
-        if (row) {
-            // Scroll so ATM is roughly centered
-            const rowTop = row.offsetTop;
-            const wrapH = wrap.clientHeight;
-            wrap.scrollTop = rowTop - wrapH / 2 + row.clientHeight / 2;
-            reportChainViewportCenter(true);
-        }
-    }
-
-    function getChainViewportCenterStrike() {
-        const wrap = document.getElementById('chainTableWrap');
-        if (!wrap) return null;
-
-        const rows = wrap.querySelectorAll('tbody tr[data-strike]');
-        if (!rows || rows.length === 0) return null;
-
-        const centerY = wrap.scrollTop + (wrap.clientHeight / 2);
-        let bestStrike = null;
-        let bestDist = Number.POSITIVE_INFINITY;
-
-        for (const row of rows) {
-            const strike = Number(row.getAttribute('data-strike'));
-            if (!Number.isFinite(strike)) continue;
-            const rowCenterY = row.offsetTop + (row.offsetHeight / 2);
-            const dist = Math.abs(rowCenterY - centerY);
-            if (dist < bestDist) {
-                bestDist = dist;
-                bestStrike = strike;
-            }
-        }
-
-        return Number.isFinite(bestStrike) ? bestStrike : null;
-    }
-
-    function flushViewportCenterSend(force = false) {
-        if (state.chainViewportPendingStrike === null) return;
-        if (!(ws && ws.readyState === WebSocket.OPEN)) return;
-        if (state.activeTab !== 'chain') return;
-
-        const strike = state.chainViewportPendingStrike;
-        if (!Number.isFinite(strike) || strike <= 0) return;
-        if (!force && state.chainViewportCenterStrike === strike) return;
-
-        state.chainViewportCenterStrike = strike;
-        state.chainViewportLastSentMs = Date.now();
-        ws.send(`viewport_center:${strike.toFixed(1)}`);
-    }
-
-    function reportChainViewportCenter(force = false) {
-        if (state.activeTab !== 'chain') return;
-
-        const strike = getChainViewportCenterStrike();
-        if (!Number.isFinite(strike) || strike <= 0) return;
-
-        state.chainViewportPendingStrike = strike;
-
-        const now = Date.now();
-        const elapsed = now - state.chainViewportLastSentMs;
-        if (force || elapsed >= CHAIN_VIEWPORT_SEND_THROTTLE_MS) {
-            if (state.chainViewportSendTimer) {
-                clearTimeout(state.chainViewportSendTimer);
-                state.chainViewportSendTimer = null;
-            }
-            flushViewportCenterSend(force);
-            return;
-        }
-
-        if (state.chainViewportSendTimer) return;
-        state.chainViewportSendTimer = setTimeout(() => {
-            state.chainViewportSendTimer = null;
-            flushViewportCenterSend(false);
-        }, CHAIN_VIEWPORT_SEND_THROTTLE_MS - elapsed);
-    }
-
-    // ======================================================================
-    // Strategy Builder
-    // ======================================================================
-    function addLeg(strike, right, action) {
-        // Check if same strike+right already exists
-        const existing = state.strategyLegs.find(l => l.strike === strike && l.right === right);
-        if (existing) {
-            if (existing.action === action) {
-                existing.qty++;
-            } else {
-                // Opposite action: reduce qty or flip
-                existing.qty--;
-                if (existing.qty <= 0) {
-                    existing.action = action;
-                    existing.qty = 1;
-                }
-            }
-        } else {
-            state.strategyLegs.push({
-                id: state.nextLegId++,
-                strike, right, action,
-                qty: 1,
-            });
-        }
-        renderStrategy();
-    }
-
-    function removeLeg(legId) {
-        state.strategyLegs = state.strategyLegs.filter(l => l.id !== legId);
-        renderStrategy();
-    }
-
-    function updateLegQty(legId, newQty) {
-        const leg = state.strategyLegs.find(l => l.id === legId);
-        if (!leg) return;
-        const q = parseInt(newQty);
-        if (q > 0) {
-            leg.qty = q;
-        } else {
-            removeLeg(legId);
-            return;
-        }
-        renderStrategy();
-    }
-
-    function clearStrategy() {
-        state.strategyLegs = [];
-        renderStrategy();
-    }
-
-    function bumpAllQty(delta) {
-        if (state.strategyLegs.length === 0) return;
-        for (const leg of state.strategyLegs) {
-            leg.qty = Math.max(1, leg.qty + delta);
-        }
-        renderStrategy();
-    }
-
-    function manualRefreshChain() {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send('refresh_chain');
-        }
-    }
-
-    function getLegQuote(leg) {
-        const r = state.chainData[leg.strike];
-        if (!r) return { bid: null, ask: null, last: null };
-        const side = leg.right === 'C' ? 'call' : 'put';
-        return {
-            bid: r[side + '_bid'] ?? null,
-            ask: r[side + '_ask'] ?? null,
-            last: r[side + '_last'] ?? null,
-        };
-    }
-
-    function getLegDelta(leg) {
-        const r = state.chainData[leg.strike];
-        if (!r) return null;
-        const side = leg.right === 'C' ? 'call' : 'put';
-        const rawDelta = r[side + '_delta'];
-        if (rawDelta === null || rawDelta === undefined || !isFinite(rawDelta)) return null;
-        const actionSign = leg.action === 'BUY' ? 1 : -1;
-        return rawDelta * leg.qty * 100 * actionSign;
-    }
-
-    function formatSignedNumber(val, decimals = 1) {
-        const sign = val > 0 ? '+' : '';
-        return sign + val.toFixed(decimals);
-    }
-
-    function renderStrategy() {
-        const content = document.getElementById('strategyContent');
-        const summary = document.getElementById('strategySummary');
-        const countEl = document.getElementById('strategyLegCount');
-        const emptyEl = document.getElementById('strategyEmpty');
-
-        if (state.strategyLegs.length === 0) {
-            content.innerHTML = '<div class="strategy-empty" id="strategyEmpty">Click <span style="color:#4ade80">Ask</span> to buy or <span style="color:#f87171">Bid</span> to sell an option</div>';
-            summary.style.display = 'none';
-            countEl.textContent = '';
-            refreshSelectionHighlights();
-            return;
-        }
-
-        countEl.textContent = `(${state.strategyLegs.length} leg${state.strategyLegs.length > 1 ? 's' : ''})`;
-
-        let html = '<table class="strategy-legs"><thead><tr>';
-        html += '<th>Action</th><th>Strike</th><th>Type</th><th>Qty</th>';
-        html += '<th>Bid</th><th>Ask</th><th>Mid</th><th>Delta</th><th></th>';
-        html += '</tr></thead><tbody>';
-
-        for (const leg of state.strategyLegs) {
-            const q = getLegQuote(leg);
-            const mid = (q.bid !== null && q.ask !== null) ? ((q.bid + q.ask) / 2).toFixed(2) : '—';
-            const legDelta = getLegDelta(leg);
-            const legDeltaClass = legDelta === null ? '' : (legDelta > 0 ? 'summary-credit' : (legDelta < 0 ? 'summary-debit' : ''));
-            const actionClass = leg.action === 'BUY' ? 'leg-buy' : 'leg-sell';
-            html += '<tr>';
-            html += `<td class="${actionClass}">${leg.action}</td>`;
-            html += `<td>${leg.strike}</td>`;
-            html += `<td>${leg.right === 'C' ? 'Call' : 'Put'}</td>`;
-            html += `<td><span class="qty-group"><button class="qty-btn" onclick="bumpAllQty(-1)" title="Decrease all legs">-</button><input type="number" class="leg-qty" value="${leg.qty}" min="1" onchange="updateLegQty(${leg.id}, this.value)"><button class="qty-btn" onclick="bumpAllQty(1)" title="Increase all legs">+</button></span></td>`;
-            html += `<td>${q.bid !== null ? q.bid.toFixed(2) : '—'}</td>`;
-            html += `<td>${q.ask !== null ? q.ask.toFixed(2) : '—'}</td>`;
-            html += `<td>${mid}</td>`;
-            html += `<td class="${legDeltaClass}">${legDelta !== null ? formatSignedNumber(legDelta, 1) : '—'}</td>`;
-            html += `<td><span class="leg-remove" onclick="removeLeg(${leg.id})">✕</span></td>`;
-            html += '</tr>';
-        }
-        html += '</tbody></table>';
-        content.innerHTML = html;
-        refreshSelectionHighlights();
-
-        // Compute combo pricing
-        computeCombo();
-        summary.style.display = '';
-    }
-
-    function updateStrategyPrices() {
-        if (state.strategyLegs.length === 0) return;
-        // Re-render leg prices and recompute combo
-        renderStrategy();
-    }
-
-    function computeCombo() {
-        const legs = state.strategyLegs;
-        if (legs.length === 0) return;
-
-        // Combo Bid = worst fill if you want to buy the combo:
-        //   BUY legs → pay ask, SELL legs → receive bid
-        // Combo Ask = worst fill if you want to sell the combo:
-        //   BUY legs → pay bid (to close), SELL legs → receive ask
-        // We define from the BUYER's perspective of the combo:
-        //   Combo natural debit (what you'd pay at market) = sum of (BUY_ask - SELL_bid) per leg
-        //   Combo credit (what you'd receive) = sum of (SELL_ask - BUY_bid) per leg
-
-        let comboBid = 0, comboAsk = 0;
-        let allValid = true;
-        let combinedDelta = 0;
-        let allDeltaValid = true;
-
-        for (const leg of legs) {
-            const q = getLegQuote(leg);
-            const legDelta = getLegDelta(leg);
-            if (legDelta === null) {
-                allDeltaValid = false;
-            } else {
-                combinedDelta += legDelta;
-            }
-            if (q.bid === null || q.ask === null) {
-                allValid = false;
-                continue;
-            }
-            if (leg.action === 'BUY') {
-                // Buying: you pay ask, combo bid contribution is negative (cost)
-                comboBid += leg.qty * q.bid;   // If YOU want to sell the combo, close buys at bid
-                comboAsk += leg.qty * q.ask;   // If YOU want to buy the combo, buys cost ask
-            } else {
-                // Selling: you receive bid
-                comboBid -= leg.qty * q.ask;   // If selling combo, close shorts at ask (cost)
-                comboAsk -= leg.qty * q.bid;   // If buying combo, shorts give you bid (credit)
-            }
-        }
-
-        // comboBid = what you'd receive selling the combo
-        // comboAsk = what you'd pay buying the combo
-        // Flip sign convention: positive = credit to you
-
-        const comboBidEl = document.getElementById('comboBid');
-        const comboAskEl = document.getElementById('comboAsk');
-        const comboMidEl = document.getElementById('comboMid');
-        const comboNetEl = document.getElementById('comboNet');
-        const comboDeltaEl = document.getElementById('comboDelta');
-
-        if (allDeltaValid) {
-            comboDeltaEl.textContent = formatSignedNumber(combinedDelta, 1);
-            comboDeltaEl.className = 'summary-value ' + (combinedDelta > 0 ? 'summary-credit' : (combinedDelta < 0 ? 'summary-debit' : ''));
-        } else {
-            comboDeltaEl.textContent = '—';
-            comboDeltaEl.className = 'summary-value';
-        }
-
-        if (!allValid) {
-            comboBidEl.textContent = '—';
-            comboAskEl.textContent = '—';
-            comboMidEl.textContent = '—';
-            comboNetEl.textContent = '—';
-        } else {
-            // Convention: positive value = debit (you pay), negative = credit (you receive)
-            // comboAsk is the cost to enter the position
-            // Net: negative comboAsk = credit, positive = debit
-            const netCost = comboAsk;  // cost to enter: positive = debit
-            const bid = comboBid;
-            const ask = comboAsk;
-            const mid = (bid + ask) / 2;
-
-            comboBidEl.textContent = bid.toFixed(2);
-            comboAskEl.textContent = ask.toFixed(2);
-            comboMidEl.textContent = mid.toFixed(2);
-
-            if (netCost > 0) {
-                comboNetEl.textContent = 'Debit ' + netCost.toFixed(2);
-                comboNetEl.className = 'summary-value summary-debit';
-            } else {
-                comboNetEl.textContent = 'Credit ' + Math.abs(netCost).toFixed(2);
-                comboNetEl.className = 'summary-value summary-credit';
-            }
-
-            // Max profit / loss / breakeven
-            computePayoff(mid);
-        }
-    }
-
-    function computePayoff(premium) {
-        const legs = state.strategyLegs;
-        const maxProfitEl = document.getElementById('comboMaxProfit');
-        const maxLossEl = document.getElementById('comboMaxLoss');
-        const breakevenEl = document.getElementById('comboBreakeven');
-
-        if (legs.length === 0) return;
-
-        // Iterate spot prices from min_strike - 50 to max_strike + 50
-        const allStrikes = legs.map(l => l.strike);
-        const lo = Math.min(...allStrikes) - 100;
-        const hi = Math.max(...allStrikes) + 100;
-        const step = 0.5;
-
-        let maxProfit = -Infinity;
-        let maxLoss = Infinity;
-        const breakevens = [];
-        let prevPnl = null;
-
-        for (let S = lo; S <= hi; S += step) {
-            let pnl = -premium * 100; // cost of entry (premium per contract × 100 multiplier)
-            for (const leg of legs) {
-                let intrinsic = 0;
-                if (leg.right === 'C') {
-                    intrinsic = Math.max(0, S - leg.strike);
-                } else {
-                    intrinsic = Math.max(0, leg.strike - S);
-                }
-                const sign = leg.action === 'BUY' ? 1 : -1;
-                pnl += sign * leg.qty * intrinsic * 100; // × 100 multiplier
-            }
-
-            if (pnl > maxProfit) maxProfit = pnl;
-            if (pnl < maxLoss) maxLoss = pnl;
-
-            // Detect zero-crossing for breakeven
-            if (prevPnl !== null && ((prevPnl < 0 && pnl >= 0) || (prevPnl >= 0 && pnl < 0))) {
-                // Linear interpolation
-                const be = S - step + step * Math.abs(prevPnl) / (Math.abs(prevPnl) + Math.abs(pnl));
-                breakevens.push(be.toFixed(1));
-            }
-            prevPnl = pnl;
-        }
-
-        // Check for unlimited risk/reward
-        const hasNakedShort = legs.some(l => l.action === 'SELL');
-        const hasBuy = legs.some(l => l.action === 'BUY');
-
-        // If only sells with no offsetting buys on same side, loss could be unlimited
-        const isSpread = legs.length >= 2;
-
-        if (maxProfit > 1e8) {
-            maxProfitEl.textContent = 'Unlimited';
-            maxProfitEl.className = 'summary-value summary-credit';
-        } else {
-            maxProfitEl.textContent = (maxProfit >= 0 ? '+' : '') + '$' + Math.abs(maxProfit).toLocaleString(undefined, {maximumFractionDigits: 0});
-            maxProfitEl.className = 'summary-value ' + (maxProfit >= 0 ? 'summary-credit' : 'summary-debit');
-        }
-
-        if (maxLoss < -1e8) {
-            maxLossEl.textContent = 'Unlimited';
-            maxLossEl.className = 'summary-value summary-debit';
-        } else {
-            maxLossEl.textContent = (maxLoss >= 0 ? '+' : '-') + '$' + Math.abs(maxLoss).toLocaleString(undefined, {maximumFractionDigits: 0});
-            maxLossEl.className = 'summary-value ' + (maxLoss >= 0 ? 'summary-credit' : 'summary-debit');
-        }
-
-        if (breakevens.length > 0) {
-            breakevenEl.textContent = breakevens.join(', ');
-        } else {
-            breakevenEl.textContent = '—';
-        }
-    }
-
-    function handleMessage(msg) {
-        switch (msg.type) {
-            case 'init':
-                handleInit(msg.data);
-                break;
-            case 'bar':
-                appendBar(msg.data);
-                updateBadges();
-                break;
-            case 'bar_update':
-                updateLastBar(msg.data);
-                updateBadges();
-                break;
-            case 'chain_progress':
-                handleChainProgress(msg.data);
-                break;
-            case 'gex':
-                state.gex = msg.data;
-                if (msg.data.spot_price > 0) state.currentSpot = msg.data.spot_price;
-                state.esDerived = msg.data.es_derived || false;
-                updateGexChart();
-                updateSmileChart();
-                updatePriceChart();
-                updateBadges();
-                break;
-            case 'chain_quotes':
-                handleChainQuotes(msg.data);
-                break;
-            case 'chain_tick':
-                handleChainTick(msg.data);
-                break;
-            case 'status':
-                updateStatus(msg.data);
-                break;
-            case 'ping':
-                break;
-            default:
-                console.log('Unknown message type:', msg.type);
-        }
-    }
-
-    function handleInit(data) {
-        // Update mode first so chart title is correct before drawing
-        if (data.data_mode) {
-            state.dataMode = data.data_mode;
-            state.historicalDate = data.historical_date || '';
-            updateModeBadge();
-        }
-
-        // Seed currentSpot and esDerived from init payload immediately
-        if (data.spot_price > 0) state.currentSpot = data.spot_price;
-        state.esDerived = data.es_derived || false;
-
-        // Restore bar history (OHLC)
-        if (data.price_history && data.price_history.length > 0) {
-            state.bars = data.price_history;
-            updatePriceChart();
-        }
-
-        // Restore GEX
-        if (data.gex) {
-            state.gex = data.gex;
-            if (data.gex.spot_price > 0) state.currentSpot = data.gex.spot_price;
-            state.esDerived = data.es_derived || false;
-            updateGexChart();
-            updatePriceChart();
-            updateSmileChart();
-            // Cached GEX from server — hide loading overlays immediately
-            document.getElementById('gexLoading').classList.add('hidden');
-            document.getElementById('smileLoading').classList.add('hidden');
-        }
-
-        updateStatus(data);
-        updateBadges();
-
-        // Restore option chain data for Tab 2
-        if (data.chain_quotes) {
-            handleChainQuotes(data.chain_quotes);
-        }
-    }
-
-    // ======================================================================
-    // Init
-    // ======================================================================
-    document.addEventListener('DOMContentLoaded', () => {
-        initPriceChart();
-        initGexChart();
-        initSmileChart();
-
-        // Sync horizontal zoom between GEX chart (xaxis) and Smile chart (xaxis + xaxis2)
-        // Guard flag prevents the two handlers from triggering each other infinitely.
-        let syncingZoom = false;
-
-        document.getElementById('gexChart').on('plotly_relayout', (data) => {
-            if (syncingZoom) return;
-            if (data['xaxis.range[0]'] !== undefined && data['xaxis.range[1]'] !== undefined) {
-                const xRange = [data['xaxis.range[0]'], data['xaxis.range[1]']];
-                syncingZoom = true;
-                Plotly.relayout('smileChart', {
-                    'xaxis.range': xRange,
-                    'xaxis2.range': xRange,
-                }).finally(() => { syncingZoom = false; });
-            } else if (data['xaxis.autorange'] !== undefined) {
-                syncingZoom = true;
-                Plotly.relayout('smileChart', {
-                    'xaxis.autorange': data['xaxis.autorange'],
-                    'xaxis2.autorange': data['xaxis.autorange'],
-                }).finally(() => { syncingZoom = false; });
-            }
-        });
-
-        document.getElementById('smileChart').on('plotly_relayout', (data) => {
-            if (syncingZoom) return;
-            if (data['xaxis.range[0]'] !== undefined && data['xaxis.range[1]'] !== undefined) {
-                const xRange = [data['xaxis.range[0]'], data['xaxis.range[1]']];
-                syncingZoom = true;
-                Plotly.relayout('gexChart', { 'xaxis.range': xRange })
-                    .finally(() => { syncingZoom = false; });
-            } else if (data['xaxis.autorange'] !== undefined) {
-                syncingZoom = true;
-                Plotly.relayout('gexChart', { 'xaxis.autorange': data['xaxis.autorange'] })
-                    .finally(() => { syncingZoom = false; });
-            }
-        });
-
-        // Handle window resize — update margins for mobile/desktop transitions
-        window.addEventListener('resize', () => {
-            const fs = mobileAxisFontSize();
-            Plotly.relayout('priceChart', { margin: mobilePriceMargin() });
-            Plotly.relayout('gexChart', {
-                margin: mobileGexMargin(),
-                'xaxis.title.font.size': fs,
-                'yaxis.title.font.size': fs,
-                'legend.font.size': fs,
-            });
-            Plotly.relayout('smileChart', { margin: mobileSmileMargin() });
-            Plotly.Plots.resize('priceChart');
-            Plotly.Plots.resize('gexChart');
-            Plotly.Plots.resize('smileChart');
-            if (state.activeTab === 'chain') {
-                reportChainViewportCenter(true);
-            }
-        });
-
-        state.chainAgeTimer = setInterval(updateChainUpdateAge, 1000);
-
-        const chainWrap = document.getElementById('chainTableWrap');
-        if (chainWrap) {
-            chainWrap.addEventListener('scroll', () => { reportChainViewportCenter(false); });
-        }
-
-        connectWS();
-    });
-    </script>
+    <script src="/static/js/state.js"></script>
+    <script src="/static/js/charts.js"></script>
+    <script src="/static/js/badges.js"></script>
+    <script src="/static/js/ws.js"></script>
+    <script src="/static/js/tabs.js"></script>
+    <script src="/static/js/account.js"></script>
+    <script src="/static/js/order-entry.js"></script>
+    <script src="/static/js/chain-table.js"></script>
+    <script src="/static/js/strategy-builder.js"></script>
+    <script src="/static/js/main.js"></script>
 </body>
 </html>

@@ -1,0 +1,143 @@
+        /* ======================================================
+           Account Tab (Tab 3)
+           ====================================================== */
+        .account-container {
+            display: none;
+            flex-direction: column;
+            height: calc(100vh - 134px);
+            overflow-y: auto;
+            background: #0a0e17;
+        }
+        .account-container.active { display: flex; }
+
+        /* Account summary strip */
+        .account-summary-strip {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            padding: 8px 12px;
+            background: #0f172a;
+            border-bottom: 1px solid #1e293b;
+        }
+        .acct-badge {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            padding: 6px 14px;
+            background: #111827;
+            border: 1px solid #1e293b;
+            border-radius: 6px;
+            min-width: 100px;
+            flex: 1;
+        }
+        .acct-badge-label {
+            font-size: 10px;
+            color: #64748b;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .acct-badge-value {
+            font-size: 14px;
+            font-weight: 700;
+            color: #e2e8f0;
+            font-variant-numeric: tabular-nums;
+            margin-top: 2px;
+        }
+        .acct-badge-value.pnl-pos { color: #4ade80; }
+        .acct-badge-value.pnl-neg { color: #f87171; }
+
+        /* Sections */
+        .acct-section {
+            flex-shrink: 0;
+            border-bottom: 1px solid #1e293b;
+        }
+        .acct-section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 12px;
+            background: #0f172a;
+            border-bottom: 1px solid #1e293b;
+        }
+        .acct-section-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        /* Account data tables */
+        .acct-table-wrap {
+            overflow-x: auto;
+        }
+        .acct-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            table-layout: auto;
+            white-space: nowrap;
+        }
+        .acct-table th {
+            background: #111827;
+            color: #64748b;
+            font-weight: 600;
+            font-size: 11px;
+            padding: 6px 10px;
+            text-align: right;
+            border-bottom: 1px solid #1e293b;
+        }
+        .acct-table th:first-child { text-align: left; }
+        .acct-table td {
+            padding: 5px 10px;
+            text-align: right;
+            border-bottom: 1px solid #111827;
+            color: #cbd5e1;
+            font-variant-numeric: tabular-nums;
+        }
+        .acct-table td:first-child { text-align: left; font-weight: 600; color: #e2e8f0; }
+        .acct-table tr:hover td { background: #0f172a; }
+        .acct-table .pnl-pos { color: #4ade80; font-weight: 700; }
+        .acct-table .pnl-neg { color: #f87171; font-weight: 700; }
+        .acct-table .side-buy  { color: #4ade80; font-weight: 700; }
+        .acct-table .side-sell { color: #f87171; font-weight: 700; }
+        .acct-empty {
+            text-align: center !important;
+            color: #475569;
+            padding: 16px !important;
+            font-style: italic;
+        }
+
+        /* Action buttons in tables */
+        .btn-liquidate {
+            background: #7f1d1d;
+            color: #fca5a5;
+            border: 1px solid #ef4444;
+            border-radius: 4px;
+            padding: 3px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 0.1s;
+        }
+        .btn-liquidate:hover { background: #991b1b; color: #fecaca; }
+        .btn-liquidate:disabled { opacity: 0.5; cursor: default; }
+        .btn-liquidate.sending { background: #78350f; color: #fcd34d; border-color: #d97706; }
+        .btn-liquidate.done    { background: #14532d; color: #86efac; border-color: #22c55e; }
+        .btn-liquidate.failed  { background: #450a0a; color: #fca5a5; border-color: #ef4444; }
+
+        .btn-cancel-order {
+            background: #1a1300;
+            color: #fcd34d;
+            border: 1px solid #d97706;
+            border-radius: 4px;
+            padding: 3px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn-cancel-order:hover { background: #292000; color: #fef08a; }
+        .btn-cancel-order:disabled { opacity: 0.5; cursor: default; }
+

@@ -24,6 +24,28 @@ def _norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
+def _norm_pdf(x: float) -> float:
+    """Standard normal PDF."""
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+
+def _bsm_gamma(S: float, K: float, T: float, r: float, sigma: float) -> Optional[float]:
+    """
+    BSM gamma for a European option (same for calls and puts).
+
+    Returns:
+        gamma value, or None if inputs are degenerate.
+    """
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return None
+    try:
+        sqrt_T = math.sqrt(T)
+        d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrt_T)
+        return _norm_pdf(d1) / (S * sigma * sqrt_T)
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
 def _bsm_delta(S: float, K: float, T: float, r: float, sigma: float, right: str) -> Optional[float]:
     """
     BSM delta for a European option.
@@ -135,7 +157,7 @@ class GEXResult:
 
 def compute_gex(options: List[OptionData], spot_price: float,
                 time_to_expiry_years: float = 0.0,
-                risk_free_rate: float = 0.053) -> GEXResult:
+                risk_free_rate: float = 0.043) -> GEXResult:
     """
     Compute GEX metrics from a list of option data.
 
@@ -200,14 +222,26 @@ def compute_gex(options: List[OptionData], spot_price: float,
         # Call GEX (positive contribution from dealer perspective)
         if strike in calls_by_strike:
             c = calls_by_strike[strike]
-            if c.gamma is not None and c.open_interest > 0:
-                c_gex = c.gamma * c.open_interest * multiplier * spot_price * 0.01
+            if c.open_interest > 0:
+                gamma = c.gamma
+                # BSM fallback: compute gamma analytically if IB didn't supply one
+                if gamma is None and c.implied_vol and c.implied_vol > 0 and time_to_expiry_years > 0:
+                    gamma = _bsm_gamma(spot_price, strike, time_to_expiry_years,
+                                       risk_free_rate, c.implied_vol)
+                if gamma is not None:
+                    c_gex = gamma * c.open_interest * multiplier * spot_price * 0.01
 
         # Put GEX (negative contribution - dealers short puts hedge by selling)
         if strike in puts_by_strike:
             p = puts_by_strike[strike]
-            if p.gamma is not None and p.open_interest > 0:
-                p_gex = -1.0 * p.gamma * p.open_interest * multiplier * spot_price * 0.01
+            if p.open_interest > 0:
+                gamma = p.gamma
+                # BSM fallback: compute gamma analytically if IB didn't supply one
+                if gamma is None and p.implied_vol and p.implied_vol > 0 and time_to_expiry_years > 0:
+                    gamma = _bsm_gamma(spot_price, strike, time_to_expiry_years,
+                                       risk_free_rate, p.implied_vol)
+                if gamma is not None:
+                    p_gex = -1.0 * gamma * p.open_interest * multiplier * spot_price * 0.01
 
         call_gex[strike] = c_gex
         put_gex[strike] = p_gex
