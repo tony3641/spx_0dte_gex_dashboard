@@ -321,9 +321,13 @@
     }
 
     function updateGexChart() {
-        if (!state.gexChartReady || !state.gex || !state.gex.gex_bars) return;
+        if (!state.gexChartReady) return;
 
-        const bars = state.gex.gex_bars;
+        // Pick data source based on gex mode
+        const gexData = state.gexMode === 'monthly' ? state.monthlyGex : state.gex;
+        if (!gexData || !gexData.gex_bars) return;
+
+        const bars = gexData.gex_bars;
         const strikes = bars.map(b => b.strike);
         const callGex = bars.map(b => b.call_gex);
         const putGex = bars.map(b => b.put_gex);
@@ -335,7 +339,7 @@
 
         // Use latest currentSpot (updated via status msgs) so the line moves in
         // real-time as ES moves, rather than waiting for the next chain fetch.
-        const spotForLine = state.currentSpot > 0 ? state.currentSpot : (state.gex.spot_price || 0);
+        const spotForLine = state.currentSpot > 0 ? state.currentSpot : (gexData.spot_price || 0);
         const spotLabel = state.esDerived
             ? `ES derived SPX: ${spotForLine}`
             : `SPX: ${spotForLine}`;
@@ -358,10 +362,10 @@
 
         // Mark key strikes on GEX chart
         const keyLevels = [
-            { val: state.gex.call_wall, color: '#22c55e', label: 'CW' },
-            { val: state.gex.put_wall, color: '#ef4444', label: 'PW' },
-            { val: state.gex.gamma_flip, color: '#eab308', label: 'GF' },
-            { val: state.gex.max_pain, color: '#3b82f6', label: 'MP' },
+            { val: gexData.call_wall, color: '#22c55e', label: 'CW' },
+            { val: gexData.put_wall, color: '#ef4444', label: 'PW' },
+            { val: gexData.gamma_flip, color: '#eab308', label: 'GF' },
+            { val: gexData.max_pain, color: '#3b82f6', label: 'MP' },
         ];
 
         for (const lv of keyLevels) {
@@ -382,13 +386,13 @@
         }
 
         // Net GEX + regime annotation in top-right of chart
-        const netGex = state.gex.total_net_gex;
+        const netGex = gexData.total_net_gex;
         if (netGex != null) {
             const isPositive = netGex >= 0;
             const regimeLabel = isPositive ? '- CONVERGING' : '- DIVERGING';
             const regimeColor = isPositive ? '#4ade80' : '#f87171';
-            const callOI = state.gex.total_call_oi;
-            const putOI = state.gex.total_put_oi;
+            const callOI = gexData.total_call_oi;
+            const putOI = gexData.total_put_oi;
             const callOIStr = (callOI != null && callOI > 0) ? callOI.toLocaleString() : '-';
             const putOIStr = (putOI != null && putOI > 0) ? putOI.toLocaleString() : '-';
             
@@ -404,8 +408,8 @@
             // GEX Skew %
             let gexSkewStr = '-';
             let gexSkewColor = '#94a3b8';
-            const totalCallG = state.gex.total_call_gex || 0;
-            const totalPutG = Math.abs(state.gex.total_put_gex || 0);
+            const totalCallG = gexData.total_call_gex || 0;
+            const totalPutG = Math.abs(gexData.total_put_gex || 0);
             const totalGross = totalCallG + totalPutG;
             if (totalGross > 0) {
                 const pct = (totalCallG / totalGross * 100);
@@ -431,8 +435,8 @@
 
         // Calculate common range from all smile data if available
         let commonRange = null;
-        if (state.gex && state.gex.smile_data && state.gex.smile_data.length > 0) {
-            const smileStrikes = state.gex.smile_data.map(d => d.strike).filter(s => s != null);
+        if (gexData && gexData.smile_data && gexData.smile_data.length > 0) {
+            const smileStrikes = gexData.smile_data.map(d => d.strike).filter(s => s != null);
             if (smileStrikes.length > 0) {
                 const minSmile = Math.min(...smileStrikes);
                 const maxSmile = Math.max(...smileStrikes);
@@ -481,9 +485,13 @@
     }
 
     function updateSmileChart() {
-        if (!state.smileChartReady || !state.gex || !state.gex.smile_data) return;
+        if (!state.smileChartReady) return;
 
-        const sd = state.gex.smile_data;
+        // Pick data source based on gex mode
+        const gexData = state.gexMode === 'monthly' ? state.monthlyGex : state.gex;
+        if (!gexData || !gexData.smile_data) return;
+
+        const sd = gexData.smile_data;
         if (sd.length === 0) return;
 
         // Separate call and put data (filter nulls)
@@ -526,7 +534,7 @@
 
         // Spot + key level vertical lines for both subplots
         const shapes = [];
-        const spotForLine = state.currentSpot > 0 ? state.currentSpot : (state.gex.spot_price || 0);
+        const spotForLine = state.currentSpot > 0 ? state.currentSpot : (gexData.spot_price || 0);
         const addVertical = (xref, val, color, dash) => {
             if (val == null || val <= 0) return;
             shapes.push({
@@ -538,9 +546,9 @@
         // Draw on both x-axes
         for (const xr of ['x', 'x2']) {
             addVertical(xr, spotForLine, '#f8fafc', 'dot');
-            addVertical(xr, state.gex.call_wall, '#22c55e', 'dash');
-            addVertical(xr, state.gex.put_wall, '#ef4444', 'dash');
-            addVertical(xr, state.gex.gamma_flip, '#eab308', 'dash');
+            addVertical(xr, gexData.call_wall, '#22c55e', 'dash');
+            addVertical(xr, gexData.put_wall, '#ef4444', 'dash');
+            addVertical(xr, gexData.gamma_flip, '#eab308', 'dash');
         }
 
         // Preserve the CALLS / PUTS subtitle annotations
@@ -588,6 +596,71 @@
             shapes,
             annotations,
         });
+    }
+
+    // ======================================================================
+    // GEX mode toggle (0DTE ↔ Monthly)
+    // ======================================================================
+    function setGexMode(mode) {
+        if (mode !== '0dte' && mode !== 'monthly') return;
+        if (mode === state.gexMode) return;
+
+        state.gexMode = mode;
+        updateGexModeToggle();
+
+        // Notify server
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(`set_gex_mode:${mode}`);
+        }
+
+        // Re-render charts with the active data source
+        updateGexChart();
+        updateSmileChart();
+    }
+
+    function updateGexModeToggle() {
+        const btns = document.querySelectorAll('#gexModeToggle .gex-mode-btn');
+        btns.forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.mode === state.gexMode);
+        });
+
+        // Update chart labels
+        const gexLabel = document.getElementById('gexChartLabel');
+        const smileLabel = document.getElementById('smileChartLabel');
+        if (state.gexMode === 'monthly') {
+            const expStr = state.monthlyExpiration || '';
+            gexLabel.textContent = `Gamma Exposure (GEX) — SPX Monthly${expStr ? ' ' + expStr : ''}`;
+            smileLabel.textContent = `IV Smile — SPX Monthly${expStr ? ' ' + expStr : ''}`;
+        } else {
+            gexLabel.textContent = 'Gamma Exposure (GEX) by Strike';
+            smileLabel.textContent = 'IV Smile & Delta-Decay Efficiency';
+        }
+    }
+
+    function handleMonthlyGexProgress(data) {
+        const gexOverlay = document.getElementById('gexLoading');
+        const gexTextEl = document.getElementById('gexLoadingText');
+        const gexSubEl = document.getElementById('gexLoadingSub');
+        const smileOverlay = document.getElementById('smileLoading');
+        const smileTextEl = document.getElementById('smileLoadingText');
+        const smileSubEl = document.getElementById('smileLoadingSub');
+
+        if (data.phase === 'done') {
+            gexOverlay.classList.add('hidden');
+            smileOverlay.classList.add('hidden');
+            return;
+        }
+
+        // Only show spinner if we're in monthly mode and don't have data yet
+        if (state.gexMode !== 'monthly') return;
+        if (state.monthlyGex) return;
+
+        gexOverlay.classList.remove('hidden');
+        smileOverlay.classList.remove('hidden');
+        gexTextEl.textContent = 'Fetching monthly option chain\u2026';
+        gexSubEl.textContent = '';
+        smileTextEl.textContent = 'Fetching monthly option chain\u2026';
+        smileSubEl.textContent = '';
     }
 
     // ======================================================================

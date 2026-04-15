@@ -33,10 +33,16 @@ The server binds to all network interfaces (`0.0.0.0`), so it's accessible from 
 
 The exact URLs are printed to the console when the server starts. You can override the listening address with the `SERVER_HOST` environment variable if needed.
 
+##NEW
+- **Choice of 0DTE and Monthly SPX option** on **GEX** dashboard
+- **Support on Stop Limit order placement**
+- **Account/Order Management page**
+
 ## Screenshot
 
 ![Dashboard Screenshot](docs/screenshot.png)
 ![Option Chain w/ Strategy Builder](docs/screenshot2.png)
+![Account Management](docs/screenshot3.png)
 
 The dashboard displays three interactive charts:
 

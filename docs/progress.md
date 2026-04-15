@@ -291,6 +291,83 @@ Changed default `std_dev_range` from **8.0 to 5.0** in `chain_fetcher.py`:
 
 ---
 
+## Session: April 14-15, 2026 — Monthly SPX GEX Toggle
+
+### 0DTE ↔ Monthly SPX GEX Mode Toggle on Dashboard
+
+**Goal:** Add a segmented toggle ("0DTE | Monthly") on the Dashboard GEX chart panel so both the GEX-by-strike chart and IV Smile chart can display either the current 0DTE SPXW chain or the monthly SPX option chain (3rd Friday expiry). The price chart and header badges remain fixed to 0DTE data.
+
+**Implementation:**
+
+#### `chain_fetcher.py`
+- `fetch_option_chain()` now accepts a `trading_class: str = 'SPXW'` parameter; the IB `Option` contract constructor uses the passed value instead of hardcoded `'SPXW'`.
+- Added `_monthly_qualification_cache = QualificationCache()` — a separate qualification cache for SPX contracts to prevent collisions with the SPXW cache. Cache selection is driven by `trading_class`.
+- `clear_qualification_cache(monthly: bool = False)` — clears either cache.
+- Added `get_monthly_chain_params(ib, underlying)` — calls `reqSecDefOptParamsAsync`, filters for `tradingClass='SPX'` and `exchange='SMART'`, returns expirations/strikes.
+- Added `find_monthly_expiration(expirations)` — calculates the 3rd Friday of the current month using `timedelta`. If that date is already past, returns next month's 3rd Friday. Falls back to the first expiration ≥ today. Verified: April 2026 → `20260417`.
+
+#### `app_state.py`
+- Added 8 new fields: `gex_mode`, `monthly_expiration`, `monthly_expirations`, `monthly_strikes`, `monthly_gex_result`, `monthly_latest_gex`, `monthly_chain_data`, `monthly_last_fetch_ts`.
+
+#### `ib_connection.py`
+- Added `setup_monthly_chain_info(ib, state)` function — calls `get_monthly_chain_params()` and `find_monthly_expiration()` at startup to populate `state.monthly_expirations`, `state.monthly_strikes`, `state.monthly_expiration`.
+
+#### `chain_manager.py`
+- Added `MONTHLY_CACHE_TTL = 600` (10 minutes).
+- Added `monthly_gex_fetch(ib, state, broadcast_fn)` — on-demand async function that:
+  - Returns cached data immediately if fresh (< TTL).
+  - Otherwise calls `fetch_option_chain(..., trading_class='SPX')`, handles OI=0 fallback, computes `tte_years` (minutes-to-close for same-day expirations, else calendar days/252), calls `compute_gex()`, stores in `state.monthly_*` fields.
+  - Broadcasts `{"type": "monthly_gex", ...}` and `{"type": "monthly_gex_progress", ...}`.
+
+#### `ws_handler.py`
+- `init` payload extended with `"gex_mode"`, `"monthly_gex"`, and `"monthly_expiration"`.
+- New message handlers:
+  - `set_gex_mode:monthly` → sets `state.gex_mode = "monthly"`, fires `asyncio.create_task(monthly_gex_fetch(...))`.
+  - `set_gex_mode:0dte` → sets `state.gex_mode = "0dte"`, re-broadcasts cached 0DTE GEX if available.
+
+#### `server.py`
+- Startup lifespan and `/api/reconnect_ib` endpoint call `await setup_monthly_chain_info(ib, state)` after `setup_chain_info`.
+- `/api/state` response includes `"gex_mode"`, `"monthly_gex"`, `"monthly_expiration"`.
+
+#### `static/index.html`
+- GEX chart title replaced with `<span id="gexChartLabel">` + segmented toggle:
+  ```html
+  <span class="gex-mode-toggle" id="gexModeToggle">
+      <button class="gex-mode-btn active" data-mode="0dte" onclick="setGexMode('0dte')">0DTE</button>
+      <button class="gex-mode-btn" data-mode="monthly" onclick="setGexMode('monthly')">Monthly</button>
+  </span>
+  ```
+- IV Smile chart title wrapped in `<span id="smileChartLabel">` for dynamic text updates.
+
+#### `static/js/state.js`
+- Added 3 fields: `gexMode: '0dte'`, `monthlyGex: null`, `monthlyExpiration: ''`.
+
+#### `static/js/charts.js`
+- `updateGexChart()` and `updateSmileChart()` now resolve `gexData = state.gexMode === 'monthly' ? state.monthlyGex : state.gex` before rendering — all `state.gex.*` references replaced with `gexData.*`.
+- Added `setGexMode(mode)` — validates mode, updates `state.gexMode`, calls `updateGexModeToggle()`, sends `set_gex_mode:<mode>` over WS, re-renders charts.
+- Added `updateGexModeToggle()` — syncs `.active` class on toggle buttons; updates `gexChartLabel` and `smileChartLabel` text to include monthly expiration date when in Monthly mode.
+- Added `handleMonthlyGexProgress(data)` — shows/hides `gexLoading`/`smileLoading` overlays during monthly fetch; suppressed if `monthlyGex` data already cached.
+
+#### `static/js/strategy-builder.js`
+- Added `monthly_gex` message case — stores `state.monthlyGex`, formats expiration display string, calls `updateGexModeToggle()`, triggers chart re-renders if in Monthly mode.
+- Added `monthly_gex_progress` message case — calls `handleMonthlyGexProgress(msg.data)`.
+- `handleInit()` restores `gex_mode`, `monthlyGex`, `monthlyExpiration` from init payload and calls `updateGexModeToggle()`.
+
+#### `static/css/charts.css`
+- Added `.gex-mode-toggle` and `.gex-mode-btn` styles — segmented button control with dark theme (`#1e293b` background, `#22c55e` active state with `#0f172a` text).
+
+**Design Decisions:**
+- Monthly data is fetched **on-demand** (not looped) to conserve IB market data lines.
+- 10-minute TTL prevents redundant full chain fetches while keeping data reasonably fresh.
+- Separate qualification caches prevent SPXW/SPX contract metadata from colliding.
+- Price chart (1st graph) and header badges are always driven by 0DTE data regardless of mode.
+
+**Files:** `chain_fetcher.py`, `chain_manager.py`, `app_state.py`, `ib_connection.py`, `ws_handler.py`, `server.py`, `static/index.html`, `static/js/charts.js`, `static/js/strategy-builder.js`, `static/js/state.js`, `static/css/charts.css`
+
+**Result:** Toggle appears in the GEX chart title bar. Clicking "Monthly" triggers an on-demand fetch of the SPX monthly chain (3rd Friday expiry), renders GEX-by-strike and IV Smile for that contract, and labels both chart titles with the expiration date. Clicking "0DTE" instantly reverts to the live 0DTE SPXW data. 91/92 tests pass (1 pre-existing BSM precision failure unrelated to this feature).
+
+---
+
 ## Architecture Notes
 
 - **IB data flow:** `ib.pendingTickersEvent` (async) → `on_pending_tickers` → updates `state.spx_price` / `state.es_price` → derives ES-based SPX when not in RTH.

@@ -579,3 +579,98 @@ async def chain_stream_loop(ib, state, broadcast_fn):
         except Exception as e:
             logger.error(f"Chain stream error: {e}")
             await asyncio.sleep(5)
+
+
+# ---------------------------------------------------------------------------
+# Monthly GEX fetch (on-demand, not a loop)
+# ---------------------------------------------------------------------------
+MONTHLY_CACHE_TTL = 600  # 10 minutes
+
+async def monthly_gex_fetch(ib, state, broadcast_fn):
+    """Fetch SPX monthly option chain and compute GEX, broadcast result.
+
+    Skips fetch if cached data is less than MONTHLY_CACHE_TTL seconds old.
+    """
+    import time as _time
+
+    now_mono = _time.monotonic()
+    if (state.monthly_latest_gex is not None
+            and (now_mono - state.monthly_last_fetch_ts) < MONTHLY_CACHE_TTL):
+        logger.info("Monthly GEX cache still fresh, re-broadcasting cached data")
+        await broadcast_fn({"type": "monthly_gex", "data": state.monthly_latest_gex})
+        return
+
+    if not state.connected or not state.monthly_expiration:
+        logger.warning("Cannot fetch monthly GEX: not connected or no monthly expiration")
+        return
+    if state.spx_price <= 0:
+        logger.warning("Cannot fetch monthly GEX: no reference price")
+        return
+
+    logger.info(
+        f"Starting monthly GEX fetch: exp={state.monthly_expiration}, "
+        f"spot={state.spx_price:.2f}, {len(state.monthly_strikes)} strikes"
+    )
+
+    await broadcast_fn({"type": "monthly_gex_progress", "data": {"phase": "starting"}})
+
+    try:
+        options = await fetch_option_chain(
+            ib=ib,
+            underlying=state.spx_contract,
+            expiration=state.monthly_expiration,
+            strikes=state.monthly_strikes,
+            spot_price=state.spx_price,
+            std_dev_range=8.0,
+            annual_vol=state.annual_vol,
+            trading_class='SPX',
+        )
+
+        if not options:
+            logger.warning("No option data returned from monthly chain fetch")
+            await broadcast_fn({"type": "monthly_gex_progress", "data": {"phase": "done"}})
+            return
+
+        total_oi = sum(o.open_interest for o in options)
+        if total_oi == 0:
+            logger.info("Monthly OI all zeros, using volume as proxy")
+            for o in options:
+                o.open_interest = o.volume
+
+        # Compute time to expiry
+        exp_date = datetime.strptime(state.monthly_expiration, "%Y%m%d").date()
+        now = now_et()
+        if exp_date == now.date():
+            close_dt = now.replace(hour=16, minute=0, second=0, microsecond=0)
+            mins_left = max((close_dt - now).total_seconds() / 60.0, 1.0)
+            tte_years = mins_left / (390.0 * 252.0)
+        else:
+            days_left = (exp_date - now.date()).days
+            tte_years = max(days_left, 1) / 252.0
+
+        gex_result = compute_gex(
+            options, state.spx_price,
+            time_to_expiry_years=tte_years,
+            risk_free_rate=state.risk_free_rate,
+        )
+        gex_result.expiration = state.monthly_expiration
+        gex_result.timestamp = now_et().isoformat()
+
+        state.monthly_gex_result = gex_result
+        state.monthly_latest_gex = gex_result_to_dict(gex_result)
+        state.monthly_latest_gex["es_derived"] = state.es_derived
+        state.monthly_chain_data = options
+        state.monthly_last_fetch_ts = _time.monotonic()
+
+        logger.info(
+            f"Monthly GEX computed: Call Wall={gex_result.call_wall}, "
+            f"Put Wall={gex_result.put_wall}, Gamma Flip={gex_result.gamma_flip}, "
+            f"Max Pain={gex_result.max_pain}"
+        )
+
+        await broadcast_fn({"type": "monthly_gex", "data": state.monthly_latest_gex})
+
+    except Exception as e:
+        logger.error(f"Monthly GEX fetch error: {e}", exc_info=True)
+    finally:
+        await broadcast_fn({"type": "monthly_gex_progress", "data": {"phase": "done"}})

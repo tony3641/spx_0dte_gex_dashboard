@@ -25,6 +25,36 @@
             pointer-events: none;
         }
 
+        /* GEX mode toggle (0DTE / Monthly) */
+        .gex-mode-toggle {
+            pointer-events: auto;
+            display: inline-flex;
+            margin-left: 10px;
+            vertical-align: middle;
+            background: #1e293b;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid #334155;
+        }
+        .gex-mode-btn {
+            background: transparent;
+            border: none;
+            color: #64748b;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 10px;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+            line-height: 1.4;
+        }
+        .gex-mode-btn:hover {
+            color: #cbd5e1;
+        }
+        .gex-mode-btn.active {
+            background: #22c55e;
+            color: #0f172a;
+        }
+
         /* Inline help tooltip for chart titles */
         .chart-title .help {
             pointer-events: auto;

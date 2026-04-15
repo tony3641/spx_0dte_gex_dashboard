@@ -86,7 +86,12 @@
             <div id="priceChart"></div>
         </div>
         <div class="chart-panel">
-            <div class="chart-title">Gamma Exposure (GEX) by Strike
+            <div class="chart-title">
+                <span id="gexChartLabel">Gamma Exposure (GEX) by Strike</span>
+                <span class="gex-mode-toggle" id="gexModeToggle">
+                    <button class="gex-mode-btn active" data-mode="0dte" onclick="setGexMode('0dte')">0DTE</button>
+                    <button class="gex-mode-btn" data-mode="monthly" onclick="setGexMode('monthly')">Monthly</button>
+                </span>
                 <span class="help" tabindex="0" aria-label="GEX chart info">?
                     <span class="tooltip" role="tooltip">Use this chart to see where gamma exposure accumulates by strike. Peaks show levels where option dealer hedging is concentrated; net line direction indicates whether overall market makers are long (positive) or short (negative) gamma.</span>
                 </span>
@@ -99,7 +104,7 @@
             <div id="gexChart"></div>
         </div>
         <div class="chart-panel">
-            <div class="chart-title">IV Smile & Delta-Decay Efficiency
+            <div class="chart-title"><span id="smileChartLabel">IV Smile & Delta-Decay Efficiency</span>
                 <span class="help" tabindex="0" aria-label="IV Smile help">?
                     <span class="tooltip" role="tooltip">Delta-decay efficiency = |charm| - |delta|.<br>Computed from short finite-difference decay (15-minute step) of option delta; it represents the rate at which an option's delta changes relative to its current delta magnitude.<br>Higher values indicate faster delta erosion per unit delta - useful for assessing hedging sensitivity to time decay and short-term rebalancing cost.</span>
                 </span>

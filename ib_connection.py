@@ -13,7 +13,7 @@ from ib_insync import IB, Index, Future
 
 from config import IB_HOST, IB_PORT, IB_CLIENT_ID
 from market_hours import now_et, is_within_rth, last_trading_date
-from chain_fetcher import get_chain_params
+from chain_fetcher import get_chain_params, get_monthly_chain_params, find_monthly_expiration
 from market_hours import find_next_expiration, get_expiration_display
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,21 @@ async def setup_chain_info(ib: IB, state):
         logger.info(f"Target expiration: {get_expiration_display(exp)}")
     else:
         logger.warning("No valid SPXW expiration found")
+
+
+async def setup_monthly_chain_info(ib: IB, state):
+    """Fetch SPX monthly chain parameters and determine target monthly expiration."""
+    if state.spx_contract is None:
+        return
+    exps, strikes = await get_monthly_chain_params(ib, state.spx_contract)
+    state.monthly_expirations = exps
+    state.monthly_strikes = strikes
+    exp = find_monthly_expiration(exps)
+    if exp:
+        state.monthly_expiration = exp
+        logger.info(f"Monthly expiration: {get_expiration_display(exp)}")
+    else:
+        logger.warning("No valid SPX monthly expiration found")
 
 
 def make_pending_tickers_handler(state):

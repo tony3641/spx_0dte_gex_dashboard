@@ -25,6 +25,10 @@
         chainViewportPendingStrike: null,
         chainViewportLastSentMs: 0,
         chainViewportSendTimer: null,
+        // GEX mode toggle (dashboard)
+        gexMode: '0dte',        // '0dte' | 'monthly'
+        monthlyGex: null,       // cached monthly GEX data
+        monthlyExpiration: '',  // display string for monthly expiration
         // Account tab state
         accountSummary: {},
         positions: [],

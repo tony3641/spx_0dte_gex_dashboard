@@ -16,6 +16,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from config import VIEWPORT_CENTER_MIN_INTERVAL
 from market_hours import now_et, market_status, get_expiration_display, is_within_rth
 from chain_fetcher import clear_qualification_cache
+from chain_manager import monthly_gex_fetch
 from account_manager import refresh_account_state, build_account_payload
 from order_manager import handle_place_order, handle_cancel_order
 
@@ -121,6 +122,9 @@ async def websocket_endpoint(ws: WebSocket, ib, state, broadcast_fn):
                 "es_price": round(state.es_price, 2) if state.es_price > 0 else None,
                 "chain_quotes": state.chain_quotes_cache,
                 "account": build_account_payload(state),
+                "gex_mode": state.gex_mode,
+                "monthly_gex": state.monthly_latest_gex,
+                "monthly_expiration": get_expiration_display(state.monthly_expiration) if state.monthly_expiration else "N/A",
             }
         }
         await ws.send_text(json.dumps(init_msg))
@@ -145,6 +149,20 @@ async def websocket_endpoint(ws: WebSocket, ib, state, broadcast_fn):
                     state.active_tab = "dashboard"
                     state.viewport_center_strike = 0.0
                     logger.info("Client active tab: dashboard")
+
+                elif msg == "set_gex_mode:monthly":
+                    state.gex_mode = "monthly"
+                    logger.info("GEX mode set to monthly")
+                    asyncio.create_task(monthly_gex_fetch(ib, state, broadcast_fn))
+
+                elif msg == "set_gex_mode:0dte":
+                    state.gex_mode = "0dte"
+                    logger.info("GEX mode set to 0DTE")
+                    # Re-send cached 0DTE GEX immediately
+                    if state.latest_gex:
+                        gex_payload = dict(state.latest_gex)
+                        gex_payload["es_derived"] = state.es_derived
+                        await broadcast_fn({"type": "gex", "data": gex_payload})
 
                 elif msg == "set_tab:account":
                     state.active_tab = "account"

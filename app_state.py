@@ -66,6 +66,16 @@ class AppState:
         self.viewport_center_strike: float = 0.0
         self.viewport_center_last_ts: float = 0.0
 
+        # Monthly GEX (Dashboard toggle: 0DTE ↔ Monthly)
+        self.gex_mode: str = "0dte"                   # "0dte" | "monthly"
+        self.monthly_expiration: str = ""
+        self.monthly_expirations: List[str] = []
+        self.monthly_strikes: List[float] = []
+        self.monthly_gex_result: Optional[GEXResult] = None
+        self.monthly_latest_gex: Optional[dict] = None
+        self.monthly_chain_data: List[OptionData] = []
+        self.monthly_last_fetch_ts: float = 0.0       # time.monotonic()
+
         # Account / portfolio / orders (Tab 3)
         self.account_summary: dict = {}
         self.positions: List[dict] = []

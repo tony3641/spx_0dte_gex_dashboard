@@ -37,13 +37,18 @@ class QualificationCache:
 
 
 _qualification_cache = QualificationCache()
+_monthly_qualification_cache = QualificationCache()
 
 
-def clear_qualification_cache(reason: str = "manual refresh") -> None:
+def clear_qualification_cache(reason: str = "manual refresh", monthly: bool = False) -> None:
     """Clear qualified/unknown contract cache so next fetch re-qualifies from scratch."""
-    global _qualification_cache
-    _qualification_cache = QualificationCache()
-    logger.info(f"Qualification cache cleared ({reason})")
+    global _qualification_cache, _monthly_qualification_cache
+    if monthly:
+        _monthly_qualification_cache = QualificationCache()
+        logger.info(f"Monthly qualification cache cleared ({reason})")
+    else:
+        _qualification_cache = QualificationCache()
+        logger.info(f"Qualification cache cleared ({reason})")
 
 
 def _contract_key(expiration: str, strike: float, right: str) -> str:
@@ -78,6 +83,7 @@ async def fetch_option_chain(
     progress_callback=None,
     force_requalify: bool = False,
     allow_unknown_retry: bool = False,
+    trading_class: str = 'SPXW',
 ) -> List[OptionData]:
     """
     Fetch the option chain for the given expiration using batched snapshots.
@@ -112,15 +118,16 @@ async def fetch_option_chain(
 
     # Build all option contracts (calls + puts), skipping known-unknown contracts
     # unless this fetch is an explicit manual retry.
-    global _qualification_cache
+    global _qualification_cache, _monthly_qualification_cache
+    cache = _monthly_qualification_cache if trading_class == 'SPX' else _qualification_cache
     if allow_unknown_retry:
-        _qualification_cache.unknown_keys.clear()
+        cache.unknown_keys.clear()
 
     contracts: List[Option] = []
     for strike in filtered_strikes:
         for right in ('C', 'P'):
             key = _contract_key(expiration, strike, right)
-            if key in _qualification_cache.unknown_keys and not allow_unknown_retry:
+            if key in cache.unknown_keys and not allow_unknown_retry:
                 continue
             contracts.append(
                 Option(
@@ -131,20 +138,20 @@ async def fetch_option_chain(
                     exchange='SMART',
                     multiplier='100',
                     currency='USD',
-                    tradingClass='SPXW',
+                    tradingClass=trading_class,
                 )
             )
 
     logger.info(f"Total contracts to fetch: {len(contracts)}")
 
     need_requalify = force_requalify
-    if _qualification_cache.expiration != expiration:
+    if cache.expiration != expiration:
         need_requalify = True
-    elif _qualification_cache.anchor_spot <= 0:
+    elif cache.anchor_spot <= 0:
         need_requalify = True
-    elif abs(spot_price - _qualification_cache.anchor_spot) > QUAL_CACHE_REQUALIFY_MOVE:
+    elif abs(spot_price - cache.anchor_spot) > QUAL_CACHE_REQUALIFY_MOVE:
         need_requalify = True
-    elif not _qualification_cache.qualified:
+    elif not cache.qualified:
         need_requalify = True
 
     qualified: List[Option] = []
@@ -154,18 +161,18 @@ async def fetch_option_chain(
             for c in contracts
         }
         qualified = [
-            c for c in _qualification_cache.qualified
+            c for c in cache.qualified
             if _contract_key(expiration, c.strike, c.right) in valid_keys
         ]
         logger.info(
             f"Using cached qualified contracts: {len(qualified)} "
-            f"(anchor={_qualification_cache.anchor_spot:.2f}, spot={spot_price:.2f})"
+            f"(anchor={cache.anchor_spot:.2f}, spot={spot_price:.2f})"
         )
     else:
         # Phase 1: Qualify contracts in batches
         logger.info("Re-qualifying contracts (cache miss / spot moved / manual retry)")
         newly_qualified: List[Option] = []
-        unknown_keys: Set[str] = set(_qualification_cache.unknown_keys)
+        unknown_keys: Set[str] = set(cache.unknown_keys)
 
         for i in range(0, len(contracts), QUALIFY_BATCH_SIZE):
             batch = contracts[i:i + QUALIFY_BATCH_SIZE]
@@ -193,11 +200,16 @@ async def fetch_option_chain(
             # Small delay to avoid hammering IB
             await asyncio.sleep(0.1)
 
-        _qualification_cache.expiration = expiration
-        _qualification_cache.anchor_spot = spot_price
-        _qualification_cache.qualified = newly_qualified
-        _qualification_cache.unknown_keys = unknown_keys
+        cache.expiration = expiration
+        cache.anchor_spot = spot_price
+        cache.qualified = newly_qualified
+        cache.unknown_keys = unknown_keys
         qualified = newly_qualified
+
+        if trading_class == 'SPX':
+            _monthly_qualification_cache = cache
+        else:
+            _qualification_cache = cache
 
         logger.info(
             f"Qualification cache updated: qualified={len(newly_qualified)}, "
@@ -422,3 +434,94 @@ async def get_chain_params(ib: IB, underlying: Contract) -> Tuple[List[str], Lis
     )
 
     return expirations, strikes
+
+
+async def get_monthly_chain_params(ib: IB, underlying: Contract) -> Tuple[List[str], List[float]]:
+    """
+    Get available SPX monthly expirations and strikes.
+
+    Returns:
+        (expirations, strikes) - sorted lists for tradingClass='SPX'.
+    """
+    chains = await ib.reqSecDefOptParamsAsync(
+        underlying.symbol, '', underlying.secType, underlying.conId
+    )
+
+    spx_chain = None
+    for chain in chains:
+        if chain.tradingClass == 'SPX' and chain.exchange == 'SMART':
+            spx_chain = chain
+            break
+
+    if spx_chain is None:
+        for chain in chains:
+            if chain.tradingClass == 'SPX':
+                spx_chain = chain
+                break
+
+    if spx_chain is None:
+        logger.error("No SPX monthly chain found!")
+        return [], []
+
+    expirations = sorted(spx_chain.expirations)
+    strikes = sorted(spx_chain.strikes)
+
+    logger.info(
+        f"SPX monthly chain: {len(expirations)} expirations, {len(strikes)} strikes, "
+        f"exchange={spx_chain.exchange}"
+    )
+
+    return expirations, strikes
+
+
+def find_monthly_expiration(expirations: List[str]) -> Optional[str]:
+    """
+    Find the current month's standard monthly expiration (3rd Friday).
+
+    If past this month's expiry, returns next month's 3rd Friday.
+    Falls back to searching the expirations list for the nearest future date.
+    """
+    from datetime import date as _date, timedelta
+    from market_hours import now_et
+
+    if not expirations:
+        return None
+
+    today = now_et().date()
+    sorted_exps = sorted(expirations)
+
+    # Calculate 3rd Friday of current month and next month
+    def third_friday(year: int, month: int) -> _date:
+        # 1st of month
+        first = _date(year, month, 1)
+        # Day of week (0=Mon, 4=Fri)
+        dow = first.weekday()
+        # First Friday
+        first_fri = first + timedelta(days=(4 - dow) % 7)
+        # 3rd Friday = first Friday + 14 days
+        return first_fri + timedelta(days=14)
+
+    tf_this = third_friday(today.year, today.month)
+
+    if tf_this >= today:
+        # This month's 3rd Friday is still in the future (or today)
+        target_str = tf_this.strftime("%Y%m%d")
+        if target_str in sorted_exps:
+            return target_str
+    else:
+        # This month's 3rd Friday has passed, try next month
+        if today.month == 12:
+            tf_next = third_friday(today.year + 1, 1)
+        else:
+            tf_next = third_friday(today.year, today.month + 1)
+        target_str = tf_next.strftime("%Y%m%d")
+        if target_str in sorted_exps:
+            return target_str
+
+    # Fallback: find the first expiration >= today
+    today_str = today.strftime("%Y%m%d")
+    for exp in sorted_exps:
+        if exp >= today_str:
+            return exp
+
+    return None

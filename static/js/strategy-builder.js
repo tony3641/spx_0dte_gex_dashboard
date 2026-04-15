@@ -415,6 +415,26 @@
             case 'order_status':
                 handleOrderStatus(msg.data);
                 break;
+            case 'monthly_gex':
+                state.monthlyGex = msg.data;
+                if (msg.data && msg.data.expiration) {
+                    // Format YYYYMMDD to YYYY-MM-DD for display
+                    const e = msg.data.expiration;
+                    state.monthlyExpiration = e.length === 8
+                        ? `${e.slice(0,4)}-${e.slice(4,6)}-${e.slice(6,8)}`
+                        : e;
+                    updateGexModeToggle();
+                }
+                if (state.gexMode === 'monthly') {
+                    updateGexChart();
+                    updateSmileChart();
+                    updatePriceChart();
+                    updateBadges();
+                }
+                break;
+            case 'monthly_gex_progress':
+                handleMonthlyGexProgress(msg.data);
+                break;
             case 'ping':
                 break;
             default:
@@ -455,6 +475,23 @@
 
         updateStatus(data);
         updateBadges();
+
+        // Restore GEX mode and monthly data
+        if (data.gex_mode) {
+            state.gexMode = data.gex_mode;
+            updateGexModeToggle();
+        }
+        if (data.monthly_gex) {
+            state.monthlyGex = data.monthly_gex;
+        }
+        if (data.monthly_expiration) {
+            state.monthlyExpiration = data.monthly_expiration;
+        }
+        // Re-render charts with correct mode data
+        if (state.gexMode === 'monthly' && state.monthlyGex) {
+            updateGexChart();
+            updateSmileChart();
+        }
 
         // Restore option chain data for Tab 2
         if (data.chain_quotes) {

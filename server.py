@@ -33,6 +33,7 @@ from app_state import AppState
 from ib_connection import (
     connect_ib, setup_spx_subscription, setup_chain_info,
     make_pending_tickers_handler, setup_es_subscription, fetch_es_baseline,
+    setup_monthly_chain_info,
 )
 from account_manager import (
     refresh_account_state, build_account_payload,
@@ -83,6 +84,7 @@ async def lifespan(_app):
         await connect_ib(ib, state)
         await setup_spx_subscription(ib, state)
         await setup_chain_info(ib, state)
+        await setup_monthly_chain_info(ib, state)
 
         # ES futures for off-hours derived price
         await setup_es_subscription(ib, state)
@@ -179,6 +181,9 @@ async def get_state():
         "historical_date": state.historical_date,
         "es_derived": state.es_derived,
         "es_price": round(state.es_price, 2) if state.es_price > 0 else None,
+        "gex_mode": state.gex_mode,
+        "monthly_gex": state.monthly_latest_gex,
+        "monthly_expiration": get_expiration_display(state.monthly_expiration) if state.monthly_expiration else "N/A",
     }
 
 
@@ -222,6 +227,7 @@ async def reconnect_ib(payload: dict):
         await connect_ib(ib, state, port=port)
         await setup_spx_subscription(ib, state)
         await setup_chain_info(ib, state)
+        await setup_monthly_chain_info(ib, state)
         state.manual_refresh_requested = True
         if state.force_chain_fetch_event is not None:
             state.force_chain_fetch_event.set()
