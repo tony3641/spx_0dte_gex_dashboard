@@ -120,15 +120,18 @@ class MockIB:
 
     def __init__(self, connected: bool = True,
                  fill_immediately: bool = True,
-                 reject: bool = False):
+                 reject: bool = False,
+                 bracket_mode: bool = False):
         self._connected = connected
         self._fill_immediately = fill_immediately
         self._reject = reject
+        self._bracket_mode = bracket_mode
         self._next_order_id = 100
         self._next_con_id = 10000
         self._placed_orders: List[MockTrade] = []
         self._cancelled_orders: List[int] = []
         self._open_trades: List[MockTrade] = []
+        self._bracket_children: Dict[int, List[MockTrade]] = {}  # parentId → [child trades]
         self._account_values: list = []
         self._portfolio: list = []
         self._fills: list = []
@@ -209,10 +212,20 @@ class MockIB:
         self._next_order_id += 1
         order.orderId = order_id
 
+        is_bracket_child = self._bracket_mode and order.parentId != 0
+
         if self._reject:
             status = MockOrderStatus(
                 status="Cancelled", filled=0,
                 remaining=order.totalQuantity, avgFillPrice=0.0,
+            )
+        elif is_bracket_child:
+            # Bracket child starts as PreSubmitted (IB holds it until parent fills)
+            status = MockOrderStatus(
+                status="PreSubmitted",
+                filled=0,
+                remaining=order.totalQuantity,
+                avgFillPrice=0.0,
             )
         elif self._fill_immediately:
             fill_price = order.lmtPrice if order.lmtPrice else 3.50
@@ -239,6 +252,10 @@ class MockIB:
         self._placed_orders.append(trade)
         self._open_trades.append(trade)
 
+        # Track bracket parent→children mapping
+        if is_bracket_child:
+            self._bracket_children.setdefault(order.parentId, []).append(trade)
+
         self.call_log.append({
             "method": "placeOrder",
             "orderId": order_id,
@@ -263,6 +280,11 @@ class MockIB:
             if trade.order.orderId == order.orderId:
                 trade.orderStatus.status = "Cancelled"
                 break
+        # Cascade cancel to bracket children (mirrors real IB behaviour)
+        for child_trade in self._bracket_children.get(order.orderId, []):
+            if child_trade.orderStatus.status not in ("Filled", "Cancelled"):
+                child_trade.orderStatus.status = "Cancelled"
+                self._cancelled_orders.append(child_trade.order.orderId)
 
     def reqOpenOrders(self):
         self.call_log.append({"method": "reqOpenOrders"})
@@ -307,6 +329,23 @@ class MockIB:
                 trade.orderStatus.remaining = trade.order.totalQuantity - filled
                 break
 
+    def simulate_parent_fill(self, parent_order_id: int, avg_price: float = 0.0):
+        """Simulate IB filling a parent order and activating bracket children.
+
+        Transitions parent → Filled and all bracket children
+        PreSubmitted → Submitted (IB's real lifecycle).
+        """
+        for trade in self._placed_orders:
+            if trade.order.orderId == parent_order_id:
+                trade.orderStatus.status = "Filled"
+                trade.orderStatus.filled = trade.order.totalQuantity
+                trade.orderStatus.remaining = 0
+                trade.orderStatus.avgFillPrice = avg_price or trade.order.lmtPrice or 3.50
+                break
+        for child_trade in self._bracket_children.get(parent_order_id, []):
+            if child_trade.orderStatus.status == "PreSubmitted":
+                child_trade.orderStatus.status = "Submitted"
+
 
 # ---------------------------------------------------------------------------
 # Pytest fixtures
@@ -334,6 +373,18 @@ def mock_ib_reject():
 def mock_ib_disconnected():
     """A disconnected MockIB."""
     return MockIB(connected=False)
+
+
+@pytest.fixture
+def mock_ib_bracket():
+    """A connected MockIB with bracket order simulation.
+
+    - Parent orders fill immediately.
+    - Child orders (parentId != 0) start as PreSubmitted.
+    - Use mock_ib_bracket.simulate_parent_fill(id) to transition children.
+    - cancelOrder cascades to bracket children.
+    """
+    return MockIB(connected=True, fill_immediately=True, bracket_mode=True)
 
 
 @pytest.fixture
@@ -394,6 +445,43 @@ def sample_legs_combo():
 def sample_stop_loss():
     """Stop-loss dict payload."""
     return {"stopPrice": 1.50, "limitPrice": 1.40}
+
+
+# ---------------------------------------------------------------------------
+# MockWebSocket — captures sent messages for assertion
+# ---------------------------------------------------------------------------
+
+class MockWebSocket:
+    """Minimal mock WebSocket that records sent messages."""
+
+    def __init__(self):
+        self.sent: List[str] = []
+        self._closed = False
+
+    async def send_text(self, text: str):
+        if self._closed:
+            raise RuntimeError("WebSocket closed")
+        self.sent.append(text)
+
+    def get_messages(self) -> List[dict]:
+        """Return all sent messages parsed as JSON dicts."""
+        return [json.loads(s) for s in self.sent]
+
+    def get_order_statuses(self) -> List[dict]:
+        """Return only order_status messages' data payloads."""
+        return [
+            m["data"] for m in self.get_messages()
+            if m.get("type") == "order_status"
+        ]
+
+    def close(self):
+        self._closed = True
+
+
+@pytest.fixture
+def mock_ws():
+    """A MockWebSocket for capturing WS messages in tests."""
+    return MockWebSocket()
 
 
 # ---------------------------------------------------------------------------

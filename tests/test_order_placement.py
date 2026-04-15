@@ -15,7 +15,10 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from order_manager import handle_place_order, handle_cancel_order, _PENDING_STATUSES
+from order_manager import (
+    handle_place_order, handle_cancel_order, _PENDING_STATUSES,
+    watch_and_push_status, watch_parent_and_cancel_child,
+)
 from config import spx_tick_for_price, round_abs_to_tick, round_signed_to_tick
 
 
@@ -629,3 +632,996 @@ async def test_outside_rth_flag(mock_ib, app_state):
 
     trade = mock_ib.get_last_trade()
     assert trade.order.outsideRth is True
+
+
+# ===========================================================================
+# STOP LIMIT ORDER LIFECYCLE TESTS
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 18. Bracket child starts as PreSubmitted, transitions on parent fill
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_order_stays_presubmitted_until_parent_fills(mock_ib_bracket, app_state, sample_stop_loss):
+    """Stop order should start as PreSubmitted. After parent fills,
+    stop should transition to Submitted."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib_bracket, app_state, payload)
+
+    orders = mock_ib_bracket.get_placed_orders()
+    assert len(orders) >= 2
+    parent = orders[0]
+    stop = orders[1]
+
+    # Parent fills immediately in bracket_mode
+    assert parent.orderStatus.status == "Filled"
+    # Stop should be PreSubmitted (bracket child)
+    assert stop.orderStatus.status == "PreSubmitted"
+    assert stop.order.parentId == parent.order.orderId
+
+    # Simulate IB fill propagation
+    mock_ib_bracket.simulate_parent_fill(parent.order.orderId)
+    assert stop.orderStatus.status == "Submitted"
+
+
+# ---------------------------------------------------------------------------
+# 19. Stop order cancelled when parent is cancelled
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_order_cancelled_when_parent_cancelled(mock_ib_bracket, app_state, sample_stop_loss):
+    """When the parent order is cancelled, the stop child must also be cancelled
+    (IB cascade behavior)."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib_bracket, app_state, payload)
+    orders = mock_ib_bracket.get_placed_orders()
+    parent = orders[0]
+    stop = orders[1]
+
+    assert stop.orderStatus.status == "PreSubmitted"
+
+    # Cancel the parent — MockIB now cascades to children
+    mock_ib_bracket.cancelOrder(parent.order)
+    assert parent.orderStatus.status == "Cancelled"
+    assert stop.orderStatus.status == "Cancelled"
+    assert stop.order.orderId in mock_ib_bracket._cancelled_orders
+
+
+# ---------------------------------------------------------------------------
+# 20. Stop action reversal for SELL parent
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_order_action_reversal_sell_parent(mock_ib, app_state, sample_stop_loss):
+    """SELL parent → stop should be BUY (opposite action)."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "P",
+            "action": "SELL",
+            "qty": 2,
+            "lmtPrice": 4.00,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+
+    orders = mock_ib.get_placed_orders()
+    assert len(orders) >= 2
+    parent = orders[0]
+    stop = orders[1]
+
+    assert parent.order.action == "SELL"
+    assert stop.order.action == "BUY"
+    assert stop.order.totalQuantity == 2
+    assert stop.order.parentId == parent.order.orderId
+
+
+# ---------------------------------------------------------------------------
+# 21. Both parent and stop persist in active_trades
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_order_persists_in_active_trades(mock_ib, app_state, sample_stop_loss):
+    """Both parent and stop order IDs should exist in state.active_trades."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+    orders = mock_ib.get_placed_orders()
+    parent = orders[0]
+    stop = orders[1]
+
+    assert parent.order.orderId in app_state.active_trades
+    assert stop.order.orderId in app_state.active_trades
+
+
+# ---------------------------------------------------------------------------
+# 22. WS status push for stop trade on parent fill (bracket lifecycle)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_order_ws_status_push_on_parent_fill(mock_ib_bracket, app_state, mock_ws, sample_stop_loss):
+    """watch_and_push_status for bracket child should push once stop leaves PreSubmitted."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib_bracket, app_state, payload)
+    orders = mock_ib_bracket.get_placed_orders()
+    parent = orders[0]
+    stop = orders[1]
+
+    assert stop.orderStatus.status == "PreSubmitted"
+
+    # Start watching the stop trade (bracket_child=True)
+    async def simulate_fill():
+        await asyncio.sleep(0.2)
+        mock_ib_bracket.simulate_parent_fill(parent.order.orderId)
+
+    task = asyncio.create_task(simulate_fill())
+    await watch_and_push_status(mock_ws, stop, timeout=3.0, bracket_child=True)
+    await task
+
+    statuses = mock_ws.get_order_statuses()
+    assert len(statuses) >= 1
+    stop_push = [s for s in statuses if s["orderId"] == stop.order.orderId]
+    assert len(stop_push) == 1
+    assert stop_push[0]["status"] == "Submitted"
+
+
+# ---------------------------------------------------------------------------
+# 23. WS status push for stop cancellation via parent cancel watcher
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_order_ws_status_push_on_parent_cancel(mock_ib_bracket, app_state, mock_ws, sample_stop_loss):
+    """watch_parent_and_cancel_child should cancel stop and push WS message
+    when parent is cancelled."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib_bracket, app_state, payload)
+    orders = mock_ib_bracket.get_placed_orders()
+    parent = orders[0]
+    stop = orders[1]
+
+    # Parent fills immediately in bracket_mode — set it back to Submitted
+    # so the watcher can observe the cancel transition
+    parent.orderStatus.status = "Submitted"
+
+    # Cancel parent after a short delay
+    async def cancel_parent():
+        await asyncio.sleep(0.2)
+        mock_ib_bracket.cancelOrder(parent.order)
+
+    task = asyncio.create_task(cancel_parent())
+    await watch_parent_and_cancel_child(
+        mock_ib_bracket, mock_ws, parent, stop, timeout=3.0
+    )
+    await task
+
+    assert stop.orderStatus.status == "Cancelled"
+    statuses = mock_ws.get_order_statuses()
+    cancel_pushes = [s for s in statuses if s["orderId"] == stop.order.orderId]
+    assert len(cancel_pushes) >= 1
+    assert cancel_pushes[0]["status"] == "Cancelled"
+    assert "parent" in cancel_pushes[0]["message"].lower()
+
+
+# ---------------------------------------------------------------------------
+# 24. Parent fill → watcher exits without cancelling stop
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_watcher_exits_on_parent_fill_without_cancelling_stop(mock_ib_bracket, app_state, mock_ws, sample_stop_loss):
+    """When parent fills, watch_parent_and_cancel_child should exit
+    without cancelling the stop."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib_bracket, app_state, payload)
+    orders = mock_ib_bracket.get_placed_orders()
+    parent = orders[0]
+    stop = orders[1]
+
+    # Parent is already Filled in bracket_mode
+    assert parent.orderStatus.status == "Filled"
+
+    # Watcher should exit immediately since parent is already terminal
+    await watch_parent_and_cancel_child(
+        mock_ib_bracket, mock_ws, parent, stop, timeout=2.0
+    )
+
+    # Stop should NOT be cancelled — it's still PreSubmitted (waiting for activation)
+    assert stop.orderStatus.status == "PreSubmitted"
+    # No cancel WS messages should have been sent
+    cancel_msgs = [s for s in mock_ws.get_order_statuses() if s["status"] == "Cancelled"]
+    assert len(cancel_msgs) == 0
+
+
+# ===========================================================================
+# MULTI-LEG COMBO STOP LIMIT LIFECYCLE TESTS
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 25. Debit spread (bull call) + stop lifecycle
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_combo_debit_spread_stop_lifecycle(mock_ib_bracket, app_state, sample_stop_loss):
+    """Bull call spread + stop loss: parent fills → stop starts PreSubmitted,
+    transitions to Submitted after simulate_parent_fill."""
+    payload = {
+        "legs": [
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5200.0,
+                "right": "C",
+                "action": "BUY",
+                "qty": 1,
+                "lmtPrice": 5.00,
+            },
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5210.0,
+                "right": "C",
+                "action": "SELL",
+                "qty": 1,
+                "lmtPrice": 3.00,
+            },
+        ],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "comboAction": "BUY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib_bracket, app_state, payload)
+    orders = mock_ib_bracket.get_placed_orders()
+    assert len(orders) >= 2
+
+    parent_bag = orders[0]
+    stop_bag = orders[1]
+
+    assert parent_bag.orderStatus.status == "Filled"
+    assert stop_bag.orderStatus.status == "PreSubmitted"
+    assert stop_bag.order.parentId == parent_bag.order.orderId
+    assert stop_bag.order.orderType == "STP LMT"
+    assert stop_bag.order.action == "SELL"  # opposite of BUY parent
+
+    # Simulate IB fill propagation
+    mock_ib_bracket.simulate_parent_fill(parent_bag.order.orderId)
+    assert stop_bag.orderStatus.status == "Submitted"
+
+
+# ---------------------------------------------------------------------------
+# 26. Credit spread + stop lifecycle
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_combo_credit_spread_stop_lifecycle(mock_ib_bracket, app_state, sample_stop_loss):
+    """Bear call credit spread + stop: SELL parent → BUY stop."""
+    payload = {
+        "legs": [
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5200.0,
+                "right": "P",
+                "action": "SELL",
+                "qty": 1,
+                "lmtPrice": 5.00,
+            },
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5190.0,
+                "right": "P",
+                "action": "BUY",
+                "qty": 1,
+                "lmtPrice": 3.00,
+            },
+        ],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "comboAction": "SELL",
+        "comboLmtPrice": -2.00,
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib_bracket, app_state, payload)
+    orders = mock_ib_bracket.get_placed_orders()
+    assert len(orders) >= 2
+
+    parent_bag = orders[0]
+    stop_bag = orders[1]
+
+    assert parent_bag.order.action == "SELL"
+    assert stop_bag.order.action == "BUY"  # opposite
+    assert stop_bag.order.orderType == "STP LMT"
+    assert stop_bag.orderStatus.status == "PreSubmitted"
+
+    # Verify stop prices
+    assert stop_bag.order.auxPrice == 1.50  # stopPrice
+    assert stop_bag.order.lmtPrice == 1.40  # limitPrice
+
+
+# ---------------------------------------------------------------------------
+# 27. Combo stop cancelled when parent cancelled
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_combo_stop_cancelled_when_parent_cancelled(mock_ib_bracket, app_state, sample_stop_loss):
+    """BAG parent cancel should cascade to stop BAG child."""
+    payload = {
+        "legs": [
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5200.0,
+                "right": "C",
+                "action": "BUY",
+                "qty": 1,
+                "lmtPrice": 5.00,
+            },
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5210.0,
+                "right": "C",
+                "action": "SELL",
+                "qty": 1,
+                "lmtPrice": 3.00,
+            },
+        ],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "comboAction": "BUY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib_bracket, app_state, payload)
+    orders = mock_ib_bracket.get_placed_orders()
+    parent_bag = orders[0]
+    stop_bag = orders[1]
+
+    # Cancel parent — cascade to child
+    mock_ib_bracket.cancelOrder(parent_bag.order)
+    assert parent_bag.orderStatus.status == "Cancelled"
+    assert stop_bag.orderStatus.status == "Cancelled"
+
+
+# ---------------------------------------------------------------------------
+# 28. Combo stop has reversed legs (opposite actions)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_combo_stop_has_reversed_legs(mock_ib, app_state, sample_stop_loss):
+    """Each ComboLeg in the stop BAG should have the opposite action of the
+    parent BAG legs."""
+    payload = {
+        "legs": [
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5200.0,
+                "right": "C",
+                "action": "BUY",
+                "qty": 1,
+                "lmtPrice": 5.00,
+            },
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5210.0,
+                "right": "C",
+                "action": "SELL",
+                "qty": 1,
+                "lmtPrice": 3.00,
+            },
+        ],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "comboAction": "BUY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+    orders = mock_ib.get_placed_orders()
+    assert len(orders) >= 2
+
+    parent_bag = orders[0]
+    stop_bag = orders[1]
+
+    parent_legs = parent_bag.contract.comboLegs
+    stop_legs = stop_bag.contract.comboLegs
+
+    assert len(parent_legs) == len(stop_legs)
+    for p_leg, s_leg in zip(parent_legs, stop_legs):
+        # Opposite actions
+        if p_leg.action == "BUY":
+            assert s_leg.action == "SELL"
+        else:
+            assert s_leg.action == "BUY"
+        # Same conId and ratio
+        assert p_leg.conId == s_leg.conId
+        assert p_leg.ratio == s_leg.ratio
+
+
+# ---------------------------------------------------------------------------
+# 29. Combo stop has smart routing params
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_combo_stop_smart_routing_params(mock_ib, app_state, sample_stop_loss):
+    """Stop BAG order should have NonGuaranteed=1 smart combo routing params."""
+    payload = {
+        "legs": [
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5200.0,
+                "right": "C",
+                "action": "BUY",
+                "qty": 1,
+                "lmtPrice": 5.00,
+            },
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5210.0,
+                "right": "C",
+                "action": "SELL",
+                "qty": 1,
+                "lmtPrice": 3.00,
+            },
+        ],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "comboAction": "BUY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+    orders = mock_ib.get_placed_orders()
+    stop_bag = orders[1]
+
+    params = getattr(stop_bag.order, "smartComboRoutingParams", None)
+    assert params is not None, "Stop BAG must have smartComboRoutingParams"
+    tag = params[0]
+    assert getattr(tag, "tag", None) == "NonGuaranteed"
+    assert getattr(tag, "value", None) == "1"
+
+
+# ===========================================================================
+# STOP LIMIT EDGE CASE TESTS
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 30. Invalid stop price (zero) — stop order should not be created
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_order_invalid_stop_price_zero(mock_ib, app_state):
+    """Stop price of 0 should gracefully skip stop order creation."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": {"stopPrice": 0, "limitPrice": 0},
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+    assert result["data"]["status"] == "Filled"
+
+    orders = mock_ib.get_placed_orders()
+    # The first placeOrder had transmit=False, then re-submitted with transmit=True
+    # So we may have 2 placed orders (same parent, retransmitted) or just 1 if re-submitted
+    # Either way, no STP LMT order should exist
+    stp_orders = [o for o in orders if o.order.orderType == "STP LMT"]
+    assert len(stp_orders) == 0
+    # The last placed order should have transmit=True (re-submitted)
+    last = orders[-1]
+    assert last.order.transmit is True
+
+
+# ---------------------------------------------------------------------------
+# 31. Stop order dict vs scalar format
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_order_scalar_format(mock_ib, app_state):
+    """Scalar stopLoss value should use same price for both stop and limit."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": 2.50,
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+    assert result["data"]["status"] == "Filled"
+
+    orders = mock_ib.get_placed_orders()
+    assert len(orders) == 2
+    stop = orders[1]
+    assert stop.order.orderType == "STP LMT"
+    assert stop.order.auxPrice == 2.50  # stopPrice = scalar value
+    assert stop.order.lmtPrice == 2.50  # limitPrice = same scalar
+
+
+@pytest.mark.asyncio
+async def test_stop_order_dict_format(mock_ib, app_state, sample_stop_loss):
+    """Dict stopLoss should split stopPrice and limitPrice correctly."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+    orders = mock_ib.get_placed_orders()
+    stop = orders[1]
+    assert stop.order.auxPrice == 1.50  # stopPrice
+    assert stop.order.lmtPrice == 1.40  # limitPrice
+
+
+# ---------------------------------------------------------------------------
+# 32. Stop order tick rounding (SPX rules)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_order_tick_rounding_spx(mock_ib, app_state):
+    """Stop and limit prices should follow SPX tick rules."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        # Prices that need rounding: 1.53 → 1.55 (0.05 tick, ≤$2), 2.63 → 2.60 (0.10 tick, >$2)
+        "stopLoss": {"stopPrice": 2.63, "limitPrice": 1.53},
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+    orders = mock_ib.get_placed_orders()
+    stop = orders[1]
+    # 2.63 > $2.00 → 0.10 tick → round to 2.60
+    assert stop.order.auxPrice == 2.60
+    # 1.53 ≤ $2.00 → 0.05 tick → round to 1.55
+    assert stop.order.lmtPrice == 1.55
+
+
+# ---------------------------------------------------------------------------
+# 33. Stop not cancelled when parent already filled (no false cascade)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_not_cancelled_when_parent_already_filled(mock_ib, app_state, sample_stop_loss):
+    """If parent is already Filled and user cancels parent, stop should remain
+    active (IB doesn't cascade from filled orders)."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+    orders = mock_ib.get_placed_orders()
+    parent = orders[0]
+    stop = orders[1]
+
+    # Parent is already Filled (mock_ib fills immediately)
+    assert parent.orderStatus.status == "Filled"
+
+    # Trying to cancel a filled parent should not affect the stop
+    # (In real IB, filled orders can't be cancelled; here we test the watcher logic)
+    stop_status_before = stop.orderStatus.status
+    # watcher should exit immediately without cancelling stop
+    await watch_parent_and_cancel_child(
+        mock_ib, None, parent, stop, timeout=1.0
+    )
+    assert stop.orderStatus.status == stop_status_before
+
+
+# ---------------------------------------------------------------------------
+# 34. Multiple quantity stop order matches parent quantity
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_multiple_qty_stop_order_single_leg(mock_ib, app_state, sample_stop_loss):
+    """Stop order quantity should match parent quantity for single-leg."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 5,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+    orders = mock_ib.get_placed_orders()
+    parent = orders[0]
+    stop = orders[1]
+
+    assert parent.order.totalQuantity == 5
+    assert stop.order.totalQuantity == 5
+
+
+@pytest.mark.asyncio
+async def test_multiple_qty_stop_order_combo(mock_ib, app_state, sample_stop_loss):
+    """Stop order quantity should match combo quantity for multi-leg BAG."""
+    payload = {
+        "legs": [
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5200.0,
+                "right": "C",
+                "action": "BUY",
+                "qty": 1,
+                "lmtPrice": 5.00,
+            },
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5210.0,
+                "right": "C",
+                "action": "SELL",
+                "qty": 1,
+                "lmtPrice": 3.00,
+            },
+        ],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "comboAction": "BUY",
+        "comboQuantity": 3,
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+    orders = mock_ib.get_placed_orders()
+    parent = orders[0]
+    stop = orders[1]
+
+    assert parent.order.totalQuantity == 3
+    assert stop.order.totalQuantity == 3
+
+
+# ---------------------------------------------------------------------------
+# 35. Iron condor (4-leg) + stop lifecycle
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_iron_condor_stop_lifecycle(mock_ib_bracket, app_state, sample_stop_loss):
+    """4-leg iron condor with stop loss. Verify bracket lifecycle and reversed legs."""
+    payload = {
+        "legs": [
+            {   # Short call
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5250.0,
+                "right": "C",
+                "action": "SELL",
+                "qty": 1,
+                "lmtPrice": 3.00,
+            },
+            {   # Long call (wing)
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5260.0,
+                "right": "C",
+                "action": "BUY",
+                "qty": 1,
+                "lmtPrice": 2.00,
+            },
+            {   # Short put
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5150.0,
+                "right": "P",
+                "action": "SELL",
+                "qty": 1,
+                "lmtPrice": 3.50,
+            },
+            {   # Long put (wing)
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5140.0,
+                "right": "P",
+                "action": "BUY",
+                "qty": 1,
+                "lmtPrice": 2.50,
+            },
+        ],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "comboAction": "SELL",
+        "comboLmtPrice": -2.00,
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib_bracket, app_state, payload)
+    orders = mock_ib_bracket.get_placed_orders()
+    assert len(orders) >= 2
+
+    parent_bag = orders[0]
+    stop_bag = orders[1]
+
+    # Parent is iron condor SELL
+    assert parent_bag.order.action == "SELL"
+    assert parent_bag.orderStatus.status == "Filled"
+
+    # Stop is the reverse (BUY to close)
+    assert stop_bag.order.action == "BUY"
+    assert stop_bag.order.orderType == "STP LMT"
+    assert stop_bag.orderStatus.status == "PreSubmitted"
+    assert stop_bag.order.parentId == parent_bag.order.orderId
+
+    # Verify all 4 legs reversed
+    parent_legs = parent_bag.contract.comboLegs
+    stop_legs = stop_bag.contract.comboLegs
+    assert len(stop_legs) == 4
+    for p_leg, s_leg in zip(parent_legs, stop_legs):
+        assert p_leg.conId == s_leg.conId
+        expected_action = "SELL" if p_leg.action == "BUY" else "BUY"
+        assert s_leg.action == expected_action
+
+    # Simulate parent fill → stop activates
+    mock_ib_bracket.simulate_parent_fill(parent_bag.order.orderId)
+    assert stop_bag.orderStatus.status == "Submitted"
+
+
+# ---------------------------------------------------------------------------
+# 36. Combo stop WS push on parent cancel
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_combo_stop_ws_push_on_parent_cancel(mock_ib_bracket, app_state, mock_ws, sample_stop_loss):
+    """Multi-leg combo: watch_parent_and_cancel_child pushes cancellation
+    for the stop BAG when parent is cancelled."""
+    payload = {
+        "legs": [
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5200.0,
+                "right": "C",
+                "action": "BUY",
+                "qty": 1,
+                "lmtPrice": 5.00,
+            },
+            {
+                "symbol": "SPX",
+                "expiry": "20260410",
+                "strike": 5210.0,
+                "right": "C",
+                "action": "SELL",
+                "qty": 1,
+                "lmtPrice": 3.00,
+            },
+        ],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "comboAction": "BUY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib_bracket, app_state, payload)
+    orders = mock_ib_bracket.get_placed_orders()
+    parent_bag = orders[0]
+    stop_bag = orders[1]
+
+    # Parent fills immediately in bracket_mode — set it back to Submitted
+    # so the watcher can observe the cancel transition
+    parent_bag.orderStatus.status = "Submitted"
+
+    async def cancel_parent():
+        await asyncio.sleep(0.2)
+        mock_ib_bracket.cancelOrder(parent_bag.order)
+
+    task = asyncio.create_task(cancel_parent())
+    await watch_parent_and_cancel_child(
+        mock_ib_bracket, mock_ws, parent_bag, stop_bag, timeout=3.0
+    )
+    await task
+
+    assert stop_bag.orderStatus.status == "Cancelled"
+    statuses = mock_ws.get_order_statuses()
+    cancel_pushes = [s for s in statuses if s["orderId"] == stop_bag.order.orderId]
+    assert len(cancel_pushes) >= 1
+    assert cancel_pushes[0]["status"] == "Cancelled"
+
+
+# ---------------------------------------------------------------------------
+# 37. outsideRth propagated to stop order
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_order_outside_rth_propagated(mock_ib, app_state, sample_stop_loss):
+    """outsideRth flag should propagate to both parent and stop orders."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "outsideRth": True,
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+    orders = mock_ib.get_placed_orders()
+    parent = orders[0]
+    stop = orders[1]
+
+    assert parent.order.outsideRth is True
+    assert stop.order.outsideRth is True
+
+
+# ---------------------------------------------------------------------------
+# 38. Stop TIF matches parent TIF
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_order_tif_matches_parent(mock_ib, app_state, sample_stop_loss):
+    """Stop order TIF should match the parent order TIF."""
+    payload = {
+        "legs": [{
+            "symbol": "SPX",
+            "expiry": "20260410",
+            "strike": 5200.0,
+            "right": "C",
+            "action": "BUY",
+            "qty": 1,
+            "lmtPrice": 3.50,
+        }],
+        "orderType": "LMT",
+        "tif": "DAY",
+        "stopLoss": sample_stop_loss,
+    }
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+    orders = mock_ib.get_placed_orders()
+    parent = orders[0]
+    stop = orders[1]
+
+    assert parent.order.tif == "DAY"
+    assert stop.order.tif == "DAY"

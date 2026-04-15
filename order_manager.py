@@ -18,6 +18,8 @@ from config import spx_tick_for_price, round_abs_to_tick, round_signed_to_tick
 logger = logging.getLogger(__name__)
 
 _PENDING_STATUSES = {'', 'PendingSubmit', 'ApiPending'}
+_BRACKET_PENDING_STATUSES = _PENDING_STATUSES | {'PreSubmitted'}
+_TERMINAL_STATUSES = {'Filled', 'Cancelled', 'ApiCancelled', 'Inactive'}
 
 
 async def await_order_status(trade, timeout: float = 5.0) -> str:
@@ -31,12 +33,21 @@ async def await_order_status(trade, timeout: float = 5.0) -> str:
     return trade.orderStatus.status or 'PendingSubmit'
 
 
-async def watch_and_push_status(ws, trade, timeout: float = 30.0) -> None:
-    """Background task: push an order_status WS message once the order settles."""
+async def watch_and_push_status(ws, trade, timeout: float = 30.0,
+                                bracket_child: bool = False) -> None:
+    """Background task: push an order_status WS message once the order settles.
+
+    Parameters
+    ----------
+    bracket_child : bool
+        If True, also wait through 'PreSubmitted' status (bracket child
+        orders start as PreSubmitted until their parent fills).
+    """
+    wait_statuses = _BRACKET_PENDING_STATUSES if bracket_child else _PENDING_STATUSES
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         st = trade.orderStatus.status or ''
-        if st not in _PENDING_STATUSES:
+        if st not in wait_statuses:
             break
         await asyncio.sleep(0.5)
     try:
@@ -58,6 +69,53 @@ async def watch_and_push_status(ws, trade, timeout: float = 30.0) -> None:
         }))
     except Exception:
         pass  # WS already closed
+
+
+async def watch_parent_and_cancel_child(ib, ws, parent_trade, child_trade,
+                                        timeout: float = 86400.0) -> None:
+    """Background task: cancel a bracket child order if its parent is cancelled.
+
+    Monitors the parent trade's status.  If the parent reaches a terminal
+    status that is NOT 'Filled' (i.e. Cancelled/Inactive), explicitly cancel
+    the child order and push a status update over WS.  Self-terminates once
+    the parent reaches any terminal status.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        pst = parent_trade.orderStatus.status or ''
+        cst = child_trade.orderStatus.status or ''
+        # Parent reached a terminal status
+        if pst in _TERMINAL_STATUSES:
+            if pst != 'Filled':
+                # Parent was cancelled/inactive → cancel the child if not already
+                if cst not in _TERMINAL_STATUSES:
+                    try:
+                        ib.cancelOrder(child_trade.order)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.1)
+                # Always push child cancellation to frontend (IB may have
+                # cascaded the cancel already, but the frontend needs to know)
+                if ws:
+                    child_st = child_trade.orderStatus.status or 'Cancelled'
+                    try:
+                        await ws.send_text(json.dumps({
+                            "type": "order_status",
+                            "data": {
+                                "status": child_st,
+                                "orderId": child_trade.order.orderId,
+                                "message": f"Stop order cancelled (parent {pst})",
+                                "filled": 0,
+                                "avgFillPrice": 0.0,
+                            },
+                        }))
+                    except Exception:
+                        pass
+            return  # parent is terminal, our job is done
+        # Child already in terminal state → nothing more to do
+        if cst in _TERMINAL_STATUSES:
+            return
+        await asyncio.sleep(0.5)
 
 
 async def handle_place_order(ib, state, payload: dict, ws=None,
@@ -294,6 +352,12 @@ async def _place_single_leg(ib, state, payload, leg,
                 f"parentId={order.orderId} stopOrderId={stop_order.orderId}"
             )
 
+    # Safety: if stop was intended but not created (e.g. zero prices),
+    # re-submit parent with transmit=True so it isn't stuck at IB.
+    if stop_loss_price is not None and stop_trade is None and not order.transmit:
+        order.transmit = True
+        trade = ib.placeOrder(contract, order)
+
     # Wait for IB acknowledgment
     if dynamic_fill and order_type == "LMT":
         final_status = await await_order_status(trade, timeout=3.0)
@@ -369,6 +433,13 @@ async def _place_single_leg(ib, state, payload, leg,
 
     if ws:
         asyncio.create_task(watch_and_push_status(ws, trade))
+        if stop_trade:
+            asyncio.create_task(
+                watch_and_push_status(ws, stop_trade, bracket_child=True)
+            )
+            asyncio.create_task(
+                watch_parent_and_cancel_child(ib, ws, trade, stop_trade)
+            )
 
     logger.info(
         f"Order placed: {leg['action']} {leg['qty']} "
@@ -565,6 +636,11 @@ async def _place_multi_leg(ib, state, payload, legs,
                 f"parentId={order.orderId} stopOrderId={bag_stop_order.orderId}"
             )
 
+    # Safety: if stop was intended but not created, re-submit with transmit=True
+    if stop_loss_price is not None and bag_stop_trade is None and not order.transmit:
+        order.transmit = True
+        trade = ib.placeOrder(bag, order)
+
     # Wait for initial IB ack
     bag_status = await await_order_status(trade, timeout=5.0)
     if bag_status in _PENDING_STATUSES:
@@ -580,6 +656,13 @@ async def _place_multi_leg(ib, state, payload, legs,
 
     if ws:
         asyncio.create_task(watch_and_push_status(ws, trade))
+        if bag_stop_trade:
+            asyncio.create_task(
+                watch_and_push_status(ws, bag_stop_trade, bracket_child=True)
+            )
+            asyncio.create_task(
+                watch_parent_and_cancel_child(ib, ws, trade, bag_stop_trade)
+            )
 
     leg_desc = ", ".join(
         f"{l['action']} {l['qty']} {l['strike']}{l['right']}"
