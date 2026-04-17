@@ -6,15 +6,9 @@ Handles trading-hour vs off-hour logic and finds the next available 0DTE expirat
 from datetime import datetime, date, timedelta, time
 from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo
+from config import RTH_OPEN, RTH_CLOSE, SPXW_CEASE, SPX_OPT_GAP_START, SPX_OPT_GAP_END
 
 ET = ZoneInfo("US/Eastern")
-
-# Regular Trading Hours for SPX options
-RTH_OPEN = time(9, 30)
-RTH_CLOSE = time(16, 15)
-
-# SPXW 0DTE options cease trading at 4:00 PM ET
-SPXW_CEASE = time(16, 0)
 
 
 def now_et() -> datetime:
@@ -137,8 +131,6 @@ def get_expiration_display(expiration: str) -> str:
 
 # The only closed window on a weekday is 5:00 PM – 8:15 PM ET.
 # On Friday the market closes at 5:00 PM; reopens Sunday 8:15 PM.
-SPX_OPT_GAP_START = time(17, 0)   # 5:00 PM – daily close
-SPX_OPT_GAP_END   = time(20, 15)  # 8:15 PM – GTH reopen
 
 
 def is_spx_options_open(dt: Optional[datetime] = None) -> bool:

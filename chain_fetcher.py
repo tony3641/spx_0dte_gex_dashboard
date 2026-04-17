@@ -13,19 +13,15 @@ from typing import List, Optional, Set, Tuple
 from ib_insync import IB, Option, Contract, Ticker
 
 from gex_calculator import OptionData
+from config import (
+    BATCH_SIZE,
+    QUALIFY_BATCH_SIZE,
+    QUAL_CACHE_REQUALIFY_MOVE,
+    DEFAULT_ANNUAL_VOL,
+    TRADING_DAYS_PER_YEAR,
+)
 
 logger = logging.getLogger(__name__)
-
-# IB limits: ~100 simultaneous market data lines.
-# We use 45 per batch to leave headroom for the streaming SPX quote + safety margin.
-BATCH_SIZE = 200
-
-# Max contracts to qualify in one call
-QUALIFY_BATCH_SIZE = 150
-
-# Re-qualify only when spot moves more than this many points from cached anchor.
-QUAL_CACHE_REQUALIFY_MOVE = 20.0
-
 
 @dataclass
 class QualificationCache:
@@ -53,11 +49,6 @@ def clear_qualification_cache(reason: str = "manual refresh", monthly: bool = Fa
 
 def _contract_key(expiration: str, strike: float, right: str) -> str:
     return f"{expiration}:{strike:.1f}:{right}"
-
-
-# Default assumed annualised implied volatility when we have no better estimate.
-DEFAULT_ANNUAL_VOL = 0.20          # 20 %
-TRADING_DAYS_PER_YEAR = 252
 
 
 def _strike_range_for_std_devs(

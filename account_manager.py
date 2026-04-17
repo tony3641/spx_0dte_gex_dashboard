@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 from ib_insync.util import parseIBDatetime
+from config import FORCE_REFRESH_INTERVAL
 from market_hours import now_et, ET
 
 logger = logging.getLogger(__name__)
@@ -279,7 +280,6 @@ async def setup_account_subscription(ib, state):
 async def account_push_loop(ib, state, broadcast_fn):
     """Broadcast account updates whenever IB fires a relevant event."""
     last_force_refresh = 0.0
-    FORCE_REFRESH_INTERVAL = 10.0
 
     while True:
         try:

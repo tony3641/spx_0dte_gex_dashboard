@@ -15,7 +15,7 @@ from ib_insync import Option
 
 from config import (
     CHAIN_STREAM_MAX_LINES, CHAIN_STREAM_UPDATE_INTERVAL,
-    SNAPSHOT_REFRESH_SECONDS,
+    SNAPSHOT_REFRESH_SECONDS, MONTHLY_CACHE_TTL,
 )
 from market_hours import (
     now_et, is_within_rth, is_cboe_options_open, ET,
@@ -580,11 +580,6 @@ async def chain_stream_loop(ib, state, broadcast_fn):
             logger.error(f"Chain stream error: {e}")
             await asyncio.sleep(5)
 
-
-# ---------------------------------------------------------------------------
-# Monthly GEX fetch (on-demand, not a loop)
-# ---------------------------------------------------------------------------
-MONTHLY_CACHE_TTL = 600  # 10 minutes
 
 async def monthly_gex_fetch(ib, state, broadcast_fn):
     """Fetch SPX monthly option chain and compute GEX, broadcast result.

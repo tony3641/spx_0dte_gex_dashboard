@@ -4,3 +4,5 @@ uvicorn[standard]>=0.24.0
 nest-asyncio>=1.5.8
 pytest>=7.0
 pytest-asyncio>=0.21
+PyYAML>=6.0
+yfinance>=0.2.54
