@@ -8,15 +8,17 @@ All tests use MockIB (from conftest) — no live IB connection required.
 """
 
 import asyncio
+import copy
 import sys
 import os
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from order_manager import (
-    handle_place_order, handle_cancel_order, _PENDING_STATUSES,
+    await_order_status, handle_place_order, handle_cancel_order, _PENDING_STATUSES,
     watch_and_push_status, watch_parent_and_cancel_child,
 )
 from config import spx_tick_for_price, round_abs_to_tick, round_signed_to_tick
@@ -100,12 +102,11 @@ async def test_combo_bag_order(mock_ib, app_state, sample_legs_combo):
     # The BAG order should be the last placed order
     trade = mock_ib.get_last_trade()
     assert trade is not None
+    assert trade.contract.exchange == "CBOE"
+    assert all(getattr(cl, "exchange", None) == "CBOE" for cl in trade.contract.comboLegs)
     assert trade.order.action == "BUY"
     assert trade.order.orderType == "LMT"
-    assert getattr(trade.order, "smartComboRoutingParams", None), "BAG orders must set smart combo routing params"
-    tag = trade.order.smartComboRoutingParams[0]
-    assert getattr(tag, "tag", None) == "NonGuaranteed"
-    assert getattr(tag, "value", None) == "1"
+    assert getattr(trade.order, "smartComboRoutingParams", None) in (None, [])
 
     # Combo price: BUY 5.00 + SELL -3.00 = 2.00 net debit
     # Rounded to SPX tick: 2.00 → tick=0.05 since abs(2.00) <= 2.0
@@ -143,6 +144,57 @@ async def test_combo_bag_with_stop_loss(mock_ib, app_state, sample_legs_combo, s
     assert stop_bag.order.transmit is True
     assert stop_bag.order.parentId == parent_bag.order.orderId
     assert stop_bag.order.action == "SELL"  # opposite of BUY parent
+
+
+@pytest.mark.asyncio
+async def test_combo_bag_preserves_outside_rth_for_spx(mock_ib, app_state, sample_legs_combo, sample_stop_loss):
+    """SPX BAG orders should preserve outsideRth when routed directly to CBOE."""
+    payload = copy.deepcopy(sample_legs_combo)
+    payload["outsideRth"] = True
+    payload["stopLoss"] = sample_stop_loss
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+
+    data = result["data"]
+    assert data["status"] == "Filled"
+
+    orders = mock_ib.get_placed_orders()
+    assert len(orders) >= 2, f"Expected >=2 orders (parent BAG + stop BAG), got {len(orders)}"
+
+    parent_bag = orders[0]
+    stop_bag = orders[1]
+    assert parent_bag.contract.exchange == "CBOE"
+    assert stop_bag.contract.exchange == "CBOE"
+    assert parent_bag.order.outsideRth is True
+    assert stop_bag.order.outsideRth is True
+
+
+@pytest.mark.asyncio
+async def test_combo_bag_uses_qualified_exchange_for_parent_and_stop(
+    mock_ib, app_state, sample_legs_combo, sample_stop_loss
+):
+    """SPX BAG parent and stop should route directly to CBOE with CBOE legs."""
+    payload = copy.deepcopy(sample_legs_combo)
+    payload["outsideRth"] = True
+    payload["stopLoss"] = sample_stop_loss
+
+    result = await handle_place_order(mock_ib, app_state, payload)
+
+    data = result["data"]
+    assert data["status"] == "Filled"
+
+    orders = mock_ib.get_placed_orders()
+    assert len(orders) >= 2, f"Expected >=2 orders (parent BAG + stop BAG), got {len(orders)}"
+
+    parent_bag = orders[0]
+    stop_bag = orders[1]
+
+    assert parent_bag.contract.exchange == "CBOE"
+    assert stop_bag.contract.exchange == "CBOE"
+    assert all(getattr(cl, "exchange", None) == "CBOE" for cl in parent_bag.contract.comboLegs)
+    assert all(getattr(cl, "exchange", None) == "CBOE" for cl in stop_bag.contract.comboLegs)
+    assert getattr(parent_bag.order, "smartComboRoutingParams", None) in (None, [])
+    assert getattr(stop_bag.order, "smartComboRoutingParams", None) in (None, [])
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +835,66 @@ async def test_stop_order_persists_in_active_trades(mock_ib, app_state, sample_s
 
 
 # ---------------------------------------------------------------------------
+# 22A. Combo parent PreSubmitted should still settle to Submitted
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_combo_parent_waits_through_presubmitted_for_initial_ack():
+    trade = SimpleNamespace(
+        order=SimpleNamespace(orderId=1234),
+        orderStatus=SimpleNamespace(
+            status="PreSubmitted",
+            filled=0,
+            remaining=1,
+            avgFillPrice=0.0,
+        ),
+        log=[],
+    )
+
+    async def simulate_submit():
+        await asyncio.sleep(0.2)
+        trade.orderStatus.status = "Submitted"
+
+    task = asyncio.create_task(simulate_submit())
+    status = await await_order_status(trade, timeout=1.0, include_presubmitted=True)
+    await task
+
+    assert status == "Submitted"
+
+
+@pytest.mark.asyncio
+async def test_combo_parent_ws_status_push_waits_through_presubmitted(mock_ws):
+    trade = SimpleNamespace(
+        order=SimpleNamespace(orderId=1235),
+        orderStatus=SimpleNamespace(
+            status="PreSubmitted",
+            filled=0,
+            remaining=1,
+            avgFillPrice=0.0,
+        ),
+        log=[],
+    )
+
+    async def simulate_submit():
+        await asyncio.sleep(0.2)
+        trade.orderStatus.status = "Submitted"
+
+    task = asyncio.create_task(simulate_submit())
+    await watch_and_push_status(
+        mock_ws,
+        trade,
+        timeout=1.0,
+        include_presubmitted=True,
+    )
+    await task
+
+    statuses = mock_ws.get_order_statuses()
+    assert len(statuses) == 1
+    assert statuses[0]["orderId"] == 1235
+    assert statuses[0]["status"] == "Submitted"
+
+
+# ---------------------------------------------------------------------------
 # 22. WS status push for stop trade on parent fill (bracket lifecycle)
 # ---------------------------------------------------------------------------
 
@@ -1137,8 +1249,8 @@ async def test_combo_stop_has_reversed_legs(mock_ib, app_state, sample_stop_loss
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_combo_stop_smart_routing_params(mock_ib, app_state, sample_stop_loss):
-    """Stop BAG order should have NonGuaranteed=1 smart combo routing params."""
+async def test_combo_stop_direct_cboe_routing(mock_ib, app_state, sample_stop_loss):
+    """SPX combo stop BAG should route directly to CBOE without SMART combo params."""
     payload = {
         "legs": [
             {
@@ -1170,11 +1282,9 @@ async def test_combo_stop_smart_routing_params(mock_ib, app_state, sample_stop_l
     orders = mock_ib.get_placed_orders()
     stop_bag = orders[1]
 
-    params = getattr(stop_bag.order, "smartComboRoutingParams", None)
-    assert params is not None, "Stop BAG must have smartComboRoutingParams"
-    tag = params[0]
-    assert getattr(tag, "tag", None) == "NonGuaranteed"
-    assert getattr(tag, "value", None) == "1"
+    assert stop_bag.contract.exchange == "CBOE"
+    assert all(getattr(cl, "exchange", None) == "CBOE" for cl in stop_bag.contract.comboLegs)
+    assert getattr(stop_bag.order, "smartComboRoutingParams", None) in (None, [])
 
 
 # ===========================================================================

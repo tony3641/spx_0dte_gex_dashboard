@@ -18,23 +18,30 @@ from config import spx_tick_for_price, round_abs_to_tick, round_signed_to_tick
 logger = logging.getLogger(__name__)
 
 _PENDING_STATUSES = {'', 'PendingSubmit', 'ApiPending'}
-_BRACKET_PENDING_STATUSES = _PENDING_STATUSES | {'PreSubmitted'}
+_PRESUBMITTED_PENDING_STATUSES = _PENDING_STATUSES | {'PreSubmitted'}
 _TERMINAL_STATUSES = {'Filled', 'Cancelled', 'ApiCancelled', 'Inactive'}
 
 
-async def await_order_status(trade, timeout: float = 5.0) -> str:
-    """Poll trade.orderStatus until it leaves PendingSubmit/ApiPending, or timeout."""
+def _pending_statuses(include_presubmitted: bool = False) -> set[str]:
+    return _PRESUBMITTED_PENDING_STATUSES if include_presubmitted else _PENDING_STATUSES
+
+
+async def await_order_status(trade, timeout: float = 5.0,
+                             include_presubmitted: bool = False) -> str:
+    """Poll trade.orderStatus until it leaves pending status, or timeout."""
+    wait_statuses = _pending_statuses(include_presubmitted)
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         st = trade.orderStatus.status or ''
-        if st not in _PENDING_STATUSES:
+        if st not in wait_statuses:
             return st
         await asyncio.sleep(0.1)
     return trade.orderStatus.status or 'PendingSubmit'
 
 
 async def watch_and_push_status(ws, trade, timeout: float = 30.0,
-                                bracket_child: bool = False) -> None:
+                                bracket_child: bool = False,
+                                include_presubmitted: bool = False) -> None:
     """Background task: push an order_status WS message once the order settles.
 
     Parameters
@@ -42,8 +49,11 @@ async def watch_and_push_status(ws, trade, timeout: float = 30.0,
     bracket_child : bool
         If True, also wait through 'PreSubmitted' status (bracket child
         orders start as PreSubmitted until their parent fills).
+    include_presubmitted : bool
+        If True, also wait through 'PreSubmitted' for parent orders that
+        commonly stage there before becoming Submitted.
     """
-    wait_statuses = _BRACKET_PENDING_STATUSES if bracket_child else _PENDING_STATUSES
+    wait_statuses = _pending_statuses(include_presubmitted or bracket_child)
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         st = trade.orderStatus.status or ''
@@ -471,6 +481,12 @@ async def _place_multi_leg(ib, state, payload, legs,
                            order_type, tif, outside_rth,
                            stop_loss_price, ws, refresh_fn):
     """Handle multi-leg BAG order placement."""
+    bag_symbol = (legs[0].get("symbol", "SPX") or "SPX").upper()
+    requested_outside_rth = bool(outside_rth)
+    outside_rth = requested_outside_rth
+    use_direct_cboe_combo = bag_symbol == "SPX"
+    session_note = ""
+
     # Qualify each leg contract
     individual_contracts = []
     for leg in legs:
@@ -497,7 +513,7 @@ async def _place_multi_leg(ib, state, payload, legs,
             lastTradeDateOrContractMonth=leg["expiry"],
             strike=strike_val,
             right=leg["right"],
-            exchange="SMART",
+            exchange="CBOE" if use_direct_cboe_combo else "SMART",
             multiplier="100",
             currency="USD",
             tradingClass="SPXW",
@@ -546,7 +562,6 @@ async def _place_multi_leg(ib, state, payload, legs,
             "message": f"Invalid comboLmtPrice: {payload.get('comboLmtPrice')}"
         }}
 
-    bag_symbol = (legs[0].get("symbol", "SPX") or "SPX").upper()
     if bag_symbol == "SPX":
         bag_lmt = round_signed_to_tick(bag_lmt, spx_tick_for_price(bag_lmt))
     else:
@@ -559,15 +574,27 @@ async def _place_multi_leg(ib, state, payload, legs,
         cl.conId = qc.conId
         cl.ratio = int(leg["qty"])
         cl.action = leg["action"]
-        cl.exchange = "SMART"
+        cl.exchange = "CBOE" if use_direct_cboe_combo else (getattr(qc, "exchange", "SMART") or "SMART")
         combo_legs.append(cl)
 
     bag = Contract()
     bag.symbol = legs[0].get("symbol", "SPX")
     bag.secType = "BAG"
     bag.currency = "USD"
-    bag.exchange = "SMART"
+    bag.exchange = "CBOE" if use_direct_cboe_combo else (combo_legs[0].exchange if combo_legs else "SMART")
     bag.comboLegs = combo_legs
+
+    logger.info(
+        "Submitting BAG order: action=%s qty=%s type=%s tif=%s requestedOutsideRth=%s "
+        "effectiveOutsideRth=%s bagExchange=%s",
+        bag_action,
+        combo_quantity,
+        order_type,
+        tif,
+        requested_outside_rth,
+        outside_rth,
+        bag.exchange,
+    )
 
     order = Order(
         orderType=order_type,
@@ -577,7 +604,8 @@ async def _place_multi_leg(ib, state, payload, legs,
         outsideRth=outside_rth,
         transmit=(stop_loss_price is None),
     )
-    order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
+    if not use_direct_cboe_combo:
+        order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
     if order_type == "LMT":
         order.lmtPrice = bag_lmt
 
@@ -606,13 +634,13 @@ async def _place_multi_leg(ib, state, payload, legs,
                 cl.conId = qc.conId
                 cl.ratio = int(leg["qty"])
                 cl.action = "SELL" if leg["action"] == "BUY" else "BUY"
-                cl.exchange = "SMART"
+                cl.exchange = "CBOE" if use_direct_cboe_combo else (getattr(qc, "exchange", "SMART") or "SMART")
                 close_combo_legs.append(cl)
             close_bag = Contract()
             close_bag.symbol = legs[0].get("symbol", "SPX")
             close_bag.secType = "BAG"
             close_bag.currency = "USD"
-            close_bag.exchange = "SMART"
+            close_bag.exchange = "CBOE" if use_direct_cboe_combo else (close_combo_legs[0].exchange if close_combo_legs else "SMART")
             close_bag.comboLegs = close_combo_legs
             stop_action = "SELL" if bag_action == "BUY" else "BUY"
             bag_stop_order = Order(
@@ -626,7 +654,8 @@ async def _place_multi_leg(ib, state, payload, legs,
                 outsideRth=outside_rth,
                 transmit=True,
             )
-            bag_stop_order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
+            if not use_direct_cboe_combo:
+                bag_stop_order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
             bag_stop_trade = ib.placeOrder(close_bag, bag_stop_order)
             await asyncio.sleep(0.05)
             state.active_trades[bag_stop_order.orderId] = bag_stop_trade
@@ -642,8 +671,12 @@ async def _place_multi_leg(ib, state, payload, legs,
         trade = ib.placeOrder(bag, order)
 
     # Wait for initial IB ack
-    bag_status = await await_order_status(trade, timeout=5.0)
-    if bag_status in _PENDING_STATUSES:
+    bag_status = await await_order_status(
+        trade,
+        timeout=5.0,
+        include_presubmitted=True,
+    )
+    if bag_status in _pending_statuses(include_presubmitted=True):
         try:
             ib.reqOpenOrders()
         except Exception:
@@ -655,7 +688,9 @@ async def _place_multi_leg(ib, state, payload, legs,
     refresh_fn()
 
     if ws:
-        asyncio.create_task(watch_and_push_status(ws, trade))
+        asyncio.create_task(
+            watch_and_push_status(ws, trade, include_presubmitted=True)
+        )
         if bag_stop_trade:
             asyncio.create_task(
                 watch_and_push_status(ws, bag_stop_trade, bracket_child=True)
@@ -680,13 +715,13 @@ async def _place_multi_leg(ib, state, payload, legs,
             stop_combo_msg = f" | STP LMT stop={stop_loss_price} orderId={bag_stop_trade.order.orderId}"
     logger.info(
         f"BAG order {bag_status}: {bag_action} combo @ {bag_lmt} — "
-        f"legs=[{leg_desc}] orderId={order.orderId}"
+        f"legs=[{leg_desc}] orderId={order.orderId} outsideRth={outside_rth}"
     )
 
     return {"type": "order_status", "data": {
         "status": bag_status,
         "orderId": order.orderId,
-        "message": f"Combo order {bag_status}: {leg_desc}{stop_combo_msg}",
+        "message": f"Combo order {bag_status}: {leg_desc}{stop_combo_msg}{session_note}",
     }}
 
 

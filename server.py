@@ -42,7 +42,7 @@ from account_manager import (
 from price_bars import fetch_historical_bars, price_push_loop
 from chain_manager import chain_fetch_loop, chain_stream_loop
 from ws_handler import (
-    broadcast, make_broadcast_fn, status_push_loop,
+    broadcast, make_broadcast_fn, make_ib_error_handler, status_push_loop,
     ib_keepalive_loop, websocket_endpoint as ws_endpoint,
 )
 from market_hours import is_within_rth, market_status, get_expiration_display
@@ -107,6 +107,7 @@ async def lifespan(_app):
 
         # Register ticker update callback
         ib.pendingTickersEvent += make_pending_tickers_handler(state)
+        ib.errorEvent += make_ib_error_handler(state, broadcast_fn)
 
         # Account subscription
         await setup_account_subscription(ib, state)

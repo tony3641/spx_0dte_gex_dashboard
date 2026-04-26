@@ -22,6 +22,8 @@ from order_manager import handle_place_order, handle_cancel_order
 
 logger = logging.getLogger(__name__)
 
+_IGNORED_IB_ERROR_CODES = {2104, 2106, 2107, 2108, 2119, 2158}
+
 
 async def broadcast(state, message: dict):
     """Send a message to all connected WebSocket clients."""
@@ -47,6 +49,65 @@ def make_broadcast_fn(state):
     async def _broadcast(message: dict):
         await broadcast(state, message)
     return _broadcast
+
+
+def _serialize_ib_error_contract(contract) -> dict | None:
+    if contract is None:
+        return None
+    combo_legs = []
+    for combo_leg in getattr(contract, "comboLegs", []) or []:
+        combo_legs.append({
+            "conId": getattr(combo_leg, "conId", None),
+            "ratio": getattr(combo_leg, "ratio", None),
+            "action": getattr(combo_leg, "action", None),
+            "exchange": getattr(combo_leg, "exchange", None),
+        })
+    return {
+        "conId": getattr(contract, "conId", None),
+        "symbol": getattr(contract, "symbol", None),
+        "secType": getattr(contract, "secType", None),
+        "exchange": getattr(contract, "exchange", None),
+        "currency": getattr(contract, "currency", None),
+        "lastTradeDateOrContractMonth": getattr(contract, "lastTradeDateOrContractMonth", None),
+        "strike": getattr(contract, "strike", None),
+        "right": getattr(contract, "right", None),
+        "localSymbol": getattr(contract, "localSymbol", None),
+        "tradingClass": getattr(contract, "tradingClass", None),
+        "comboLegs": combo_legs,
+    }
+
+
+def make_ib_error_handler(state, broadcast_fn):
+    """Return a synchronous IB error callback that forwards actionable errors to clients."""
+
+    def _on_ib_error(req_id, error_code, error_string, contract=None, *args):
+        if error_code in _IGNORED_IB_ERROR_CODES:
+            return
+
+        resolved_contract = contract
+        if resolved_contract is None and isinstance(req_id, int):
+            trade = state.active_trades.get(req_id)
+            if trade is not None:
+                resolved_contract = getattr(trade, "contract", None)
+
+        payload = {
+            "type": "ib_error",
+            "data": {
+                "reqId": req_id,
+                "orderId": req_id if isinstance(req_id, int) and req_id > 0 else None,
+                "errorCode": error_code,
+                "message": error_string,
+                "contract": _serialize_ib_error_contract(resolved_contract),
+            },
+        }
+        logger.warning("IB error reqId=%s code=%s: %s", req_id, error_code, error_string)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(broadcast_fn(payload))
+        except RuntimeError:
+            asyncio.create_task(broadcast_fn(payload))
+
+    return _on_ib_error
 
 
 async def status_push_loop(state, broadcast_fn):

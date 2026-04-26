@@ -415,6 +415,9 @@
             case 'order_status':
                 handleOrderStatus(msg.data);
                 break;
+            case 'ib_error':
+                handleIbError(msg.data);
+                break;
             case 'monthly_gex':
                 state.monthlyGex = msg.data;
                 if (msg.data && msg.data.expiration) {

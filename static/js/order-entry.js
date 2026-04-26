@@ -10,6 +10,30 @@
         if (inpLimit) { inpLimit.disabled = !en; if (!en) inpLimit.value = ''; }
     }
 
+    function getStrategyLegReferencePrice(quote, fallbackPrice) {
+        const bid = Number.isFinite(quote?.bid) ? quote.bid : null;
+        const ask = Number.isFinite(quote?.ask) ? quote.ask : null;
+        const last = Number.isFinite(quote?.last) ? quote.last : null;
+        if (bid !== null && ask !== null) {
+            return (bid + ask) / 2.0;
+        }
+        if (last !== null) {
+            return last;
+        }
+        return Math.abs(fallbackPrice);
+    }
+
+    function getStrategyLegSubmitPrice(leg, fallbackPrice) {
+        const quote = (typeof getLegQuote === 'function')
+            ? getLegQuote(leg)
+            : { bid: null, ask: null, last: null };
+        const reference = getStrategyLegReferencePrice(quote, fallbackPrice);
+        if (leg.action === 'BUY') {
+            return Number.isFinite(quote?.ask) ? quote.ask : reference;
+        }
+        return Number.isFinite(quote?.bid) ? quote.bid : reference;
+    }
+
     function placeStrategyOrder() {
         if (state.strategyLegs.length === 0) return;
 
@@ -24,6 +48,7 @@
         // Outside RTH flag
         const msVal = document.getElementById('marketStatus')?.textContent || '';
         const isOutsideRth = (msVal === 'GTH' || msVal === 'CURB');
+        const isCombo = state.strategyLegs.length > 1;
 
         // Stop loss
         const slEnabled = document.getElementById('stopLossEnabled')?.checked;
@@ -35,33 +60,44 @@
             return;
         }
 
-        const isCombo = state.strategyLegs.length > 1;
         const comboNorm = isCombo ? normalizeComboLegQty(state.strategyLegs) : { comboQty: 1, ratios: [] };
+        let inferredComboPrice = 0.0;
 
         // For multi-leg, send ratio quantities + comboQuantity so pricing is per-combo.
         // For single-leg, send absolute quantity directly.
         const legs = state.strategyLegs.map((leg, idx) => {
-            const r = state.chainData[leg.strike];
-            const side = leg.right === 'C' ? 'call' : 'put';
-            // Keep per-leg midpoint for analytics/fallback. Combo limit is sent separately.
-            const q = r ? { bid: r[side+'_bid'], ask: r[side+'_ask'] } : { bid: null, ask: null };
-            const perLegMid = (q.bid !== null && q.ask !== null) ? ((q.bid + q.ask) / 2.0) : rawLmt;
-            const perLegLmt = isCombo ? perLegMid : rawLmt;
+            const ratioQty = isCombo ? comboNorm.ratios[idx] : leg.qty;
+            const perLegLmt = isCombo
+                ? getStrategyLegSubmitPrice(leg, rawLmt)
+                : rawLmt;
             // We need the current expiration from chainMeta
             const expiry = state.chainMeta ? (state.chainMeta.expiration_raw || '') : '';
+            if (isCombo) {
+                const sign = leg.action === 'BUY' ? 1.0 : -1.0;
+                inferredComboPrice += sign * perLegLmt * Math.max(1, ratioQty || 1);
+            }
             return {
                 symbol: 'SPX',
                 expiry: expiry,
                 strike: leg.strike,
                 right: leg.right,
                 action: leg.action,
-                qty: isCombo ? comboNorm.ratios[idx] : leg.qty,
+                qty: ratioQty,
                 lmtPrice: parseFloat(perLegLmt.toFixed(2)),
                 secType: 'OPT',
             };
         });
 
-        const comboAction = isCombo ? 'BUY' : (rawLmt < 0 ? 'SELL' : 'BUY');
+        let comboAction = rawLmt < 0 ? 'SELL' : 'BUY';
+        if (isCombo) {
+            const roundedInferredComboPrice = _roundSpxPrice(inferredComboPrice);
+            comboAction = roundedInferredComboPrice < 0 ? 'SELL' : 'BUY';
+            if ((comboAction === 'BUY' && rawLmt < 0) || (comboAction === 'SELL' && rawLmt > 0)) {
+                const expectedSide = comboAction === 'BUY' ? 'debit' : 'credit';
+                showOrderToast(`Entered limit sign does not match this ${expectedSide} combo`, 'err');
+                return;
+            }
+        }
 
         // Build confirmation modal description
         const legDescs = legs.map(l =>
@@ -174,6 +210,12 @@
         }
         // Refresh account data
         if (state.activeTab === 'account') renderAccountTab();
+    }
+
+    function handleIbError(data) {
+        const code = data?.errorCode ? `IB ${data.errorCode}` : 'IB error';
+        const orderText = data?.orderId ? ` order ${data.orderId}` : '';
+        showOrderToast(`${code}${orderText}: ${data?.message || 'Unknown broker error'}`, 'err');
     }
 
     // ======================================================================
