@@ -41,7 +41,7 @@
         const lmtInput = document.getElementById('stratLmtPrice');
         const rawLmt = lmtInput ? parseFloat(lmtInput.value) : NaN;
         if (isNaN(rawLmt) || rawLmt === 0) {
-            showOrderToast('Enter a valid limit price (negative for credit spreads)', 'err');
+            showOrderToast('Enter a valid limit price', 'err');
             return;
         }
 
@@ -61,7 +61,6 @@
         }
 
         const comboNorm = isCombo ? normalizeComboLegQty(state.strategyLegs) : { comboQty: 1, ratios: [] };
-        let inferredComboPrice = 0.0;
 
         // For multi-leg, send ratio quantities + comboQuantity so pricing is per-combo.
         // For single-leg, send absolute quantity directly.
@@ -72,10 +71,6 @@
                 : rawLmt;
             // We need the current expiration from chainMeta
             const expiry = state.chainMeta ? (state.chainMeta.expiration_raw || '') : '';
-            if (isCombo) {
-                const sign = leg.action === 'BUY' ? 1.0 : -1.0;
-                inferredComboPrice += sign * perLegLmt * Math.max(1, ratioQty || 1);
-            }
             return {
                 symbol: 'SPX',
                 expiry: expiry,
@@ -88,16 +83,11 @@
             };
         });
 
-        let comboAction = rawLmt < 0 ? 'SELL' : 'BUY';
-        if (isCombo) {
-            const roundedInferredComboPrice = _roundSpxPrice(inferredComboPrice);
-            comboAction = roundedInferredComboPrice < 0 ? 'SELL' : 'BUY';
-            if ((comboAction === 'BUY' && rawLmt < 0) || (comboAction === 'SELL' && rawLmt > 0)) {
-                const expectedSide = comboAction === 'BUY' ? 'debit' : 'credit';
-                showOrderToast(`Entered limit sign does not match this ${expectedSide} combo`, 'err');
-                return;
-            }
-        }
+        // The BAG order action is always BUY: the legs carry the actual
+        // buy/sell direction, and IBKR's BUY executes them as defined (a SELL
+        // would reverse every leg action, producing the opposite position).
+        // The price sign alone encodes credit (negative) vs debit (positive).
+        const comboAction = 'BUY';
 
         // Build confirmation modal description
         const legDescs = legs.map(l =>

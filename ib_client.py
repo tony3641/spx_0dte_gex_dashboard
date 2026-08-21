@@ -80,6 +80,26 @@ PortfolioItem = namedtuple("PortfolioItem", "contract position marketPrice marke
 ExecutionRecord = namedtuple("ExecutionRecord", "contract execution commission")
 
 
+def _portfolio_key(contract):
+    """Stable identity for a portfolio entry.
+
+    IB re-sends every position on each account-update cycle; we must upsert by
+    this key rather than append. Prefer conId; fall back to a contract-field
+    composite for the rare contract without a conId.
+    """
+    con_id = getattr(contract, "conId", 0)
+    if con_id:
+        return ("conId", con_id)
+    return (
+        "desc",
+        getattr(contract, "symbol", ""),
+        getattr(contract, "secType", ""),
+        getattr(contract, "lastTradeDateOrContractMonth", ""),
+        float(getattr(contract, "strike", 0) or 0),
+        getattr(contract, "right", ""),
+    )
+
+
 class Greeks:
     __slots__ = ("implied_vol", "delta", "gamma", "vega", "theta", "opt_price", "und_price")
 
@@ -329,6 +349,12 @@ class IBClient(EWrapper, EClient):
     # -- account requests -----------------------------------------------------
 
     def req_account_updates(self, subscribe, account=""):
+        if subscribe:
+            # IB re-pushes the full account snapshot on (re)subscribe. Start
+            # clean so a reconnect/re-subscribe doesn't stack stale entries on
+            # top of the incoming snapshot.
+            self.account_values = []
+            self.portfolio = []
         EClient.reqAccountUpdates(self, subscribe, account)
 
     def req_executions(self, exec_filter=None):
@@ -350,14 +376,31 @@ class IBClient(EWrapper, EClient):
     # -- EWrapper: account ----------------------------------------------------
 
     def updateAccountValue(self, key, val, currency, accountName):
-        self.account_values.append(AccountValue(key, val, currency))
+        item = AccountValue(key, val, currency)
+        for i, existing in enumerate(self.account_values):
+            if existing.tag == key and existing.currency == currency:
+                self.account_values[i] = item   # same metric re-pushed each cycle
+                break
+        else:
+            self.account_values.append(item)
         self._mark_dirty()
 
     def updatePortfolio(self, contract, position, marketPrice, marketValue,
                         averageCost, unrealizedPNL, realizedPNL, accountName):
-        self.portfolio.append(PortfolioItem(contract, float(position), marketPrice,
-                                            marketValue, averageCost, unrealizedPNL,
-                                            realizedPNL, accountName))
+        item = PortfolioItem(contract, float(position), marketPrice,
+                             marketValue, averageCost, unrealizedPNL,
+                             realizedPNL, accountName)
+        key = _portfolio_key(contract)
+        for i, existing in enumerate(self.portfolio):
+            if _portfolio_key(existing.contract) == key:
+                if float(position) == 0:
+                    del self.portfolio[i]       # position fully closed
+                else:
+                    self.portfolio[i] = item    # refresh live fields in place
+                break
+        else:
+            if float(position) != 0:
+                self.portfolio.append(item)     # brand-new position
         self._mark_dirty()
 
     def accountDownloadEnd(self, accountName):

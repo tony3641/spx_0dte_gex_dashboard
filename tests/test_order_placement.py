@@ -22,7 +22,7 @@ from order_manager import (
     watch_and_push_status, watch_parent_and_cancel_child,
 )
 from ib_client import OrderHandle
-from tests.conftest import MockContract, MockOrder
+from tests.conftest import MockContract, MockContractDetails, MockOrder
 from config import spx_tick_for_price, round_abs_to_tick, round_signed_to_tick
 
 
@@ -523,10 +523,11 @@ def test_round_signed_to_tick():
 
 @pytest.mark.asyncio
 async def test_combo_credit_spread(mock_ib, app_state):
-    """Credit spread: SELL higher-priced + BUY lower-priced → negative combo price.
+    """Credit spread: SELL higher-priced put + BUY lower-priced put (bull put).
 
-    When comboAction='SELL' and comboLmtPrice is negative, the BAG limit
-    should be negative (credit to seller).
+    The BAG order action is BUY (the legs carry the direction), and the limit
+    price is SIGNED negative = credit. IBKR rejects a SELL combo priced at a
+    positive net as a "riskless order", so the negative net must be preserved.
     """
     payload = {
         "legs": [
@@ -551,7 +552,7 @@ async def test_combo_credit_spread(mock_ib, app_state):
         ],
         "orderType": "LMT",
         "tif": "DAY",
-        "comboAction": "SELL",
+        "comboAction": "BUY",
         "comboLmtPrice": -2.00,
     }
 
@@ -561,9 +562,39 @@ async def test_combo_credit_spread(mock_ib, app_state):
     assert data["status"] == "Filled"
 
     trade = mock_ib.get_last_trade()
-    assert trade.order.action == "SELL"
-    # Negative comboLmtPrice → round_signed_to_tick preserves sign
+    assert trade.order.action == "BUY"
+    # Negative comboLmtPrice → signed limit preserved (negative = credit)
     assert trade.order.lmtPrice == round_signed_to_tick(-2.0, spx_tick_for_price(-2.0))
+
+
+@pytest.mark.asyncio
+async def test_combo_leg_rejects_mismatched_conid(mock_ib, app_state, sample_legs_combo, monkeypatch):
+    """If qualification returns a near-match (wrong strike), refuse to place.
+
+    A ComboLeg is sent to IBKR as a bare conId; shipping a mismatched conId is
+    exactly the wrong-strike order seen in TWS. The fix selects only an exact
+    strike/right/expiry match and fails loudly instead.
+    """
+    async def bad_qualify(contract):
+        wrong = MockContract(
+            conId=99999,
+            symbol=getattr(contract, "symbol", "SPX"),
+            secType="OPT",
+            lastTradeDateOrContractMonth=getattr(contract, "lastTradeDateOrContractMonth", ""),
+            strike=(getattr(contract, "strike", 0.0) or 0.0) + 10.0,   # wrong strike
+            right=getattr(contract, "right", ""),
+            multiplier="100", currency="USD", exchange="CBOE",
+            localSymbol="", tradingClass="SPXW", comboLegs=[],
+        )
+        return [MockContractDetails(minTick=0.05, contract=wrong)]
+    monkeypatch.setattr(mock_ib, "req_contract_details", bad_qualify)
+
+    result = await handle_place_order(mock_ib, app_state, sample_legs_combo)
+
+    data = result["data"]
+    assert data["status"] == "Error"
+    assert "Qualified 0/2 legs" in data["message"]
+    assert mock_ib.get_placed_orders() == []
 
 
 # ---------------------------------------------------------------------------

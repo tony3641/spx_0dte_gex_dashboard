@@ -51,6 +51,51 @@ def _stock_contract(symbol):
     return c
 
 
+def _exact_match(details, requested):
+    """Return the contract from ``details`` that exactly matches ``requested``.
+
+    IB's ``reqContractDetails`` can return multiple near-matches; the ComboLeg
+    is sent to IBKR as a bare conId, so picking the wrong one silently ships a
+    leg with the wrong strike. Refuse a near-match: return only an exact
+    strike/right/expiry match carrying a conId, else None.
+    """
+    if not details:
+        return None
+    req_strike = float(getattr(requested, "strike", 0) or 0)
+    req_right = (getattr(requested, "right", "") or "").upper()
+    req_expiry = (getattr(requested, "lastTradeDateOrContractMonth", "") or "").replace(" ", "")
+    for d in details:
+        dc = getattr(d, "contract", None)
+        if dc is None or not getattr(dc, "conId", 0):
+            continue
+        try:
+            strike_matches = abs(float(getattr(dc, "strike", 0) or 0) - req_strike) < 1e-6
+        except (TypeError, ValueError):
+            strike_matches = False
+        right_matches = (getattr(dc, "right", "") or "").upper() == req_right
+        returned_expiry = (getattr(dc, "lastTradeDateOrContractMonth", "") or "").replace(" ", "")
+        expiry_matches = returned_expiry == req_expiry or returned_expiry.startswith(req_expiry)
+        if strike_matches and right_matches and expiry_matches:
+            return dc
+    return None
+
+
+async def _qualify_contracts(ib, contracts):
+    """Resolve each contract to its exact IB contract (conId), in parallel.
+
+    Returns the list of exact-match contracts in input order, or ``None`` if
+    any contract fails to resolve (wrong contract would be sent otherwise).
+    """
+    results = await asyncio.gather(*(ib.req_contract_details(c) for c in contracts))
+    qualified = []
+    for c, details in zip(contracts, results):
+        match = _exact_match(details, c)
+        if match is None:
+            return None
+        qualified.append(match)
+    return qualified
+
+
 async def watch_and_push_status(ws, handle, timeout: float = 30.0,
                                 bracket_child: bool = False) -> None:
     """Background task: push an order_status WS message once the order settles.
@@ -237,9 +282,10 @@ async def _place_single_leg(ib, state, payload, leg,
         }}
 
     details = await ib.req_contract_details(contract)
-    if not details or not details[0].contract.conId:
+    exact = _exact_match(details, contract)
+    if exact is None or not getattr(exact, "conId", 0):
         return {"type": "order_status", "data": {"status": "Error", "message": "Failed to qualify contract"}}
-    contract = details[0].contract
+    contract = exact
 
     is_spx_opt = (sec_type == "OPT" and leg.get("symbol", "").upper() == "SPX")
     tick_size = 0.05 if is_spx_opt else 0.01
@@ -498,13 +544,10 @@ async def _place_multi_leg(ib, state, payload, legs,
         )
         individual_contracts.append(c)
 
-    qualified = []
-    for c in individual_contracts:
-        details = await ib.req_contract_details(c)
-        if not details or not details[0].contract.conId:
-            qualified = None
-            break
-        qualified.append(details[0].contract)
+    # Resolve each leg to its exact IB contract in parallel. A mismatch is
+    # refused loudly: a ComboLeg is sent to IBKR as a bare conId, so an
+    # unresolved leg would ship the wrong strike.
+    qualified = await _qualify_contracts(ib, individual_contracts)
 
     if qualified is None or len(qualified) != len(legs):
         return {"type": "order_status", "data": {
@@ -547,6 +590,9 @@ async def _place_multi_leg(ib, state, payload, legs,
             "message": f"Invalid comboLmtPrice: {payload.get('comboLmtPrice')}"
         }}
 
+    # The BAG limit is signed: negative = credit, positive = debit. IBKR rejects
+    # a SELL combo priced at a positive net as a "riskless order", so a credit
+    # spread must carry its negative net (e.g. SELL @ -0.50).
     if bag_symbol == "SPX":
         bag_lmt = round_signed_to_tick(bag_lmt, spx_tick_for_price(bag_lmt))
     else:
