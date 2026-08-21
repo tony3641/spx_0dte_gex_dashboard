@@ -77,3 +77,27 @@ async def test_req_sec_def_opt_params_aggregates_until_end():
     result = await asyncio.wait_for(fut, timeout=1)
     assert result[0].tradingClass == "SPXW"
     assert result[0].expirations == ["20260821"]
+
+
+# Task 4: historical bars
+from datetime import datetime, timezone, timedelta
+from ibapi.common import BarData
+
+ET = timezone(timedelta(hours=-4))
+
+
+@pytest.mark.asyncio
+async def test_req_historical_bars_accumulates_and_converts_dates():
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    c = Contract(); c.symbol = "SPX"; c.secType = "IND"
+    fut = asyncio.create_task(client.req_historical_bars(c))
+    await asyncio.sleep(0.01)
+    req_id = next(iter(client._requests))
+    b = BarData(); b.date = 1724176800.0; b.open = 1.0; b.high = 2.0; b.low = 0.5; b.close = 1.5; b.volume = 10
+    client.historicalData(req_id, b)
+    client.historicalDataEnd(req_id, "", "")
+    bars = await asyncio.wait_for(fut, timeout=1)
+    assert len(bars) == 1
+    assert isinstance(bars[0].date, datetime)
+    assert bars[0].close == 1.5
