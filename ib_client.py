@@ -12,9 +12,11 @@ import asyncio
 import itertools
 import logging
 import threading
+from collections import namedtuple
 from typing import Callable, Dict, List, Optional
 
 from ibapi.client import EClient
+from ibapi.common import BarData  # noqa: F401  (used in Task 4)
 from ibapi.wrapper import EWrapper
 
 logger = logging.getLogger(__name__)
@@ -53,9 +55,18 @@ class _Request:
         self.items: list = []
 
 
+SecDefOptParams = namedtuple(
+    "SecDefOptParams", "exchange tradingClass multiplier expirations strikes")
+
+
 class IBClient(EWrapper, EClient):
     def __init__(self):
         EClient.__init__(self, self)
+        # ibapi 10.45 useProtoBuf() crashes on None serverVersion when unconnected
+        # (`unifiedVersion <= None`). Default to 0 so one-shot request methods degrade
+        # to the not-connected error path instead of raising; the connect handshake
+        # overwrites this with the real negotiated version. (Task 3)
+        self.serverVersion_ = 0
         self.connected = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._req_id = itertools.count(1)
@@ -98,3 +109,54 @@ class IBClient(EWrapper, EClient):
 
     def managedAccounts(self, accountsList):
         self._account_code = (accountsList or "").split(",")[0] or None
+
+    # -- one-shot request plumbing ------------------------------------------
+
+    def _start_request(self):
+        req_id = next(self._req_id)
+        req = _Request(self._loop)
+        self._requests[req_id] = req
+        return req_id, req
+
+    def _finish_request(self, req_id):
+        req = self._requests.pop(req_id, None)
+        if req is not None and not req.future.done():
+            req.future.set_result(list(req.items))
+
+    async def req_contract_details(self, contract):
+        req_id, req = self._start_request()
+        EClient.reqContractDetails(self, req_id, contract)
+        try:
+            return await req.future
+        finally:
+            self._requests.pop(req_id, None)
+
+    async def req_sec_def_opt_params(self, symbol, fut_fop_exchange, sec_type, con_id):
+        req_id, req = self._start_request()
+        EClient.reqSecDefOptParams(self, req_id, symbol, fut_fop_exchange, sec_type, con_id)
+        try:
+            return await req.future
+        finally:
+            self._requests.pop(req_id, None)
+
+    # -- EWrapper: contract details ------------------------------------------
+
+    def contractDetails(self, reqId, contractDetails):
+        req = self._requests.get(reqId)
+        if req is not None:
+            req.items.append(contractDetails)
+
+    def contractDetailsEnd(self, reqId):
+        self._finish_request(reqId)
+
+    # -- EWrapper: sec-def-opt-params ----------------------------------------
+
+    def securityDefinitionOptionParameter(self, reqId, exchange, underlyingConId,
+                                          tradingClass, multiplier, expirations, strikes):
+        req = self._requests.get(reqId)
+        if req is not None:
+            req.items.append(SecDefOptParams(exchange, tradingClass, multiplier,
+                                             list(expirations), list(strikes)))
+
+    def securityDefinitionOptionParameterEnd(self, reqId):
+        self._finish_request(reqId)
