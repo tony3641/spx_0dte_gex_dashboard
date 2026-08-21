@@ -121,7 +121,7 @@ class IBClient(EWrapper, EClient):
     def _finish_request(self, req_id):
         req = self._requests.pop(req_id, None)
         if req is not None and not req.future.done():
-            req.future.set_result(list(req.items))
+            self._loop.call_soon_threadsafe(req.future.set_result, list(req.items))
 
     async def req_contract_details(self, contract):
         req_id, req = self._start_request()
