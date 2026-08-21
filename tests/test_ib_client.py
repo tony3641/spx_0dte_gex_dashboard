@@ -29,8 +29,14 @@ async def test_connect_async_times_out():
             await client.connect("127.0.0.1", 7497, 1, timeout=0.05)
 
 
-def test_disconnect_sets_connected_false():
+def test_disconnect_sets_connected_false(monkeypatch):
     client = IBClient()
-    client._connected_flag = True
+    client.connected = True
+    disconnect_called = False
+    def fake_disconnect(self):
+        nonlocal disconnect_called
+        disconnect_called = True
+    monkeypatch.setattr(EClient, "disconnect", fake_disconnect)
     client.disconnect()
     assert not client.connected
+    assert disconnect_called
