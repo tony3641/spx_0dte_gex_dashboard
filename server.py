@@ -205,6 +205,15 @@ async def reconnect_ib(payload: dict):
     if state.chain_fetch_active is not None:
         state.chain_fetch_active.clear()
 
+    # Stop the old background loops up front. If the reconnect fails below, we
+    # must not leave them running against the (soon to be disconnected) old
+    # client — cancel and clear them now so a failure is atomic: no loops, but
+    # a consistent fresh client, and a retry recovers cleanly.
+    for task in state.background_tasks:
+        task.cancel()
+    await asyncio.gather(*state.background_tasks, return_exceptions=True)
+    state.background_tasks.clear()
+
     # Tear down every active market-data stream on the old client (the native
     # bridge tracks subscriptions by reqId, not per-contract).
     for req_id in list(ib._streams.keys()):
@@ -235,13 +244,8 @@ async def reconnect_ib(payload: dict):
         # pre-migration in-place reconnect), so re-subscribe them here.
         await setup_account_subscription(ib, state)
         await setup_es_subscription(ib, state)
-        # The background loops were created at startup bound to the *old* ib
-        # object; restart them against the new client or they'd keep driving a
-        # disconnected bridge.
-        for task in state.background_tasks:
-            task.cancel()
-        await asyncio.gather(*state.background_tasks, return_exceptions=True)
-        state.background_tasks.clear()
+        # Restart the background loops against the new client (the originals
+        # were cancelled up front so a failed reconnect leaves no loops running).
         state.background_tasks.append(asyncio.create_task(price_push_loop(ib, state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(status_push_loop(state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(account_push_loop(ib, state, broadcast_fn)))
