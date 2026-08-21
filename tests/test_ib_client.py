@@ -80,10 +80,8 @@ async def test_req_sec_def_opt_params_aggregates_until_end():
 
 
 # Task 4: historical bars
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from ibapi.common import BarData
-
-ET = timezone(timedelta(hours=-4))
 
 
 @pytest.mark.asyncio
@@ -94,10 +92,17 @@ async def test_req_historical_bars_accumulates_and_converts_dates():
     fut = asyncio.create_task(client.req_historical_bars(c))
     await asyncio.sleep(0.01)
     req_id = next(iter(client._requests))
-    b = BarData(); b.date = 1724176800.0; b.open = 1.0; b.high = 2.0; b.low = 0.5; b.close = 1.5; b.volume = 10
-    client.historicalData(req_id, b)
+    summer = BarData(); summer.date = 1724176800.0; summer.open = 1.0; summer.high = 2.0
+    summer.low = 0.5; summer.close = 1.5; summer.volume = 10
+    winter = BarData(); winter.date = 1734176800.0; winter.open = 2.0; winter.high = 3.0
+    winter.low = 1.0; winter.close = 2.5; winter.volume = 20
+    client.historicalData(req_id, summer)
+    client.historicalData(req_id, winter)
     client.historicalDataEnd(req_id, "", "")
     bars = await asyncio.wait_for(fut, timeout=1)
-    assert len(bars) == 1
+    assert len(bars) == 2
     assert isinstance(bars[0].date, datetime)
+    assert bars[0].date.utcoffset() == timedelta(hours=-4)   # 2024-08-20 is EDT
     assert bars[0].close == 1.5
+    assert bars[1].date.utcoffset() == timedelta(hours=-5)   # 2024-12-14 is EST
+    assert bars[1].close == 2.5
