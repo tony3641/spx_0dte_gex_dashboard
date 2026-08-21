@@ -1,12 +1,14 @@
 """
-Shared test fixtures and MockIB class for AI-driven autonomous testing.
+Shared test fixtures and MockIBClient class for AI-driven autonomous testing.
 
-MockIB is an explicit class (not unittest.mock) so that AI agents can
+MockIBClient is an explicit class (not unittest.mock) so that AI agents can
 inspect return values, state transitions, and order flows without opaque
-mock internals.
+mock internals. It mirrors the native ``IBClient`` surface (ib_client.py):
+``place_order`` returns a real event-driven ``OrderHandle``, ``subscribe_tick``
+returns a real ``TickStream``, and account data uses the real
+``AccountValue``/``PortfolioItem``/``ExecutionRecord`` records.
 """
 
-import asyncio
 import sys
 import os
 import json
@@ -21,9 +23,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app_state import AppState, create_app_state
 
+# Reuse the real bridge types — never re-implement them here.
+from ib_client import (  # noqa: E402  (sys.path insert above)
+    AccountValue,
+    ExecutionRecord,
+    Greeks,
+    OrderHandle,
+    PortfolioItem,
+    SecDefOptParams,
+    TickStream,
+    _PENDING_STATUSES,
+    _TERMINAL_STATUSES,
+)
+
 
 # ---------------------------------------------------------------------------
-# Lightweight stand-ins for ib_insync data classes used in order_manager
+# Lightweight stand-ins for ibapi data classes used by ported tests
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -56,16 +71,9 @@ class MockLogEntry:
 
 
 @dataclass
-class MockTrade:
-    contract: Any = None
-    order: MockOrder = field(default_factory=MockOrder)
-    orderStatus: MockOrderStatus = field(default_factory=MockOrderStatus)
-    log: List[MockLogEntry] = field(default_factory=list)
-
-
-@dataclass
 class MockContractDetails:
     minTick: float = 0.05
+    contract: Any = field(default_factory=lambda: MockContract())
 
 
 @dataclass
@@ -84,28 +92,13 @@ class MockContract:
     comboLegs: list = field(default_factory=list)
 
 
-@dataclass
-class MockTicker:
-    bid: float = -1
-    ask: float = -1
-    last: float = -1
-    bidSize: float = 0
-    askSize: float = 0
-    volume: float = 0
-    callOpenInterest: float = -1
-    putOpenInterest: float = -1
-    modelGreeks: Any = None
-    lastGreeks: Any = None
-    contract: Any = None
-
-
 # ---------------------------------------------------------------------------
-# MockIB — explicit class implementing the subset of ib_insync.IB used
-# by order_manager, account_manager, and other modules
+# MockIBClient — explicit class implementing the native IBClient surface used
+# by order_manager, account_manager, chain_fetcher, and other modules
 # ---------------------------------------------------------------------------
 
-class MockIB:
-    """Mock IB client with configurable behaviour.
+class MockIBClient:
+    """Mock bridge implementing the native ``IBClient`` surface.
 
     Parameters
     ----------
@@ -113,205 +106,210 @@ class MockIB:
         Whether isConnected() returns True.
     fill_immediately : bool
         If True, placed orders get status='Filled' immediately.
-        If False, orders stay in PendingSubmit.
+        If False, orders stay in 'Submitted'.
     reject : bool
         If True, placed orders get status='Cancelled' (simulating IB reject).
+    bracket_mode : bool
+        If True, child orders (parentId != 0) start as 'PreSubmitted' and
+        transition to 'Submitted' on ``simulate_parent_fill``.
     """
 
     def __init__(self, connected: bool = True,
                  fill_immediately: bool = True,
                  reject: bool = False,
                  bracket_mode: bool = False):
-        self._connected = connected
+        self.connected = connected
         self._fill_immediately = fill_immediately
         self._reject = reject
         self._bracket_mode = bracket_mode
         self._next_order_id = 100
         self._next_con_id = 10000
-        self._placed_orders: List[MockTrade] = []
+        self._next_req_id = 1
+        self._placed_orders: List[OrderHandle] = []
         self._cancelled_orders: List[int] = []
-        self._open_trades: List[MockTrade] = []
-        self._bracket_children: Dict[int, List[MockTrade]] = {}  # parentId → [child trades]
-        self._account_values: list = []
-        self._portfolio: list = []
-        self._fills: list = []
-        self._mkt_data_tickers: Dict[int, MockTicker] = {}
+        self._bracket_children: Dict[int, List[OrderHandle]] = {}  # parentId → [child handles]
+        # Public ``orders`` (used by account_manager) aliases ``_orders``
+        # (used internally / by the brief's example body).
+        self.orders: Dict[int, OrderHandle] = {}
+        self._orders = self.orders
+        self._streams: Dict[int, TickStream] = {}
+        self.account_values: List[AccountValue] = []
+        self.portfolio: List[PortfolioItem] = []
+        self.executions: List[ExecutionRecord] = []
+        self.account_dirty = False
+        self.on_account_dirty = None
         self.call_log: List[Dict] = []  # records every method call for AI analysis
 
     # -- Connection ----------------------------------------------------------
 
     def isConnected(self) -> bool:
-        return self._connected
+        return self.connected
 
-    async def connectAsync(self, host, port, clientId=1, timeout=15):
-        self.call_log.append({"method": "connectAsync", "host": host,
-                              "port": port, "clientId": clientId})
-        if not self._connected:
-            raise ConnectionError("MockIB: not connected")
+    async def connect(self, host, port, client_id=1, timeout=15.0):
+        self.call_log.append({"method": "connect", "host": host, "port": port,
+                              "client_id": client_id, "timeout": timeout})
+        self.connected = True
 
     def disconnect(self):
         self.call_log.append({"method": "disconnect"})
-        self._connected = False
+        self.connected = False
 
-    # -- Contract qualification ----------------------------------------------
+    # -- Contract qualification / one-shot requests ---------------------------
 
-    async def qualifyContractsAsync(self, *contracts):
-        self.call_log.append({
-            "method": "qualifyContractsAsync",
-            "contracts": [getattr(c, "symbol", str(c)) for c in contracts],
-        })
-        result = []
-        for c in contracts:
-            mc = MockContract(
-                conId=self._next_con_id,
-                symbol=getattr(c, "symbol", "SPX"),
-                secType=getattr(c, "secType", "OPT"),
-                lastTradeDateOrContractMonth=getattr(c, "lastTradeDateOrContractMonth", ""),
-                strike=getattr(c, "strike", 0.0),
-                right=getattr(c, "right", ""),
-                multiplier=getattr(c, "multiplier", "100"),
-                currency=getattr(c, "currency", "USD"),
-                exchange=getattr(c, "exchange", "SMART"),
-                tradingClass=getattr(c, "tradingClass", ""),
-            )
-            self._next_con_id += 1
-            result.append(mc)
-        return result
+    async def req_contract_details(self, contract):
+        """Return one MockContractDetails carrying a fresh conId + minTick.
 
-    async def reqContractDetailsAsync(self, contract):
-        self.call_log.append({
-            "method": "reqContractDetailsAsync",
-            "symbol": getattr(contract, "symbol", ""),
-        })
-        return [MockContractDetails(minTick=0.05)]
+        The returned contract mirrors the input's symbol/secType/etc. so
+        ported tests see the same shape the real bridge produces.
+        """
+        mc = MockContract(
+            conId=self._next_con_id,
+            symbol=getattr(contract, "symbol", "SPX"),
+            secType=getattr(contract, "secType", "OPT"),
+            lastTradeDateOrContractMonth=getattr(contract, "lastTradeDateOrContractMonth", ""),
+            strike=getattr(contract, "strike", 0.0),
+            right=getattr(contract, "right", ""),
+            multiplier=getattr(contract, "multiplier", "100"),
+            currency=getattr(contract, "currency", "USD"),
+            exchange=getattr(contract, "exchange", "SMART"),
+            localSymbol=getattr(contract, "localSymbol", ""),
+            tradingClass=getattr(contract, "tradingClass", ""),
+            comboLegs=list(getattr(contract, "comboLegs", [])),
+        )
+        self._next_con_id += 1
+        self.call_log.append({"method": "req_contract_details", "symbol": mc.symbol,
+                              "secType": mc.secType, "conId": mc.conId})
+        return [MockContractDetails(minTick=0.05, contract=mc)]
+
+    async def req_sec_def_opt_params(self, symbol, fut_fop_exchange="", sec_type="OPT", con_id=0):
+        """Minimal fake — one SPXW chain (exchange SMART) the tests can rely on."""
+        self.call_log.append({"method": "req_sec_def_opt_params", "symbol": symbol,
+                              "fut_fop_exchange": fut_fop_exchange, "sec_type": sec_type,
+                              "con_id": con_id})
+        return [SecDefOptParams(
+            exchange="SMART", tradingClass="SPXW", multiplier="100",
+            expirations=["20260410", "20260417", "20260619"],
+            strikes=[5000.0, 5100.0, 5200.0, 5300.0, 5400.0, 5500.0],
+        )]
+
+    async def req_historical_bars(self, contract, end_date_time="", duration="1 D",
+                                  bar_size="1 min", what_to_show="TRADES",
+                                  use_rth=True, format_date=2):
+        """Minimal fake — returns no bars by default."""
+        self.call_log.append({"method": "req_historical_bars",
+                              "symbol": getattr(contract, "symbol", ""),
+                              "duration": duration, "bar_size": bar_size,
+                              "what_to_show": what_to_show})
+        return []
 
     # -- Market data ---------------------------------------------------------
 
-    def reqMktData(self, contract, genericTickList="", snapshot=False):
-        self.call_log.append({
-            "method": "reqMktData",
-            "symbol": getattr(contract, "symbol", ""),
-        })
-        ticker = MockTicker(bid=3.40, ask=3.60, last=3.50, contract=contract)
-        con_id = getattr(contract, "conId", id(contract))
-        self._mkt_data_tickers[con_id] = ticker
-        return ticker
+    def subscribe_tick(self, contract, generic=""):
+        """Subscribe a real TickStream (no ticks seeded)."""
+        req_id = self._next_req_id
+        self._next_req_id += 1
+        stream = TickStream(req_id, contract)
+        self._streams[req_id] = stream
+        self.call_log.append({"method": "subscribe_tick", "reqId": req_id,
+                              "symbol": getattr(contract, "symbol", ""), "generic": generic})
+        return stream
 
-    def cancelMktData(self, contract):
-        self.call_log.append({
-            "method": "cancelMktData",
-            "symbol": getattr(contract, "symbol", ""),
-        })
-        con_id = getattr(contract, "conId", id(contract))
-        self._mkt_data_tickers.pop(con_id, None)
+    def unsubscribe_tick(self, req_id):
+        self.call_log.append({"method": "unsubscribe_tick", "reqId": req_id})
+        self._streams.pop(req_id, None)
 
-    # -- Order placement -----------------------------------------------------
+    async def fetch_snapshot(self, contracts, generic="101", timeout=5.0):
+        """Subscribe a batch, seed no ticks, then cancel it — returns immediately."""
+        streams = [self.subscribe_tick(c, generic) for c in contracts]
+        self.call_log.append({"method": "fetch_snapshot", "count": len(streams),
+                              "generic": generic, "timeout": timeout})
+        for s in streams:
+            self.unsubscribe_tick(s.req_id)
+        return streams
 
-    def placeOrder(self, contract, order) -> MockTrade:
+    # -- Order placement / lifecycle ------------------------------------------
+
+    def place_order(self, contract, order) -> OrderHandle:
         order_id = self._next_order_id
         self._next_order_id += 1
         order.orderId = order_id
-
-        is_bracket_child = self._bracket_mode and order.parentId != 0
-
         if self._reject:
-            status = MockOrderStatus(
-                status="Cancelled", filled=0,
-                remaining=order.totalQuantity, avgFillPrice=0.0,
-            )
-        elif is_bracket_child:
-            # Bracket child starts as PreSubmitted (IB holds it until parent fills)
-            status = MockOrderStatus(
-                status="PreSubmitted",
-                filled=0,
-                remaining=order.totalQuantity,
-                avgFillPrice=0.0,
-            )
+            status = "Cancelled"; filled = 0; remaining = float(order.totalQuantity)
+        elif self._bracket_mode and getattr(order, "parentId", 0) != 0:
+            status = "PreSubmitted"; filled = 0; remaining = float(order.totalQuantity)
         elif self._fill_immediately:
-            fill_price = order.lmtPrice if order.lmtPrice else 3.50
-            status = MockOrderStatus(
-                status="Filled",
-                filled=order.totalQuantity,
-                remaining=0,
-                avgFillPrice=fill_price,
-            )
+            status = "Filled"; filled = float(order.totalQuantity); remaining = 0
         else:
-            status = MockOrderStatus(
-                status="Submitted",
-                filled=0,
-                remaining=order.totalQuantity,
-                avgFillPrice=0.0,
-            )
+            status = "Submitted"; filled = 0; remaining = float(order.totalQuantity)
+        handle = OrderHandle(order_id, contract, order)
+        handle.status = status
+        handle.filled = filled
+        handle.remaining = remaining
+        handle.avg_fill_price = float(order.lmtPrice or 3.50)
+        if status == "Filled":
+            handle.ack_event.set(); handle.fill_event.set(); handle.terminal_event.set()
+        self.orders[order_id] = handle
+        self._placed_orders.append(handle)
+        if getattr(order, "parentId", 0) != 0:
+            self._bracket_children.setdefault(order.parentId, []).append(handle)
+        self.call_log.append({"method": "place_order", "orderId": order_id,
+                              "action": order.action, "totalQuantity": float(order.totalQuantity),
+                              "orderType": order.orderType, "lmtPrice": getattr(order, "lmtPrice", None),
+                              "auxPrice": getattr(order, "auxPrice", None),
+                              "transmit": order.transmit, "parentId": getattr(order, "parentId", 0),
+                              "status": status})
+        return handle
 
-        trade = MockTrade(
-            contract=contract,
-            order=order,
-            orderStatus=status,
-            log=[MockLogEntry(message=f"MockIB: order {order_id} placed")],
-        )
-        self._placed_orders.append(trade)
-        self._open_trades.append(trade)
+    def cancel_order(self, order_id):
+        """Cancel an order and cascade to its bracket children (real IB behaviour)."""
+        self.call_log.append({"method": "cancel_order", "orderId": order_id})
+        handle = self.orders.get(order_id)
+        if handle is not None:
+            self._set_handle_status(handle, "Cancelled")
+            self._cancelled_orders.append(order_id)
+        for child in self._bracket_children.get(order_id, []):
+            if child.status not in ("Filled", "Cancelled"):
+                self._set_handle_status(child, "Cancelled")
+                self._cancelled_orders.append(child.order_id)
 
-        # Track bracket parent→children mapping
-        if is_bracket_child:
-            self._bracket_children.setdefault(order.parentId, []).append(trade)
-
-        self.call_log.append({
-            "method": "placeOrder",
-            "orderId": order_id,
-            "action": order.action,
-            "totalQuantity": order.totalQuantity,
-            "orderType": order.orderType,
-            "lmtPrice": order.lmtPrice,
-            "auxPrice": order.auxPrice,
-            "transmit": order.transmit,
-            "parentId": order.parentId,
-            "status": status.status,
-        })
-        return trade
-
-    def cancelOrder(self, order):
-        self.call_log.append({
-            "method": "cancelOrder",
-            "orderId": order.orderId,
-        })
-        self._cancelled_orders.append(order.orderId)
-        for trade in self._open_trades:
-            if trade.order.orderId == order.orderId:
-                trade.orderStatus.status = "Cancelled"
-                break
-        # Cascade cancel to bracket children (mirrors real IB behaviour)
-        for child_trade in self._bracket_children.get(order.orderId, []):
-            if child_trade.orderStatus.status not in ("Filled", "Cancelled"):
-                child_trade.orderStatus.status = "Cancelled"
-                self._cancelled_orders.append(child_trade.order.orderId)
-
-    def reqOpenOrders(self):
-        self.call_log.append({"method": "reqOpenOrders"})
+    def req_open_orders(self):
+        self.call_log.append({"method": "req_open_orders"})
 
     # -- Account queries -----------------------------------------------------
 
-    def accountValues(self):
-        return self._account_values
+    def req_account_updates(self, subscribe, account=""):
+        self.call_log.append({"method": "req_account_updates",
+                              "subscribe": subscribe, "account": account})
 
-    def portfolio(self):
-        return self._portfolio
+    def req_executions(self, exec_filter=None):
+        self.call_log.append({"method": "req_executions"})
 
-    def openTrades(self):
-        return [t for t in self._open_trades
-                if t.orderStatus.status not in ("Filled", "Cancelled")]
+    # -- Internal helpers -----------------------------------------------------
 
-    def fills(self):
-        return self._fills
+    def _set_handle_status(self, handle, status, filled=None, remaining=None, avg_price=None):
+        """Transition an OrderHandle and fire its events (mirrors orderStatus)."""
+        handle.status = status
+        if filled is not None:
+            handle.filled = float(filled)
+        if remaining is not None:
+            handle.remaining = float(remaining)
+        if avg_price is not None:
+            handle.avg_fill_price = avg_price
+        if status not in _PENDING_STATUSES:
+            handle.ack_event.set()
+        if status == "Filled":
+            handle.fill_event.set()
+        if status in _TERMINAL_STATUSES:
+            handle.terminal_event.set()
 
     # -- Utility for tests ---------------------------------------------------
 
-    def get_placed_orders(self) -> List[MockTrade]:
+    def get_placed_orders(self) -> List[OrderHandle]:
         """Return all orders placed during the test."""
         return list(self._placed_orders)
 
-    def get_last_trade(self) -> Optional[MockTrade]:
-        """Return the most recently placed trade."""
+    def get_last_trade(self) -> Optional[OrderHandle]:
+        """Return the most recently placed order handle."""
         return self._placed_orders[-1] if self._placed_orders else None
 
     def get_call_log_json(self) -> str:
@@ -321,30 +319,32 @@ class MockIB:
     def set_fill_status(self, order_id: int, status: str = "Filled",
                         filled: float = 0, avg_price: float = 0.0):
         """Manually transition an order's status (for async tests)."""
-        for trade in self._placed_orders:
-            if trade.order.orderId == order_id:
-                trade.orderStatus.status = status
-                trade.orderStatus.filled = filled
-                trade.orderStatus.avgFillPrice = avg_price
-                trade.orderStatus.remaining = trade.order.totalQuantity - filled
-                break
+        handle = self.orders.get(order_id)
+        if handle is None:
+            return
+        remaining = float(getattr(handle.order, "totalQuantity", 0.0)) - filled
+        self._set_handle_status(handle, status, filled=filled,
+                                remaining=remaining, avg_price=avg_price)
+        self.call_log.append({"method": "set_fill_status", "orderId": order_id,
+                              "status": status, "filled": filled, "avg_price": avg_price})
 
-    def simulate_parent_fill(self, parent_order_id: int, avg_price: float = 0.0):
+    def simulate_parent_fill(self, parent_id: int, avg_price: float = 0.0):
         """Simulate IB filling a parent order and activating bracket children.
 
-        Transitions parent → Filled and all bracket children
+        Transitions parent → Filled (with events) and all bracket children
         PreSubmitted → Submitted (IB's real lifecycle).
         """
-        for trade in self._placed_orders:
-            if trade.order.orderId == parent_order_id:
-                trade.orderStatus.status = "Filled"
-                trade.orderStatus.filled = trade.order.totalQuantity
-                trade.orderStatus.remaining = 0
-                trade.orderStatus.avgFillPrice = avg_price or trade.order.lmtPrice or 3.50
-                break
-        for child_trade in self._bracket_children.get(parent_order_id, []):
-            if child_trade.orderStatus.status == "PreSubmitted":
-                child_trade.orderStatus.status = "Submitted"
+        parent = self.orders.get(parent_id)
+        if parent is not None:
+            total = float(getattr(parent.order, "totalQuantity", 0.0))
+            price = avg_price or float(getattr(parent.order, "lmtPrice", None) or 3.50)
+            self._set_handle_status(parent, "Filled", filled=total,
+                                    remaining=0, avg_price=price)
+        for child in self._bracket_children.get(parent_id, []):
+            if child.status == "PreSubmitted":
+                self._set_handle_status(child, "Submitted")
+        self.call_log.append({"method": "simulate_parent_fill", "parentId": parent_id,
+                              "avg_price": avg_price})
 
 
 # ---------------------------------------------------------------------------
@@ -353,38 +353,38 @@ class MockIB:
 
 @pytest.fixture
 def mock_ib():
-    """A connected MockIB that fills immediately."""
-    return MockIB(connected=True, fill_immediately=True)
+    """A connected MockIBClient that fills immediately."""
+    return MockIBClient(connected=True, fill_immediately=True)
 
 
 @pytest.fixture
 def mock_ib_pending():
-    """A connected MockIB that keeps orders in PendingSubmit."""
-    return MockIB(connected=True, fill_immediately=False)
+    """A connected MockIBClient that keeps orders in Submitted."""
+    return MockIBClient(connected=True, fill_immediately=False)
 
 
 @pytest.fixture
 def mock_ib_reject():
-    """A connected MockIB that rejects all orders."""
-    return MockIB(connected=True, reject=True)
+    """A connected MockIBClient that rejects all orders."""
+    return MockIBClient(connected=True, reject=True)
 
 
 @pytest.fixture
 def mock_ib_disconnected():
-    """A disconnected MockIB."""
-    return MockIB(connected=False)
+    """A disconnected MockIBClient."""
+    return MockIBClient(connected=False)
 
 
 @pytest.fixture
 def mock_ib_bracket():
-    """A connected MockIB with bracket order simulation.
+    """A connected MockIBClient with bracket order simulation.
 
     - Parent orders fill immediately.
     - Child orders (parentId != 0) start as PreSubmitted.
     - Use mock_ib_bracket.simulate_parent_fill(id) to transition children.
-    - cancelOrder cascades to bracket children.
+    - cancel_order cascades to bracket children.
     """
-    return MockIB(connected=True, fill_immediately=True, bracket_mode=True)
+    return MockIBClient(connected=True, fill_immediately=True, bracket_mode=True)
 
 
 @pytest.fixture
