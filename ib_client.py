@@ -13,6 +13,7 @@ import itertools
 import logging
 import threading
 from collections import namedtuple
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional
 
 from ibapi.client import EClient
@@ -20,6 +21,9 @@ from ibapi.common import BarData  # noqa: F401  (used in Task 4)
 from ibapi.wrapper import EWrapper
 
 logger = logging.getLogger(__name__)
+
+# Historical bar timestamps arrive as epoch seconds (format_date=2) in ET.
+ET = timezone(timedelta(hours=-4))
 
 # TickType values (ibapi.ticktype.TickTypeEnum)
 BID, ASK, LAST = 1, 2, 4
@@ -45,6 +49,16 @@ def _finite_or_none(val):
     if f == -1.0 or f == _UNSET:
         return None
     return f
+
+
+def _coerce_bar(bar):
+    """format_date=2 → bar.date is epoch seconds; return a tz-aware datetime."""
+    try:
+        dt = datetime.fromtimestamp(float(bar.date), tz=ET)
+    except (TypeError, ValueError, OSError):
+        dt = bar.date
+    bar.date = dt
+    return bar
 
 
 class _Request:
@@ -138,6 +152,27 @@ class IBClient(EWrapper, EClient):
             return await req.future
         finally:
             self._requests.pop(req_id, None)
+
+    async def req_historical_bars(self, contract, end_date_time="", duration="1 D",
+                                  bar_size="1 min", what_to_show="TRADES",
+                                  use_rth=True, format_date=2):
+        req_id, req = self._start_request()
+        EClient.reqHistoricalData(
+            self, req_id, contract, end_date_time, duration, bar_size,
+            what_to_show, use_rth, format_date, False, [])
+        try:
+            bars = await req.future
+        finally:
+            self._requests.pop(req_id, None)
+        return [_coerce_bar(b) for b in bars]
+
+    def historicalData(self, reqId, bar):
+        req = self._requests.get(reqId)
+        if req is not None:
+            req.items.append(bar)
+
+    def historicalDataEnd(self, reqId, start, end):
+        self._finish_request(reqId)
 
     # -- EWrapper: contract details ------------------------------------------
 
