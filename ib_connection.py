@@ -56,8 +56,20 @@ async def connect_ib(ib, state, host: str = None, port: int = None,
 
 
 async def setup_spx_subscription(ib, state):
-    """Build a native SPX IND contract and subscribe to live quotes."""
+    """Build a native SPX IND contract, qualify it (get conId), and subscribe."""
     spx = _index_contract("SPX", "CBOE", "USD")
+    # Qualify SPX so downstream requests (sec-def-opt-params, historical bars)
+    # carry a real conId — IB rejects reqSecDefOptParams with conId=0 (code 321).
+    # Mirrors the pre-migration ib.qualifyContracts(spx) call.
+    try:
+        details = await ib.req_contract_details(spx)
+        if details:
+            spx.conId = details[0].contract.conId
+            logger.info(f"SPX qualified: conId={spx.conId}")
+        else:
+            logger.warning("No SPX contract details returned — conId stays unqualified")
+    except Exception as e:
+        logger.warning(f"SPX qualification failed: {e}")
     state.spx_contract = spx
     stream = ib.subscribe_tick(spx, "233")
     state.spx_stream = stream
@@ -100,6 +112,10 @@ async def update_spx_es_prices(state):
     if spx is not None:
         price = spx.bid if spx.bid and spx.bid > 0 else \
             spx.ask if spx.ask and spx.ask > 0 else spx.last
+        if price is None or price <= 0:
+            # Index feeds (esp. paper) can stream close-only with no BBO — fall
+            # back to the last close tick (mirrors ib_insync Ticker.marketPrice).
+            price = spx.close
         if price is not None and price > 0:
             if is_within_rth():
                 state.spx_price = price

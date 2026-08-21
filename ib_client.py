@@ -223,10 +223,18 @@ class IBClient(EWrapper, EClient):
     def managedAccounts(self, accountsList):
         self._account_code = (accountsList or "").split(",")[0] or None
 
-    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=""):
+    def error(self, reqId, errorTime, errorCode, errorString, advancedOrderRejectJson=""):
         logger.warning("IB error reqId=%s code=%s: %s", reqId, errorCode, errorString)
         if self._snapshot_pending is not None:
             self._snapshot_pending.discard(reqId)   # don't let a dead stream hold a batch
+        # Resolve any pending one-shot request so awaiting callers don't hang:
+        # IB rejects some requests (e.g. error 200 contract-not-found, 321 invalid
+        # contract id) with an error but no matching ...End callback, which would
+        # otherwise leave the request future unresolved forever.
+        req = self._requests.get(reqId)
+        if req is not None and not req.future.done():
+            self._requests.pop(reqId, None)
+            self._loop.call_soon_threadsafe(req.future.set_result, list(req.items))
         handler = self.error_handler
         if handler is not None and self._loop is not None:
             handle = self._orders.get(reqId)
