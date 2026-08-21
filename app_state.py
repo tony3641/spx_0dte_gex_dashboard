@@ -18,6 +18,7 @@ class AppState:
     def __init__(self):
         # SPX index
         self.spx_contract = None          # Optional[Contract]
+        self.spx_stream = None            # Optional[TickStream]  (native)
         self.spx_price: float = 0.0       # latest known SPX price (live or historical)
         self.live_price: float = 0.0      # latest live streaming price (0 when not streaming)
         self.price_history: deque = deque(maxlen=28800)  # OHLC bars (1-min)
@@ -48,6 +49,7 @@ class AppState:
 
         # ES futures (off-hours derived SPX price)
         self.es_contract = None           # Optional[Contract]
+        self.es_stream = None             # Optional[TickStream]  (native)
         self.es_price: float = 0.0
         self.es_at_spx_close: float = 0.0
         self.spx_last_close: float = 0.0
@@ -82,7 +84,7 @@ class AppState:
         self.open_orders: List[dict] = []
         self.executions: List[dict] = []
         self.account_dirty: bool = False
-        self.active_trades: dict = {}     # {orderId: Trade}
+        self.active_trades: dict = {}     # {orderId: OrderHandle}
 
 
 def create_app_state() -> AppState:
