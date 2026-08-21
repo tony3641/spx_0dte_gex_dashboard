@@ -1,5 +1,6 @@
 # tests/test_ib_client.py
 import asyncio
+from types import SimpleNamespace
 import pytest
 from unittest import mock
 from ibapi.client import EClient
@@ -257,3 +258,17 @@ async def test_account_callbacks_populate_state_and_mark_dirty(monkeypatch):
     assert client.account_dirty
     # each account callback (value / portfolio / download-end) marks dirty
     assert dirty == [True, True, True]
+
+    # execDetails -> commissionAndFeesReport linkage
+    exec_stub = SimpleNamespace(execId="E1")
+    client.execDetails(99, c, exec_stub)
+    assert client.executions[-1].commission is None
+    assert client._exec_by_id["E1"] is client.executions[-1]
+
+    report_stub = SimpleNamespace(execId="E1")
+    client.commissionAndFeesReport(report_stub)
+    assert client.executions[-1].commission is report_stub
+    assert client.executions[-1].contract is c
+    assert client.executions[-1].execution is exec_stub
+    # execDetails + commission report each mark dirty
+    assert dirty == [True, True, True, True, True]
