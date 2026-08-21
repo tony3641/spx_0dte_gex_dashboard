@@ -74,6 +74,11 @@ class _Request:
 SecDefOptParams = namedtuple(
     "SecDefOptParams", "exchange tradingClass multiplier expirations strikes")
 
+AccountValue = namedtuple("AccountValue", "tag value currency")
+PortfolioItem = namedtuple("PortfolioItem", "contract position marketPrice marketValue "
+                                            "averageCost unrealizedPNL realizedPNL account")
+ExecutionRecord = namedtuple("ExecutionRecord", "contract execution commission")
+
 
 class Greeks:
     __slots__ = ("implied_vol", "delta", "gamma", "vega", "theta", "opt_price", "und_price")
@@ -178,6 +183,12 @@ class IBClient(EWrapper, EClient):
         self._orders: Dict[int, "OrderHandle"] = {}
         self._thread: Optional[threading.Thread] = None
         self._connected_evt: Optional[asyncio.Event] = None
+        self.account_values: List[AccountValue] = []
+        self.portfolio: List[PortfolioItem] = []
+        self.executions: List[ExecutionRecord] = []
+        self.account_dirty = False
+        self.on_account_dirty: Optional[Callable] = None
+        self._exec_by_id: Dict[str, ExecutionRecord] = {}
 
     # -- connection ---------------------------------------------------------
 
@@ -264,6 +275,51 @@ class IBClient(EWrapper, EClient):
         handle.contract = contract
         handle.order = order
         handle.status = orderState.status
+
+    # -- account requests -----------------------------------------------------
+
+    def req_account_updates(self, subscribe, account=""):
+        EClient.reqAccountUpdates(self, subscribe, account)
+
+    def req_executions(self, exec_filter=None):
+        if exec_filter is None:
+            from ibapi.execution import ExecutionFilter
+            exec_filter = ExecutionFilter()
+        EClient.reqExecutions(self, next(self._req_id), exec_filter)
+
+    def _mark_dirty(self):
+        self.account_dirty = True
+        if self.on_account_dirty is not None:
+            self.on_account_dirty()
+
+    # -- EWrapper: account ----------------------------------------------------
+
+    def updateAccountValue(self, key, val, currency, accountName):
+        self.account_values.append(AccountValue(key, val, currency))
+        self._mark_dirty()
+
+    def updatePortfolio(self, contract, position, marketPrice, marketValue,
+                        averageCost, unrealizedPNL, realizedPNL, accountName):
+        self.portfolio.append(PortfolioItem(contract, float(position), marketPrice,
+                                            marketValue, averageCost, unrealizedPNL,
+                                            realizedPNL, accountName))
+        self._mark_dirty()
+
+    def accountDownloadEnd(self, accountName):
+        self._mark_dirty()
+
+    def execDetails(self, reqId, contract, execution):
+        rec = ExecutionRecord(contract, execution, None)
+        self._exec_by_id[execution.execId] = rec
+        self.executions.append(rec)
+        self._mark_dirty()
+
+    def commissionReport(self, commissionReport):
+        rec = self._exec_by_id.get(commissionReport.execId)
+        if rec is not None:
+            self.executions[self.executions.index(rec)] = \
+                ExecutionRecord(rec.contract, rec.execution, commissionReport)
+        self._mark_dirty()
 
     # -- one-shot request plumbing ------------------------------------------
 

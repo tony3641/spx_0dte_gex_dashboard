@@ -230,3 +230,30 @@ async def test_cancel_order(monkeypatch):
     monkeypatch.setattr(EClient, "cancelOrder", lambda self, oid, oc: calls.append(oid))
     client.cancel_order(55)
     assert calls == [55]
+
+
+# Task 8: account callbacks + execution records
+from decimal import Decimal
+
+
+@pytest.mark.asyncio
+async def test_account_callbacks_populate_state_and_mark_dirty(monkeypatch):
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(EClient, "reqAccountUpdates", lambda self, *a, **k: None)
+    monkeypatch.setattr(EClient, "reqExecutions", lambda self, *a, **k: None)
+    dirty = []
+    client.on_account_dirty = lambda: dirty.append(True)
+
+    client.req_account_updates(True)
+    client.req_executions()
+    client.updateAccountValue("NetLiquidation", "100000.0", "USD", "DU123")
+    c = Contract(); c.symbol = "SPX"; c.secType = "OPT"
+    client.updatePortfolio(c, Decimal(1), 5200.0, 5200.0, 5000.0, 200.0, 0.0, "DU123")
+    client.accountDownloadEnd("DU123")
+
+    assert client.account_values[0].tag == "NetLiquidation"
+    assert client.portfolio[0].position == 1
+    assert client.account_dirty
+    # each account callback (value / portfolio / download-end) marks dirty
+    assert dirty == [True, True, True]
