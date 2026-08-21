@@ -106,3 +106,46 @@ async def test_req_historical_bars_accumulates_and_converts_dates():
     assert bars[0].close == 1.5
     assert bars[1].date.utcoffset() == timedelta(hours=-5)   # 2024-12-14 is EST
     assert bars[1].close == 2.5
+
+
+# Task 5: TickStream + Greeks + market-data callbacks
+from ib_client import BID, ASK, LAST, BID_SIZE, CALL_OPEN_INTEREST, TickStream
+
+
+@pytest.mark.asyncio
+async def test_tick_stream_maps_tick_price_and_size():
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    c = Contract(); c.symbol = "SPX"; c.secType = "OPT"
+    stream = client._streams[1] = TickStream(1, c)
+
+    client.tickPrice(1, BID, 3.40, None)
+    client.tickPrice(1, ASK, 3.60, None)
+    client.tickPrice(1, LAST, 3.50, None)
+    client.tickSize(1, BID_SIZE, 5)
+    client.tickSize(1, CALL_OPEN_INTEREST, 120)
+
+    assert stream.bid == 3.40 and stream.ask == 3.60 and stream.last == 3.50
+    assert stream.bid_size == 5
+    assert stream.call_oi == 120
+    assert stream.has_quote() and stream.received_any_tick()
+
+
+@pytest.mark.asyncio
+async def test_tick_option_computation_populates_model_greeks():
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    c = Contract(); c.symbol = "SPX"; c.secType = "OPT"
+    stream = client._streams[2] = TickStream(2, c)
+
+    client.tickOptionComputation(2, 13, 0, 0.18, 0.5, 3.5, 0.0, 0.003, 1.2, 0.05, 5200.0)
+
+    assert stream.model_greeks.implied_vol == 0.18
+    assert stream.model_greeks.delta == 0.5
+    assert stream.model_greeks.gamma == 0.003
+    assert stream.model_greeks.vega == 1.2
+
+    client.tickOptionComputation(2, 13, 0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0)
+    # -1.0 sentinel from IB → None (not the raw -1.0, not stale 0.18)
+    assert stream.model_greeks.implied_vol is None
+    assert stream.model_greeks.implied_vol != -1.0

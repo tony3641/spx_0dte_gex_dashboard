@@ -75,6 +75,54 @@ SecDefOptParams = namedtuple(
     "SecDefOptParams", "exchange tradingClass multiplier expirations strikes")
 
 
+class Greeks:
+    __slots__ = ("implied_vol", "delta", "gamma", "vega", "theta", "opt_price", "und_price")
+
+    def __init__(self):
+        self.implied_vol = self.delta = self.gamma = None
+        self.vega = self.theta = self.opt_price = self.und_price = None
+
+    def update(self, implied_vol, delta, gamma, vega, theta, opt_price, und_price):
+        self.implied_vol = _finite_or_none(implied_vol)
+        self.delta = _finite_or_none(delta)
+        self.gamma = _finite_or_none(gamma)
+        self.vega = _finite_or_none(vega)
+        self.theta = _finite_or_none(theta)
+        self.opt_price = _finite_or_none(opt_price)
+        self.und_price = _finite_or_none(und_price)
+
+
+class TickStream:
+    """Per-subscription market-data state, written on the socket thread."""
+
+    def __init__(self, req_id, contract):
+        self.req_id = req_id
+        self.contract = contract
+        self.bid = self.ask = self.last = None
+        self.high = self.low = self.close = None
+        self.bid_size = self.ask_size = self.last_size = 0
+        self.volume = 0
+        self.call_oi = self.put_oi = self.open_interest = 0
+        self.implied_volatility = None
+        self.bid_greeks = Greeks()
+        self.ask_greeks = Greeks()
+        self.last_greeks = Greeks()
+        self.model_greeks = Greeks()
+        self._first_tick = False
+        self._has_quote = False
+
+    def received_any_tick(self):
+        return self._first_tick
+
+    def has_quote(self):
+        return self._has_quote
+
+    def _mark(self, has_quote):
+        self._first_tick = True
+        if has_quote:
+            self._has_quote = True
+
+
 class IBClient(EWrapper, EClient):
     def __init__(self):
         EClient.__init__(self, self)
@@ -197,3 +245,66 @@ class IBClient(EWrapper, EClient):
 
     def securityDefinitionOptionParameterEnd(self, reqId):
         self._finish_request(reqId)
+
+    # -- market data callbacks (socket thread; never block) -------------------
+
+    def _get_stream(self, req_id):
+        stream = self._streams.get(req_id)
+        if stream is None:
+            stream = TickStream(req_id, None)
+            self._streams[req_id] = stream
+        return stream
+
+    def tickPrice(self, reqId, tickType, price, attribs):
+        stream = self._get_stream(reqId)
+        p = _finite_or_none(price)
+        if tickType == BID:
+            stream.bid = p
+        elif tickType == ASK:
+            stream.ask = p
+        elif tickType == LAST:
+            stream.last = p
+        elif tickType == HIGH:
+            stream.high = p
+        elif tickType == LOW:
+            stream.low = p
+        elif tickType == CLOSE:
+            stream.close = p
+        elif tickType == IMPLIED_VOL:
+            stream.implied_volatility = p
+        stream._mark(has_quote=tickType in (BID, ASK))
+        self._on_stream_tick(stream)
+
+    def tickSize(self, reqId, tickType, size):
+        stream = self._get_stream(reqId)
+        n = int(size) if size not in (None, -1) else 0
+        if tickType == BID_SIZE:
+            stream.bid_size = n
+        elif tickType == ASK_SIZE:
+            stream.ask_size = n
+        elif tickType == LAST_SIZE:
+            stream.last_size = n
+        elif tickType == VOLUME:
+            stream.volume = n
+        elif tickType == CALL_OPEN_INTEREST:
+            stream.call_oi = n
+        elif tickType == PUT_OPEN_INTEREST:
+            stream.put_oi = n
+        elif tickType == OPEN_INTEREST:
+            stream.open_interest = n
+        stream._mark(has_quote=False)
+        self._on_stream_tick(stream)
+
+    def tickOptionComputation(self, reqId, tickType, tickAttrib, impliedVol, delta,
+                              optPrice, pvDividend, gamma, vega, theta, undPrice):
+        stream = self._get_stream(reqId)
+        g = {BID_OPT: stream.bid_greeks, ASK_OPT: stream.ask_greeks,
+             LAST_OPT: stream.last_greeks, MODEL_OPT: stream.model_greeks}.get(tickType)
+        if g is not None:
+            g.update(impliedVol, delta, gamma, vega, theta, optPrice, undPrice)
+        stream._mark(has_quote=False)
+        self._on_stream_tick(stream)
+
+    def _on_stream_tick(self, stream):
+        """Hook for fetch_snapshot completion (implemented in Task 6)."""
+        pass
