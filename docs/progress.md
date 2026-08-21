@@ -431,3 +431,13 @@ CTRL_BREAK_EVENT (SIGBREAK) → `Shutdown signal received (SIGBREAK); stopping s
 
 ### Environment note (not a migration regression)
 At startup the TWS data farms were mid-reconnect: historical bars and live ticks returned error 162 ("Historical Market Data Service ... connected from a different IP address"), 10197 ("No market data during competing live session") and 2103 ("Market data farm connection is broken") for the first ~3 min, so the startup snapshot wait timed out with `spx_price=0`. The app's retry loop recovered once a live SPX tick landed (spot 7676.40) and full snapshots then completed normally. The native bridge surfaced and logged every error; the app followed its documented retry path.
+
+---
+
+## Task 20 — hard cut: ib_insync removed (2026-08-21)
+
+`ib_insync` is fully removed from the dependency surface. `requirements.txt` now installs the native `ibapi` client from the local TWS API source (`-e file:///C:/TWS%20API/source/pythonclient`, equivalent `pip install -e "C:\TWS API\source\pythonclient"`); `README.md` documents `ibapi` in the stack table and Quick Start.
+
+**Probe removal:** `tests/manual_spread_probe.py` and its test `tests/test_manual_spread_probe.py` were deleted. The probe was an explicitly manual tool ("not part of the automated pytest suite"), built entirely on ib_insync's async object model (`IB()`, `connectAsync`, `qualifyContractsAsync`, `reqMktData`, `placeOrder`→`Trade`, `errorEvent +=`), and passed an ib_insync `IB()` into native `handle_place_order`/`handle_cancel_order`/`get_chain_params` — object models that no longer line up after Tasks 2–19. Its combo-construction logic (`build_payload`) is now implemented natively in `order_manager._place_multi_leg`; the other tested helpers were consumed only by the probe itself. Nothing in production referenced it.
+
+**Verification:** `python -m pytest -v` → all pass except the pre-existing `test_chain_fetcher.py::test_compute_gex_uses_bsm_gamma_when_ib_gamma_missing` gex-math failure. `grep -rn "ib_insync" --include="*.py" .` → **0 matches** (docstring/comment references in `chain_fetcher.py`, `ib_connection.py`, and `tests/spikes/smoke_bridge_mock.py` were reworded). `python -c "import ibapi"` OK. `python -c "import server"` boots cleanly with ib_insync absent from the code path.

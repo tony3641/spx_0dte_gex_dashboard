@@ -6,7 +6,7 @@ A real-time Gamma Exposure (GEX) dashboard for SPX 0DTE options, powered by Inte
 
 | Layer | Technology |
 |---|---|
-| Broker API | `ib_insync` → IB TWS (port 7497) |
+| Broker API | native `ibapi` → IB TWS/Gateway (port 7497) |
 | Backend | Python 3.10, FastAPI, uvicorn |
 | Real-time push | WebSocket broadcast |
 | Frontend | Vanilla JS + Plotly 2.32 |
@@ -15,9 +15,14 @@ A real-time Gamma Exposure (GEX) dashboard for SPX 0DTE options, powered by Inte
 
 1. Open IB TWS / Gateway and enable API access on port 7497.
 2. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+   - The native broker API client (`ibapi`), from your local TWS API source:
+     ```
+     pip install -e "C:\TWS API\source\pythonclient"
+     ```
+   - Python dependencies:
+     ```
+     pip install -r requirements.txt
+     ```
 3. Start the server:
    ```
    python server.py
