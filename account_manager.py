@@ -182,7 +182,7 @@ def serialize_execution(ib, exec_filter=None) -> List[dict]:
     """Serialize today's executions from ib.executions (native records)."""
     today_et = now_et().date()
     result = []
-    for rec in ib.executions:
+    for rec in list(ib.executions):
         ex = rec.execution
         exec_dt = parse_execution_time(ex.time)
         if exec_dt is None:
@@ -218,17 +218,17 @@ def refresh_account_state(ib, state):
     """Pull current account / portfolio / order state from the native bridge."""
     try:
         if ib.account_values:
-            state.account_summary = serialize_account_values(ib.account_values)
+            state.account_summary = serialize_account_values(list(ib.account_values))
     except Exception as e:
         logger.debug(f"account_values error: {e}")
 
     try:
-        state.positions = [serialize_portfolio_item(p) for p in ib.portfolio]
+        state.positions = [serialize_portfolio_item(p) for p in list(ib.portfolio)]
     except Exception as e:
         logger.debug(f"portfolio error: {e}")
 
     try:
-        trades = [h for h in ib.orders.values() if h.status not in
+        trades = [h for h in list(ib.orders.values()) if h.status not in
                   {"Filled", "Cancelled", "ApiCancelled", "Inactive"}]
         state.open_orders = [serialize_order_handle(h) for h in trades]
         state.active_trades = dict(ib.orders)

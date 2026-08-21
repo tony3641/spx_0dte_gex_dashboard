@@ -216,11 +216,10 @@ async def reconnect_ib(payload: dict):
 
     # Tear down every active market-data stream on the old client (the native
     # bridge tracks subscriptions by reqId, not per-contract).
-    for req_id in list(ib._streams.keys()):
-        try:
-            ib.unsubscribe_tick(req_id)
-        except Exception:
-            pass
+    try:
+        ib.unsubscribe_all()
+    except Exception:
+        pass
     state.chain_stream_tickers.clear()
     state.chain_stream_contracts.clear()
     state.chain_stream_unknown_keys.clear()

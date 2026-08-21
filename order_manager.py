@@ -68,8 +68,11 @@ async def watch_and_push_status(ws, handle, timeout: float = 30.0,
     except asyncio.TimeoutError:
         pass
     if bracket_child and handle.status == "PreSubmitted":
+        # Push when the child activates (PreSubmitted -> Submitted) rather than
+        # deferring to fill/cancel or a 30s timeout. ``activated_event`` fires
+        # exactly once when the status leaves PreSubmitted.
         try:
-            await handle.wait_terminal(timeout=timeout)
+            await asyncio.wait_for(handle.activated_event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             pass
     try:
@@ -354,7 +357,7 @@ async def _place_single_leg(ib, state, payload, leg,
     # re-submit parent with transmit=True so it isn't stuck at IB.
     if stop_loss_price is not None and stop_handle is None and not order.transmit:
         order.transmit = True
-        handle = ib.place_order(contract, order)
+        handle = ib.place_order(contract, order, order_id=handle.order_id)
 
     # Wait for IB acknowledgment (event-driven: ack resolves once status leaves
     # the pending set — no reqOpenOrders re-poll).
@@ -366,6 +369,7 @@ async def _place_single_leg(ib, state, payload, leg,
 
     # Dynamic fill reprice loop
     if dynamic_fill and order_type == "LMT":
+        original_handle = handle
         direction = 1.0 if leg["action"] == "BUY" else -1.0
         reprice_deadline = asyncio.get_event_loop().time() + 300.0
         max_reprice_iterations = 10
@@ -409,18 +413,10 @@ async def _place_single_leg(ib, state, payload, leg,
             if next_price == current_price:
                 next_price = round(current_price + direction * step_tick, 2)
             order.lmtPrice = max(step_tick, next_price)
-            try:
-                handle = ib.place_order(contract, order)
-            except AssertionError as exc:
-                logger.info(
-                    "Dynamic fill modify aborted because order is already complete: %s",
-                    exc,
-                )
-                try:
-                    await handle.ack(timeout=1.0)
-                except asyncio.TimeoutError:
-                    pass
-                break
+            # Reprice must MODIFY the live order (same orderId), not submit a new
+            # one — otherwise each iteration leaves the prior order live (N+1
+            # orders, double exposure).
+            handle = ib.place_order(contract, order, order_id=original_handle.order_id)
         final_status = handle.status or "Unknown"
 
     state.active_trades[order.orderId] = handle
@@ -655,7 +651,7 @@ async def _place_multi_leg(ib, state, payload, legs,
     # Safety: if stop was intended but not created, re-submit with transmit=True
     if stop_loss_price is not None and bag_stop_handle is None and not order.transmit:
         order.transmit = True
-        handle = ib.place_order(bag, order)
+        handle = ib.place_order(bag, order, order_id=handle.order_id)
 
     # Wait for initial IB ack (event-driven; no reqOpenOrders re-poll)
     try:
