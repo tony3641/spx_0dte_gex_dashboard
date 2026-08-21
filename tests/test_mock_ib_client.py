@@ -76,6 +76,8 @@ def test_place_order_pending_mode_stays_submitted():
     assert handle.status == "Submitted"
     assert handle.filled == 0
     assert handle.remaining == 1
+    # Submitted leaves PendingSubmit → ack fires (faithful to orderStatus).
+    assert handle.ack_event.is_set()
     assert not handle.terminal_event.is_set()
 
 
@@ -86,6 +88,9 @@ def test_place_order_reject_mode_cancels():
     assert handle.status == "Cancelled"
     assert handle.filled == 0
     assert handle.remaining == 1
+    # Cancelled is terminal → ack + terminal fire (faithful to orderStatus).
+    assert handle.ack_event.is_set()
+    assert handle.terminal_event.is_set()
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +129,10 @@ async def test_bracket_child_activates_on_parent_fill():
     assert stop.status == "PreSubmitted"
     assert stop.filled == 0
     assert stop in mock._bracket_children[parent.order_id]
+    # PreSubmitted is not a PendingSubmit status → ack already fired
+    # (faithful to IBClient.orderStatus; Task 10's bracket handling accounts
+    # for it by waiting for the child to leave PreSubmitted).
+    assert stop.ack_event.is_set()
 
     # Activate the child (as IB does when the parent fills).
     mock.simulate_parent_fill(parent.order_id)

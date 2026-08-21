@@ -242,12 +242,8 @@ class MockIBClient:
         else:
             status = "Submitted"; filled = 0; remaining = float(order.totalQuantity)
         handle = OrderHandle(order_id, contract, order)
-        handle.status = status
-        handle.filled = filled
-        handle.remaining = remaining
-        handle.avg_fill_price = float(order.lmtPrice or 3.50)
-        if status == "Filled":
-            handle.ack_event.set(); handle.fill_event.set(); handle.terminal_event.set()
+        self._apply_status(handle, status, filled=filled, remaining=remaining,
+                           avg_fill_price=float(order.lmtPrice or 3.50))
         self.orders[order_id] = handle
         self._placed_orders.append(handle)
         if getattr(order, "parentId", 0) != 0:
@@ -265,11 +261,11 @@ class MockIBClient:
         self.call_log.append({"method": "cancel_order", "orderId": order_id})
         handle = self.orders.get(order_id)
         if handle is not None:
-            self._set_handle_status(handle, "Cancelled")
+            self._apply_status(handle, "Cancelled")
             self._cancelled_orders.append(order_id)
         for child in self._bracket_children.get(order_id, []):
             if child.status not in ("Filled", "Cancelled"):
-                self._set_handle_status(child, "Cancelled")
+                self._apply_status(child, "Cancelled")
                 self._cancelled_orders.append(child.order_id)
 
     def req_open_orders(self):
@@ -286,18 +282,22 @@ class MockIBClient:
 
     # -- Internal helpers -----------------------------------------------------
 
-    def _set_handle_status(self, handle, status, filled=None, remaining=None, avg_price=None):
-        """Transition an OrderHandle and fire its events (mirrors orderStatus)."""
+    def _apply_status(self, handle, status, filled=None, remaining=None, avg_fill_price=None):
+        """Mirror IBClient.orderStatus event semantics on an OrderHandle.
+
+        Sets the handle fields and fires the matching ack/fill/terminal events,
+        exactly like the real bridge's ``orderStatus`` callback.
+        """
         handle.status = status
         if filled is not None:
             handle.filled = float(filled)
         if remaining is not None:
             handle.remaining = float(remaining)
-        if avg_price is not None:
-            handle.avg_fill_price = avg_price
+        if avg_fill_price is not None:
+            handle.avg_fill_price = avg_fill_price
         if status not in _PENDING_STATUSES:
             handle.ack_event.set()
-        if status == "Filled":
+        if status == "Filled" and handle.remaining <= 0:
             handle.fill_event.set()
         if status in _TERMINAL_STATUSES:
             handle.terminal_event.set()
@@ -323,8 +323,8 @@ class MockIBClient:
         if handle is None:
             return
         remaining = float(getattr(handle.order, "totalQuantity", 0.0)) - filled
-        self._set_handle_status(handle, status, filled=filled,
-                                remaining=remaining, avg_price=avg_price)
+        self._apply_status(handle, status, filled=filled,
+                           remaining=remaining, avg_fill_price=avg_price)
         self.call_log.append({"method": "set_fill_status", "orderId": order_id,
                               "status": status, "filled": filled, "avg_price": avg_price})
 
@@ -338,11 +338,11 @@ class MockIBClient:
         if parent is not None:
             total = float(getattr(parent.order, "totalQuantity", 0.0))
             price = avg_price or float(getattr(parent.order, "lmtPrice", None) or 3.50)
-            self._set_handle_status(parent, "Filled", filled=total,
-                                    remaining=0, avg_price=price)
+            self._apply_status(parent, "Filled", filled=total,
+                               remaining=0, avg_fill_price=price)
         for child in self._bracket_children.get(parent_id, []):
             if child.status == "PreSubmitted":
-                self._set_handle_status(child, "Submitted")
+                self._apply_status(child, "Submitted")
         self.call_log.append({"method": "simulate_parent_fill", "parentId": parent_id,
                               "avg_price": avg_price})
 
