@@ -80,15 +80,51 @@ async def test_req_sec_def_opt_params_aggregates_until_end():
     assert result[0].expirations == ["20260821"]
 
 
+@pytest.mark.asyncio
+async def test_ib_error_resolves_pending_one_shot_request():
+    """An IB error for a pending request reqId resolves its future (no hang).
+
+    IB rejects some requests (error 200 contract-not-found, 321 invalid conId)
+    with an error but no matching ...End callback. Without resolution the
+    request future would never complete and awaiting callers hang forever.
+    """
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    c = Contract(); c.symbol = "SPX"; c.secType = "IND"
+    fut = asyncio.create_task(client.req_contract_details(c))
+    await asyncio.sleep(0.01)
+    req_id = next(iter(client._requests))
+    client.error(req_id, 1787297870000, 200, "No security definition has been found", "")
+    result = await asyncio.wait_for(fut, timeout=1)
+    assert result == []                          # empty → caller marks contract unknown
+    assert req_id not in client._requests
+
+
+@pytest.mark.asyncio
+async def test_error_signature_accepts_five_positional_args():
+    """The ibapi decoder calls wrapper.error(reqId, errorTime, errorCode, errorString, advancedOrderRejectJson)."""
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    calls = []
+    client.error_handler = lambda req_id, code, msg, contract: calls.append((req_id, code, msg))
+    client.error(1, 1787297870000, 321, "Error validating request", "{}")
+    await asyncio.sleep(0)   # error() schedules the handler via call_soon_threadsafe
+    assert calls == [(1, 321, "Error validating request")]
+
+
 # Task 4: historical bars
 from datetime import datetime, timedelta
 from ibapi.common import BarData
 
 
 @pytest.mark.asyncio
-async def test_req_historical_bars_accumulates_and_converts_dates():
+async def test_req_historical_bars_accumulates_and_converts_dates(monkeypatch):
     client = IBClient()
     client._loop = asyncio.get_running_loop()
+    # Mock the request send: the real EClient.reqHistoricalData fires a 504
+    # "Not connected" error on an unconnected client, which now resolves the
+    # pending request (error-resolution fix) — so the test feeds bars manually.
+    monkeypatch.setattr(EClient, "reqHistoricalData", lambda self, *a, **k: None)
     c = Contract(); c.symbol = "SPX"; c.secType = "IND"
     fut = asyncio.create_task(client.req_historical_bars(c))
     await asyncio.sleep(0.01)
