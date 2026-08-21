@@ -61,7 +61,6 @@
         }
 
         const comboNorm = isCombo ? normalizeComboLegQty(state.strategyLegs) : { comboQty: 1, ratios: [] };
-        let inferredComboPrice = 0.0;
 
         // For multi-leg, send ratio quantities + comboQuantity so pricing is per-combo.
         // For single-leg, send absolute quantity directly.
@@ -72,10 +71,6 @@
                 : rawLmt;
             // We need the current expiration from chainMeta
             const expiry = state.chainMeta ? (state.chainMeta.expiration_raw || '') : '';
-            if (isCombo) {
-                const sign = leg.action === 'BUY' ? 1.0 : -1.0;
-                inferredComboPrice += sign * perLegLmt * Math.max(1, ratioQty || 1);
-            }
             return {
                 symbol: 'SPX',
                 expiry: expiry,
@@ -83,22 +78,16 @@
                 right: leg.right,
                 action: leg.action,
                 qty: ratioQty,
-                // Prices are always positive; the action (BUY/SELL) carries the
-                // direction. A SELL shows +4.00, never -4.00.
-                lmtPrice: parseFloat(Math.abs(perLegLmt).toFixed(2)),
+                lmtPrice: parseFloat(perLegLmt.toFixed(2)),
                 secType: 'OPT',
             };
         });
 
-        // Direction comes from the strategy legs, not the price sign: a net
-        // credit spread is SELL (you collect the credit), a net debit is BUY.
-        let comboAction = 'BUY';
-        if (isCombo) {
-            const roundedInferredComboPrice = _roundSpxPrice(inferredComboPrice);
-            comboAction = roundedInferredComboPrice < 0 ? 'SELL' : 'BUY';
-        } else {
-            comboAction = state.strategyLegs[0].action === 'SELL' ? 'SELL' : 'BUY';
-        }
+        // The BAG order action is always BUY: the legs carry the actual
+        // buy/sell direction, and IBKR's BUY executes them as defined (a SELL
+        // would reverse every leg action, producing the opposite position).
+        // The price sign alone encodes credit (negative) vs debit (positive).
+        const comboAction = 'BUY';
 
         // Build confirmation modal description
         const legDescs = legs.map(l =>
@@ -134,7 +123,7 @@
             legs,
             orderType: 'LMT',
             tif: 'DAY',
-            comboLmtPrice: parseFloat(Math.abs(rawLmt).toFixed(2)),
+            comboLmtPrice: parseFloat(rawLmt.toFixed(2)),
             comboAction,
             comboQuantity: isCombo ? comboNorm.comboQty : 1,
             outsideRth: isOutsideRth,
