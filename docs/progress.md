@@ -392,3 +392,42 @@ Task 1 of the native ibapi migration: spike latency probe comparing native `ibap
 | placeOrder → orderStatus(PreSubmitted) | 115.7 / 121.2 / 121.5 ms | 108.0 / 112.4 / 226.6 ms |
 
 **Result:** premise validated. Native `ibapi` is dramatically faster at connection establishment — `connect→nextValidId` ~6–10 ms vs ~117–320 ms for ib_insync (roughly 15–50×). `reqContractDetails` and `placeOrder→orderStatus` latencies are on par (~80 ms and ~115–120 ms native vs ~75–84 ms and ~108–227 ms insync); both are dominated by TWS/SMART network round-trip time, with ib_insync showing noticeably higher variance. No latency penalty in native ibapi that would block the migration; the one caveat is that an unlisted-contract `reqContractDetails` produces error 200 and can take up to ~5 s to respond, which the client wrapper will need to treat as a "no contract found" condition.
+
+*Note (Task 19):* the throwaway probe `tests/spikes/spike_native_latency.py` was deleted per the Task-19 controller ruling — its purpose was served and it was the last ib_insync dependency besides the explicitly manual `tests/manual_spread_probe.py`.
+
+---
+
+## Native API migration — snapshot latency
+
+Task 19 (full-suite parity + extended paper smoke, 2026-08-21). Paper TWS on `127.0.0.1:7497`, expiry `20260821`, 720 strikes available, 191 quote rows broadcast.
+
+### Full suite
+`python -m pytest -v` → **165 passed, 1 failed** (~10 s). The single failure is the pre-existing `test_chain_fetcher.py::test_compute_gex_uses_bsm_gamma_when_ib_gamma_missing` — a BSM-gamma math-tolerance failure (`abs(0.5924) < 0.01`; off by ~0.59). Confirmed pre-existing: the test and `gex_calculator.py` both exist at the migration baseline (`62ab676`) and `gex_calculator.py` is untouched by the migration.
+
+### ib_insync grep
+No `ib_insync` import remains in production source. Remaining matches after deleting the spike are docstring/comment references ("No ib_insync." in `chain_fetcher.py`/`ib_connection.py`) and one real import in `tests/manual_spread_probe.py:27` (`from ib_insync import ...`) — an explicitly manual probe (docstring: "not part of the automated pytest suite") that `test_manual_spread_probe.py` imports; it is the last live ib_insync dependency to resolve in Task 20 (hard cut).
+
+### Chain snapshot latency (native bridge)
+| metric | measured |
+|---|---|
+| full snapshot `starting` → `done` | **~30 s** |
+| `qualifying` → `done` | ~20 s |
+| 8 fetch batches (`fetching` 1/8→8/8) | ~17.5 s (~2.2 s/batch) |
+| `computing` → `done` | ~0.02 s |
+| post-reconnect snapshot | ~31 s |
+
+vs the pre-migration ~60 s, the native bridge roughly **halves** full-snapshot time. The 6 s per-batch timeout ceiling is **not** the binding constraint — batches complete in ~2.2 s each. The bottleneck is the contract count (8 batches × ~50 contracts) plus ~10 s in the pre-qualify phase (`compute_annual_vol` over 30 days of daily bars + SPXW contract qualification).
+
+### Order path (paper, driven over `ws://127.0.0.1:8000/ws`)
+- **place** AAPL GTC buy-limit $5 → `order_status PreSubmitted` id 263, ack in ~0.43 s.
+- **cancel** → `Cancelled` in ~0.10 s (IB code 202 "Order Canceled").
+- **bracket stop-loss attach** (stopLoss 4.00/4.00) → parent id 264 `PreSubmitted` with message referencing stop child `orderId=265` (STP LMT). Child held at PreSubmitted (parent transmit=False, matching unit-test behavior `test_stop_order_stays_presubmitted_until_parent_fills`); on parent cancel the stop child cascaded to `Cancelled` ("Stop order cancelled (parent Cancelled)"). One benign race observed: IB code 10148 ("OrderId 265 ... cannot be cancelled, state: Cancelled") — the watcher tried to cancel the child just after IB had already cancelled it.
+
+### Reconnect
+`POST /api/reconnect_ib {"port": 7497}` → **HTTP 200** `{"status":"ok","port":7497}` in ~14.6 s. Streaming resumed (status / gex / chain_progress / chain_quotes all flowing; 0 actionable IB errors in the observation window) and a fresh snapshot completed in ~31 s.
+
+### Shutdown
+CTRL_BREAK_EVENT (SIGBREAK) → `Shutdown signal received (SIGBREAK); stopping server gracefully...` → `Shutting down...` → `Disconnected from IB` → `Server shutdown complete`; **exit rc=0**.
+
+### Environment note (not a migration regression)
+At startup the TWS data farms were mid-reconnect: historical bars and live ticks returned error 162 ("Historical Market Data Service ... connected from a different IP address"), 10197 ("No market data during competing live session") and 2103 ("Market data farm connection is broken") for the first ~3 min, so the startup snapshot wait timed out with `spx_price=0`. The app's retry loop recovered once a live SPX tick landed (spot 7676.40) and full snapshots then completed normally. The native bridge surfaced and logged every error; the app followed its documented retry path.
