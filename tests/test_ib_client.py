@@ -40,3 +40,40 @@ def test_disconnect_sets_connected_false(monkeypatch):
     client.disconnect()
     assert not client.connected
     assert disconnect_called
+
+
+# Task 3: one-shot requests
+from ibapi.contract import Contract, ContractDetails
+
+
+@pytest.mark.asyncio
+async def test_req_contract_details_aggregates_until_end():
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    c = Contract(); c.symbol = "SPX"; c.secType = "IND"
+    fut = asyncio.create_task(client.req_contract_details(c))
+    await asyncio.sleep(0.01)
+    assert len(client._requests) == 1
+    req_id = next(iter(client._requests))
+    cd = ContractDetails(); cd.contract = c
+    client.contractDetails(req_id, cd)      # simulate socket thread
+    client.contractDetailsEnd(req_id)
+    result = await asyncio.wait_for(fut, timeout=1)
+    assert len(result) == 1 and result[0].contract.symbol == "SPX"
+
+
+@pytest.mark.asyncio
+async def test_req_sec_def_opt_params_aggregates_until_end():
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    fut = asyncio.create_task(
+        client.req_sec_def_opt_params("SPX", "", "IND", 123)
+    )
+    await asyncio.sleep(0.01)
+    req_id = next(iter(client._requests))
+    client.securityDefinitionOptionParameter(
+        req_id, "SMART", 123, "SPXW", "100", ["20260821"], [5000.0])
+    client.securityDefinitionOptionParameterEnd(req_id)
+    result = await asyncio.wait_for(fut, timeout=1)
+    assert result[0].tradingClass == "SPXW"
+    assert result[0].expirations == ["20260821"]
