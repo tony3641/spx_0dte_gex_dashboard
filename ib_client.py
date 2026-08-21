@@ -314,11 +314,11 @@ class IBClient(EWrapper, EClient):
         self.executions.append(rec)
         self._mark_dirty()
 
-    def commissionReport(self, commissionReport):
-        rec = self._exec_by_id.get(commissionReport.execId)
+    def commissionAndFeesReport(self, commissionAndFeesReport):
+        rec = self._exec_by_id.get(commissionAndFeesReport.execId)
         if rec is not None:
             self.executions[self.executions.index(rec)] = \
-                ExecutionRecord(rec.contract, rec.execution, commissionReport)
+                ExecutionRecord(rec.contract, rec.execution, commissionAndFeesReport)
         self._mark_dirty()
 
     # -- one-shot request plumbing ------------------------------------------
