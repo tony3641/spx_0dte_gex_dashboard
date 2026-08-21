@@ -143,18 +143,6 @@ async def status_push_loop(state, broadcast_fn):
             await asyncio.sleep(5)
 
 
-async def ib_keepalive_loop(ib):
-    """Keep ib_insync event loop processing IB messages."""
-    while True:
-        try:
-            ib.sleep(0.1)
-            await asyncio.sleep(0.1)
-        except asyncio.CancelledError:
-            break
-        except Exception:
-            await asyncio.sleep(0.5)
-
-
 async def websocket_endpoint(ws: WebSocket, ib, state, broadcast_fn):
     """Handle a single WebSocket client connection.
 
