@@ -245,6 +245,15 @@ class IBClient(EWrapper, EClient):
     def req_open_orders(self):
         EClient.reqOpenOrders(self)
 
+    @property
+    def orders(self) -> Dict[int, "OrderHandle"]:
+        """Public registry of order handles (aliases the private ``_orders``).
+
+        Account/order consumers read ``ib.orders.values()`` / ``dict(ib.orders)``
+        instead of reaching into the private dict.
+        """
+        return self._orders
+
     # -- EWrapper: order status ----------------------------------------------
 
     def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId,
@@ -317,8 +326,11 @@ class IBClient(EWrapper, EClient):
     def commissionAndFeesReport(self, commissionAndFeesReport):
         rec = self._exec_by_id.get(commissionAndFeesReport.execId)
         if rec is not None:
-            self.executions[self.executions.index(rec)] = \
-                ExecutionRecord(rec.contract, rec.execution, commissionAndFeesReport)
+            new_rec = ExecutionRecord(rec.contract, rec.execution, commissionAndFeesReport)
+            self.executions[self.executions.index(rec)] = new_rec
+            # Keep the index pointing at the current record so a second
+            # commission report for the same execId still finds it in the list.
+            self._exec_by_id[commissionAndFeesReport.execId] = new_rec
         self._mark_dirty()
 
     # -- one-shot request plumbing ------------------------------------------
