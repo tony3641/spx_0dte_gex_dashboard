@@ -260,6 +260,35 @@ async def test_place_order_ack_and_fill_events(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_order_status_fires_activated_event(monkeypatch):
+    """Bracket-child activation: orderStatus fires activated_event exactly on the
+    PreSubmitted -> non-PreSubmitted transition (IMPORTANT 1)."""
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    client._next_order_id = 100
+    monkeypatch.setattr(EClient, "placeOrder", lambda self, *a, **k: None)
+
+    c = Contract(); c.symbol = "SPX"; c.secType = "OPT"
+    o = Order(); o.action = "BUY"; o.totalQuantity = 1; o.orderType = "STP LMT"; o.lmtPrice = 3.50
+    handle = client.place_order(c, o)
+
+    # Stage the bracket child at PreSubmitted; status_event fires, not activated.
+    client.orderStatus(100, "PreSubmitted", 0, 1, 0.0, 1, 0, 0.0, 1, "", 0.0)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert handle.status == "PreSubmitted"
+    assert handle.status_event.is_set()
+    assert not handle.activated_event.is_set()
+
+    # Parent fills -> child activates (PreSubmitted -> Submitted).
+    client.orderStatus(100, "Submitted", 0, 1, 0.0, 1, 0, 0.0, 1, "", 0.0)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert handle.status == "Submitted"
+    assert handle.activated_event.is_set()
+
+
+@pytest.mark.asyncio
 async def test_cancel_order(monkeypatch):
     client = IBClient()
     client._loop = asyncio.get_running_loop()
@@ -292,6 +321,10 @@ async def test_account_callbacks_populate_state_and_mark_dirty(monkeypatch):
     assert client.account_values[0].tag == "NetLiquidation"
     assert client.portfolio[0].position == 1
     assert client.account_dirty
+    # _mark_dirty routes on_account_dirty through call_soon_threadsafe, so flush
+    # the loop before asserting the callback ran.
+    for _ in range(3):
+        await asyncio.sleep(0)
     # each account callback (value / portfolio / download-end) marks dirty
     assert dirty == [True, True, True]
 
@@ -306,5 +339,165 @@ async def test_account_callbacks_populate_state_and_mark_dirty(monkeypatch):
     assert client.executions[-1].commission is report_stub
     assert client.executions[-1].contract is c
     assert client.executions[-1].execution is exec_stub
-    # execDetails + commission report each mark dirty
+    # execDetails + commission report each mark dirty (flush loop again)
+    for _ in range(3):
+        await asyncio.sleep(0)
     assert dirty == [True, True, True, True, True]
+
+
+# ---------------------------------------------------------------------------
+# place_order modify (same orderId) — CRITICAL fix
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_place_order_modify_reuses_order_id(monkeypatch):
+    """A place_order with an explicit order_id is a true modify: no new id is
+    allocated and the existing handle is updated in place."""
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    client._next_order_id = 100
+    placed = []
+    monkeypatch.setattr(EClient, "placeOrder",
+                        lambda self, oid, contract, order: placed.append(oid))
+
+    c = Contract(); c.symbol = "SPX"; c.secType = "OPT"
+    o = Order(); o.action = "BUY"; o.totalQuantity = 1; o.orderType = "LMT"; o.lmtPrice = 3.50
+    handle = client.place_order(c, o)
+    assert handle.order_id == 100
+    assert o.orderId == 100
+
+    o.lmtPrice = 3.60
+    handle2 = client.place_order(c, o, order_id=handle.order_id)
+
+    assert handle2 is handle
+    assert handle.order_id == 100
+    assert o.orderId == 100
+    assert handle.order.lmtPrice == 3.60
+    assert client._next_order_id == 101        # modify did not allocate a fresh id
+    assert placed == [100, 100]
+    assert len(client._orders) == 1
+
+
+# ---------------------------------------------------------------------------
+# One-shot request timeouts — IMPORTANT 3
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_req_contract_details_times_out_when_no_end(monkeypatch):
+    """A one-shot request with no ...End callback resolves empty after the
+    per-request timeout instead of hanging forever."""
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(EClient, "reqContractDetails", lambda self, *a, **k: None)
+    c = Contract(); c.symbol = "SPX"; c.secType = "IND"
+
+    result = await client.req_contract_details(c, timeout=0.05)
+
+    assert result == []
+    assert len(client._requests) == 0
+
+
+@pytest.mark.asyncio
+async def test_req_historical_bars_times_out_when_no_end(monkeypatch):
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(EClient, "reqHistoricalData", lambda self, *a, **k: None)
+    c = Contract(); c.symbol = "SPX"; c.secType = "IND"
+
+    result = await client.req_historical_bars(c, timeout=0.05)
+
+    assert result == []
+    assert len(client._requests) == 0
+
+
+@pytest.mark.asyncio
+async def test_req_sec_def_opt_params_times_out_when_no_end(monkeypatch):
+    """req_sec_def_opt_params also bounds its wait: no ...End callback and no
+    error resolves to [] after the per-request timeout."""
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(EClient, "reqSecDefOptParams", lambda self, *a, **k: None)
+
+    result = await client.req_sec_def_opt_params("SPX", "", "IND", 123, timeout=0.05)
+
+    assert result == []
+    assert len(client._requests) == 0
+
+
+# ---------------------------------------------------------------------------
+# unsubscribe_all — MINOR
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_unsubscribe_all_clears_all_streams(monkeypatch):
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(EClient, "reqMktData", lambda self, *a, **k: None)
+    monkeypatch.setattr(EClient, "cancelMktData", lambda self, *a, **k: None)
+    c1 = Contract(); c1.symbol = "SPX"; c1.secType = "OPT"
+    c2 = Contract(); c2.symbol = "SPX"; c2.secType = "OPT"
+    client.subscribe_tick(c1)
+    client.subscribe_tick(c2)
+    assert len(client._streams) == 2
+
+    client.unsubscribe_all()
+
+    assert len(client._streams) == 0
+
+
+# ---------------------------------------------------------------------------
+# Snapshot grace window — IMPORTANT 2
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fetch_snapshot_grace_window_lets_late_oi_greeks_land(monkeypatch):
+    """A quote tick completes the batch first, but the grace window lets the
+    OI/greeks burst land before cancel so the snapshot keeps call_oi/gamma."""
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(EClient, "reqMktData", lambda self, *a, **k: None)
+    monkeypatch.setattr(EClient, "cancelMktData", lambda self, *a, **k: None)
+    c = Contract(); c.symbol = "SPX"; c.secType = "OPT"; c.strike = 5200.0
+
+    task = asyncio.create_task(
+        client.fetch_snapshot([c], generic="101", timeout=5.0, grace=0.2))
+    await asyncio.sleep(0.01)
+    req_id = next(iter(client._streams))
+    client.tickPrice(req_id, BID, 3.50, None)   # quote completes the batch first
+
+    async def late_ticks():
+        await asyncio.sleep(0.05)
+        client.tickSize(req_id, CALL_OPEN_INTEREST, 120)
+        client.tickOptionComputation(req_id, 13, 0, 0.18, 0.5, 3.5, 0.0, 0.003, 1.2, 0.05, 5200.0)
+    late = asyncio.create_task(late_ticks())
+
+    streams = await asyncio.wait_for(task, timeout=1)
+    await late
+
+    assert len(streams) == 1
+    assert streams[0].bid == 3.50
+    assert streams[0].call_oi == 120
+    assert streams[0].model_greeks.gamma == 0.003
+    assert len(client._streams) == 0
+
+
+@pytest.mark.asyncio
+async def test_error_fires_snapshot_done_when_pending_empties(monkeypatch):
+    """A stream error (e.g. contract-not-found) drops its reqId from the pending
+    batch; when it was the last stream, _snapshot_done fires (mirrors _on_stream_tick)."""
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(EClient, "reqMktData", lambda self, *a, **k: None)
+    monkeypatch.setattr(EClient, "cancelMktData", lambda self, *a, **k: None)
+    c = Contract(); c.symbol = "SPX"; c.secType = "OPT"
+
+    task = asyncio.create_task(
+        client.fetch_snapshot([c], generic="101", timeout=5.0, grace=0.0))
+    await asyncio.sleep(0.01)
+    req_id = next(iter(client._streams))
+    client.error(req_id, 0, 200, "No security definition has been found", "")
+
+    streams = await asyncio.wait_for(task, timeout=1)
+
+    assert len(streams) == 1
+    assert len(client._streams) == 0

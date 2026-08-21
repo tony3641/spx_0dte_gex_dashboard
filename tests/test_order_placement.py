@@ -11,6 +11,7 @@ import asyncio
 import copy
 import sys
 import os
+import time
 
 import pytest
 
@@ -254,6 +255,14 @@ async def test_dynamic_fill_reprice(mock_ib, app_state):
         f"Expected multiple place_order calls from reprice loop, got {len(place_calls)}"
     )
 
+    # Every reprice must MODIFY the same live order (same orderId) — not submit
+    # a new order each iteration (which would leave N+1 live orders).
+    order_ids = {c["orderId"] for c in place_calls}
+    assert len(order_ids) == 1, f"Reprices must reuse one orderId, got {order_ids}"
+    assert len(mock_ib.get_placed_orders()) == 1, (
+        "Reprice modifies the existing order; only one order should be live"
+    )
+
     # Limit price should have increased (BUY direction = +1)
     first_lmt = place_calls[0]["lmtPrice"]
     last_lmt = place_calls[-1]["lmtPrice"]
@@ -263,10 +272,10 @@ async def test_dynamic_fill_reprice(mock_ib, app_state):
 
 
 @pytest.mark.asyncio
-async def test_dynamic_fill_handles_filled_order_before_modify(monkeypatch, mock_ib, app_state):
-    """Verify dynamic fill does not crash when the order is filled before a modify."""
-    mock_ib._fill_immediately = False
-
+async def test_dynamic_fill_filled_order_skips_modify(mock_ib, app_state):
+    """When the order is already filled, the reprice loop breaks before any
+    modify — exactly one place_order call (the original submission)."""
+    # mock_ib (fill_immediately=True) fills the order at placement time.
     payload = {
         "legs": [{
             "symbol": "SPX",
@@ -282,22 +291,15 @@ async def test_dynamic_fill_handles_filled_order_before_modify(monkeypatch, mock
         "repriceIntervalSec": 0.01,
     }
 
-    original_place = mock_ib.place_order
-    call_count = {"count": 0}
-
-    def place_order_wrapper(contract, order):
-        call_count["count"] += 1
-        if call_count["count"] == 1:
-            return original_place(contract, order)
-        raise AssertionError("Cannot modify a filled order.")
-
-    monkeypatch.setattr(mock_ib, "place_order", place_order_wrapper)
-
     result = await handle_place_order(mock_ib, app_state, payload)
 
     assert result["type"] == "order_status"
-    assert result["data"]["status"] != "Error"
-    assert call_count["count"] == 2
+    assert result["data"]["status"] == "Filled"
+    place_calls = [c for c in mock_ib.call_log if c["method"] == "place_order"]
+    assert len(place_calls) == 1, (
+        f"Filled order must not be modified: got {len(place_calls)} place_order calls"
+    )
+    assert len(mock_ib.get_placed_orders()) == 1
 
 
 @pytest.mark.asyncio
@@ -339,6 +341,8 @@ async def test_dynamic_fill_spx_above_two_uses_ten_cent_tick(mock_ib, app_state)
     await task
 
     place_calls = [c for c in mock_ib.call_log if c["method"] == "place_order"]
+    order_ids = {c["orderId"] for c in place_calls}
+    assert len(order_ids) == 1, f"Reprices must reuse one orderId, got {order_ids}"
     lmts = [float(c["lmtPrice"]) for c in place_calls if c.get("lmtPrice") is not None]
     assert len(lmts) >= 2
 
@@ -909,23 +913,25 @@ async def test_stop_order_ws_status_push_on_parent_fill(mock_ib_bracket, app_sta
 
     assert stop.status == "PreSubmitted"
 
-    # Start watching the stop trade (bracket_child=True)
+    # Start watching the stop trade (bracket_child=True). The watcher must push
+    # as soon as the child activates (PreSubmitted -> Submitted), not wait out the
+    # full terminal timeout.
     async def simulate_fill():
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.05)
         mock_ib_bracket.simulate_parent_fill(parent.order.orderId)
 
     task = asyncio.create_task(simulate_fill())
-    # timeout also bounds the bracket-child wait through PreSubmitted: after
-    # simulate_parent_fill the stop is Submitted (non-terminal), so the watcher
-    # pushes the current status when the terminal wait times out.
-    await watch_and_push_status(mock_ws, stop, timeout=1.0, bracket_child=True)
+    t0 = time.monotonic()
+    await watch_and_push_status(mock_ws, stop, timeout=5.0, bracket_child=True)
+    elapsed = time.monotonic() - t0
     await task
 
     statuses = mock_ws.get_order_statuses()
-    assert len(statuses) >= 1
     stop_push = [s for s in statuses if s["orderId"] == stop.order.orderId]
     assert len(stop_push) == 1
     assert stop_push[0]["status"] == "Submitted"
+    # Activation push is prompt — far under the 5s terminal timeout.
+    assert elapsed < 1.0, f"bracket-child push should be prompt, took {elapsed:.2f}s"
 
 
 # ---------------------------------------------------------------------------
