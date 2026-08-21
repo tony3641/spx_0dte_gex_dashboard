@@ -590,14 +590,13 @@ async def _place_multi_leg(ib, state, payload, legs,
             "message": f"Invalid comboLmtPrice: {payload.get('comboLmtPrice')}"
         }}
 
-    # The BAG limit is always positive: the order action (BUY/SELL) carries the
-    # debit/credit direction, and IB expects a SELL credit spread priced at a
-    # positive net (e.g. SELL @ +0.50). Negative net prices read as "pay to
-    # sell" and show the wrong sign to IBKR.
+    # The BAG limit is signed: negative = credit, positive = debit. IBKR rejects
+    # a SELL combo priced at a positive net as a "riskless order", so a credit
+    # spread must carry its negative net (e.g. SELL @ -0.50).
     if bag_symbol == "SPX":
-        bag_lmt = round_abs_to_tick(bag_lmt, spx_tick_for_price(bag_lmt))
+        bag_lmt = round_signed_to_tick(bag_lmt, spx_tick_for_price(bag_lmt))
     else:
-        bag_lmt = round(abs(bag_lmt), 2)
+        bag_lmt = round(bag_lmt, 2)
 
     # Build BAG contract
     combo_legs = []

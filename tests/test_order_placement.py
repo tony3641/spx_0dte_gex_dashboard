@@ -523,11 +523,11 @@ def test_round_signed_to_tick():
 
 @pytest.mark.asyncio
 async def test_combo_credit_spread(mock_ib, app_state):
-    """Credit spread: SELL higher-priced + BUY lower-priced.
+    """Credit spread: SELL higher-priced put + BUY lower-priced put (bull put).
 
-    The BAG limit price is positive (SELL @ +2.00); the SELL action carries the
-    credit direction. A negative comboLmtPrice is normalized to positive so
-    IBKR never sees a "pay to sell" negative net price.
+    The BAG order action is BUY (the legs carry the direction), and the limit
+    price is SIGNED negative = credit. IBKR rejects a SELL combo priced at a
+    positive net as a "riskless order", so the negative net must be preserved.
     """
     payload = {
         "legs": [
@@ -552,7 +552,7 @@ async def test_combo_credit_spread(mock_ib, app_state):
         ],
         "orderType": "LMT",
         "tif": "DAY",
-        "comboAction": "SELL",
+        "comboAction": "BUY",
         "comboLmtPrice": -2.00,
     }
 
@@ -562,9 +562,9 @@ async def test_combo_credit_spread(mock_ib, app_state):
     assert data["status"] == "Filled"
 
     trade = mock_ib.get_last_trade()
-    assert trade.order.action == "SELL"
-    # Negative comboLmtPrice → normalized to a positive SELL limit
-    assert trade.order.lmtPrice == round_abs_to_tick(2.0, spx_tick_for_price(2.0))
+    assert trade.order.action == "BUY"
+    # Negative comboLmtPrice → signed limit preserved (negative = credit)
+    assert trade.order.lmtPrice == round_signed_to_tick(-2.0, spx_tick_for_price(-2.0))
 
 
 @pytest.mark.asyncio

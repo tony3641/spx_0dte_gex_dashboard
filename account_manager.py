@@ -89,7 +89,7 @@ def serialize_order_handle(handle) -> dict:
         "symbol": c.symbol,
         "secType": c.secType,
         "expiry": getattr(c, "lastTradeDateOrContractMonth", ""),
-        "strike": float(c.strike) if getattr(c, "strike", None) else None,
+        "strike": _unset_or_none(getattr(c, "strike", None)),
         "right": getattr(c, "right", ""),
         "multiplier": getattr(c, "multiplier", ""),
         "currency": c.currency,
