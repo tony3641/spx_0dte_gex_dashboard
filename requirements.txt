@@ -1,4 +1,6 @@
-ib_insync>=0.9.86
+# Native IB API client (ibapi) — must be installed from the local TWS API source.
+# Equivalent manual install:  pip install -e "C:\TWS API\source\pythonclient"
+-e file:///C:/TWS%20API/source/pythonclient
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 nest-asyncio>=1.5.8

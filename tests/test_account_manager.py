@@ -1,12 +1,15 @@
 """
-Account manager unit tests — serialization helpers and refresh logic.
+Account manager unit tests — serialization helpers and refresh logic (native bridge).
+
+Uses the real native records (``AccountValue``/``PortfolioItem``/
+``ExecutionRecord``/``OrderHandle``) and the ``MockIBClient`` surface so the
+serializers are tested against exactly the objects ``IBClient`` produces.
 """
 
 import sys
 import os
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional
+from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -16,100 +19,47 @@ import account_manager
 from account_manager import (
     serialize_account_values,
     serialize_portfolio_item,
-    serialize_trade,
+    serialize_order_handle,
+    serialize_execution,
     parse_execution_time,
     format_execution_time_et,
     refresh_account_state,
     build_account_payload,
 )
-from market_hours import ET
+from ib_client import AccountValue, ExecutionRecord, OrderHandle, PortfolioItem
+from tests.conftest import MockContract, MockIBClient, MockOrder
+from market_hours import ET, now_et
 
 
 # ---------------------------------------------------------------------------
-# Lightweight stand-ins for ib_insync data classes
+# Builders for native records
 # ---------------------------------------------------------------------------
 
-@dataclass
-class FakeAccountValue:
-    tag: str = ""
-    value: str = ""
-    currency: str = "USD"
-    account: str = "DU12345"
+def _contract(**kw):
+    """A MockContract mirroring a native option contract (SPXW 5200 C)."""
+    defaults = dict(
+        conId=100,
+        symbol="SPX",
+        secType="OPT",
+        lastTradeDateOrContractMonth="20260410",
+        strike=5200.0,
+        right="C",
+        multiplier="100",
+        currency="USD",
+        exchange="SMART",
+        localSymbol="SPXW 260410C05200000",
+        tradingClass="SPXW",
+    )
+    defaults.update(kw)
+    return MockContract(**defaults)
 
 
-@dataclass
-class FakeContract:
-    conId: int = 100
-    symbol: str = "SPX"
-    secType: str = "OPT"
-    lastTradeDateOrContractMonth: str = "20260410"
-    strike: float = 5200.0
-    right: str = "C"
-    multiplier: str = "100"
-    currency: str = "USD"
-    exchange: str = "SMART"
-    localSymbol: str = "SPXW 260410C05200000"
-    tradingClass: str = "SPXW"
-
-
-@dataclass
-class FakePortfolioItem:
-    contract: FakeContract = None
-    position: float = 1
-    marketPrice: float = 3.50
-    marketValue: float = 350.0
-    averageCost: float = 300.0
-    unrealizedPNL: float = 50.0
-    realizedPNL: float = 0.0
-    account: str = "DU12345"
-
-    def __post_init__(self):
-        if self.contract is None:
-            self.contract = FakeContract()
-
-
-@dataclass
-class FakeOrderStatus:
-    status: str = "Filled"
-    filled: float = 1
-    remaining: float = 0
-    avgFillPrice: float = 3.50
-
-
-@dataclass
-class FakeOrder:
-    orderId: int = 1
-    permId: int = 100
-    clientId: int = 1
-    action: str = "BUY"
-    totalQuantity: float = 1
-    orderType: str = "LMT"
-    lmtPrice: float = 3.50
-    auxPrice: float = 0.0
-    tif: str = "DAY"
-
-
-@dataclass
-class FakeLogEntry:
-    message: str = "Order submitted"
-
-
-@dataclass
-class FakeTrade:
-    contract: FakeContract = None
-    order: FakeOrder = None
-    orderStatus: FakeOrderStatus = None
-    log: list = None
-
-    def __post_init__(self):
-        if self.contract is None:
-            self.contract = FakeContract()
-        if self.order is None:
-            self.order = FakeOrder()
-        if self.orderStatus is None:
-            self.orderStatus = FakeOrderStatus()
-        if self.log is None:
-            self.log = [FakeLogEntry()]
+def _order(**kw):
+    """A MockOrder with a BUY 1 SPX option LMT DAY defaults."""
+    defaults = dict(orderId=1, action="BUY", totalQuantity=1, orderType="LMT",
+                    lmtPrice=3.50, auxPrice=0.0, tif="DAY", clientId=1)
+    defaults.update(kw)
+    return MockOrder(**defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -120,10 +70,10 @@ class TestSerializeAccountValues:
 
     def test_extracts_wanted_keys(self):
         values = [
-            FakeAccountValue(tag="NetLiquidation", value="100000.50"),
-            FakeAccountValue(tag="BuyingPower", value="50000.00"),
-            FakeAccountValue(tag="UnrealizedPnL", value="-1234.56"),
-            FakeAccountValue(tag="SomeOtherTag", value="999"),
+            AccountValue("NetLiquidation", "100000.50", "USD"),
+            AccountValue("BuyingPower", "50000.00", "USD"),
+            AccountValue("UnrealizedPnL", "-1234.56", "USD"),
+            AccountValue("SomeOtherTag", "999", "USD"),
         ]
         result = serialize_account_values(values)
         assert result["NetLiquidation"] == 100000.50
@@ -133,8 +83,8 @@ class TestSerializeAccountValues:
 
     def test_filters_non_usd(self):
         values = [
-            FakeAccountValue(tag="NetLiquidation", value="100000", currency="USD"),
-            FakeAccountValue(tag="NetLiquidation", value="85000", currency="EUR"),
+            AccountValue("NetLiquidation", "100000", "USD"),
+            AccountValue("NetLiquidation", "85000", "EUR"),
         ]
         result = serialize_account_values(values)
         assert result["NetLiquidation"] == 100000.0
@@ -144,7 +94,7 @@ class TestSerializeAccountValues:
 
     def test_invalid_value_skipped(self):
         values = [
-            FakeAccountValue(tag="NetLiquidation", value="not_a_number"),
+            AccountValue("NetLiquidation", "not_a_number", "USD"),
         ]
         result = serialize_account_values(values)
         assert "NetLiquidation" not in result
@@ -153,7 +103,7 @@ class TestSerializeAccountValues:
 class TestSerializePortfolioItem:
 
     def test_serializes_option_position(self):
-        item = FakePortfolioItem()
+        item = PortfolioItem(_contract(), 1, 3.50, 350.0, 300.0, 50.0, 0.0, "DU12345")
         result = serialize_portfolio_item(item)
 
         assert result["position"] == 1
@@ -165,26 +115,137 @@ class TestSerializePortfolioItem:
         assert result["contract"]["secType"] == "OPT"
 
     def test_serializes_no_strike_contract(self):
-        contract = FakeContract(strike=0.0, right="", secType="STK", symbol="AAPL")
-        item = FakePortfolioItem(contract=contract)
+        contract = _contract(strike=0.0, right="", secType="STK", symbol="AAPL")
+        item = PortfolioItem(contract, 1, 3.50, 350.0, 300.0, 50.0, 0.0, "DU12345")
         result = serialize_portfolio_item(item)
         assert result["contract"]["strike"] is None  # 0 treated as None
         assert result["contract"]["symbol"] == "AAPL"
 
 
-class TestSerializeTrade:
+class TestSerializeOrderHandle:
 
-    def test_serializes_filled_trade(self):
-        trade = FakeTrade()
-        result = serialize_trade(trade)
+    def test_serializes_filled_order(self):
+        handle = OrderHandle(1, _contract(), _order())
+        handle.status = "Filled"
+        handle.filled = 1
+        handle.remaining = 0
+        handle.avg_fill_price = 3.50
+        handle.perm_id = 100
+
+        result = serialize_order_handle(handle)
 
         assert result["orderId"] == 1
+        assert result["permId"] == 100
+        assert result["clientId"] == 1
         assert result["action"] == "BUY"
         assert result["totalQty"] == 1
         assert result["orderType"] == "LMT"
+        assert result["lmtPrice"] == 3.50
         assert result["status"] == "Filled"
         assert result["filled"] == 1
+        assert result["remaining"] == 0
+        assert result["avgFillPrice"] == 3.50
         assert result["contract"]["symbol"] == "SPX"
+        assert result["lastLogMsg"] == ""
+
+    def test_unset_prices_serialize_as_none(self):
+        unset = 1.7976931348623157e+308
+        handle = OrderHandle(2, _contract(),
+                             _order(orderId=2, orderType="MKT",
+                                    lmtPrice=unset, auxPrice=unset))
+        handle.status = "Submitted"
+        handle.remaining = 1
+
+        result = serialize_order_handle(handle)
+
+        assert result["lmtPrice"] is None
+        assert result["auxPrice"] is None
+
+    def test_zero_aux_price_is_preserved(self):
+        handle = OrderHandle(3, _contract(),
+                             _order(orderId=3, orderType="STP LMT",
+                                    lmtPrice=1.50, auxPrice=1.40))
+        handle.status = "Submitted"
+        handle.remaining = 1
+
+        result = serialize_order_handle(handle)
+
+        assert result["auxPrice"] == 1.40
+        assert result["lmtPrice"] == 1.50
+
+
+class TestSerializeExecution:
+
+    def test_filters_to_today_and_reads_commission(self):
+        mock = MockIBClient()
+        today = now_et()
+        yesterday = today - timedelta(days=1)
+
+        exec_today = SimpleNamespace(
+            execId="E1", time=today.strftime("%Y%m%d %H:%M:%S"),
+            side="BUY", shares=1, price=3.50, orderId=100)
+        commission = SimpleNamespace(execId="E1", commissionAndFees=1.02)
+        exec_old = SimpleNamespace(
+            execId="E2", time=yesterday.strftime("%Y%m%d %H:%M:%S"),
+            side="SELL", shares=2, price=5.00, orderId=101)
+
+        mock.executions = [
+            ExecutionRecord(_contract(symbol="SPX"), exec_old, None),
+            ExecutionRecord(_contract(symbol="SPX"), exec_today, commission),
+        ]
+
+        result = serialize_execution(mock)
+
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["execId"] == "E1"
+        assert entry["side"] == "BUY"
+        assert entry["shares"] == 1
+        assert entry["price"] == 3.50
+        assert entry["orderId"] == 100
+        assert entry["commission"] == 1.02
+        assert entry["symbol"] == "SPX"
+
+    def test_oversized_commission_treated_as_none(self):
+        mock = MockIBClient()
+        exec_rec = SimpleNamespace(
+            execId="E3", time=now_et().strftime("%Y%m%d %H:%M:%S"),
+            side="BUY", shares=1, price=3.50, orderId=102)
+        commission = SimpleNamespace(execId="E3", commissionAndFees=2.5e9)
+        mock.executions = [ExecutionRecord(_contract(symbol="SPX"), exec_rec, commission)]
+
+        result = serialize_execution(mock)
+
+        assert len(result) == 1
+        assert result[0]["commission"] is None
+
+    def test_empty_list(self):
+        assert serialize_execution(MockIBClient()) == []
+
+    def test_reads_a_snapshot_not_the_live_list(self):
+        """serialize_execution iterates a copy of ib.executions, so a later
+        socket-thread append does not mutate the already-returned result."""
+        mock = MockIBClient()
+        today = now_et()
+        rec = ExecutionRecord(
+            _contract(symbol="SPX"),
+            SimpleNamespace(execId="E1", time=today.strftime("%Y%m%d %H:%M:%S"),
+                            side="BUY", shares=1, price=3.50, orderId=100),
+            None,
+        )
+        mock.executions = [rec]
+
+        result = serialize_execution(mock)
+        assert len(result) == 1
+
+        # Emulate a concurrent append after the snapshot was read.
+        mock.executions.append(ExecutionRecord(
+            _contract(symbol="SPX"),
+            SimpleNamespace(execId="E2", time=today.strftime("%Y%m%d %H:%M:%S"),
+                            side="SELL", shares=1, price=4.0, orderId=101),
+            None,
+        ))
+        assert len(result) == 1  # snapshot unaffected
 
 
 class TestBuildAccountPayload:
@@ -208,14 +269,70 @@ class TestBuildAccountPayload:
 class TestRefreshAccountState:
 
     def test_populates_state_from_mock_ib(self, app_state):
-        """Verify refresh_account_state pulls data from IB and populates state."""
-        from tests.conftest import MockIB
+        """Verify refresh_account_state pulls data from the native bridge state."""
+        mock = MockIBClient(connected=True, fill_immediately=False)
+        mock.account_values = [
+            AccountValue("NetLiquidation", "100000.50", "USD"),
+            AccountValue("NetLiquidation", "85000.00", "EUR"),
+        ]
+        mock.portfolio = [
+            PortfolioItem(_contract(), 1, 3.50, 350.0, 300.0, 50.0, 0.0, "DU12345"),
+        ]
+        handle = mock.place_order(_contract(), _order())  # status "Submitted"
 
-        mock = MockIB()
-        # We can't easily set up account values on MockIB since it returns
-        # empty lists by default. Verify it doesn't crash and sets dirty flag.
+        refresh_account_state(mock, app_state)
+
+        assert app_state.account_dirty is True
+        assert app_state.account_summary["NetLiquidation"] == 100000.50
+        assert len(app_state.positions) == 1
+        assert app_state.positions[0]["contract"]["symbol"] == "SPX"
+        # Only non-terminal orders appear in open_orders; active_trades keeps all.
+        assert len(app_state.open_orders) == 1
+        assert app_state.open_orders[0]["orderId"] == handle.order_id
+        assert app_state.open_orders[0]["status"] == "Submitted"
+        assert app_state.active_trades[handle.order_id] is handle
+
+    def test_terminal_orders_excluded_from_open_orders(self, app_state):
+        mock = MockIBClient(connected=True, fill_immediately=True)  # Filled
+        filled = mock.place_order(_contract(), _order())
         refresh_account_state(mock, app_state)
         assert app_state.account_dirty is True
+        assert app_state.open_orders == []
+        assert filled.order_id in app_state.active_trades
+
+    def test_empty_mock_does_not_crash(self, app_state):
+        mock = MockIBClient()
+        refresh_account_state(mock, app_state)
+        assert app_state.account_dirty is True
+        assert app_state.account_summary == {}
+        assert app_state.positions == []
+
+    def test_reads_snapshots_not_live_lists(self, app_state):
+        """refresh_account_state iterates copies of ib.account_values/portfolio/
+        orders, so a concurrent socket-thread append cannot mutate the state that
+        was just serialized (IMPORTANT 4)."""
+        mock = MockIBClient(connected=True, fill_immediately=False)
+        mock.account_values = [
+            AccountValue("NetLiquidation", "100000.50", "USD"),
+        ]
+        mock.portfolio = [
+            PortfolioItem(_contract(), 1, 3.50, 350.0, 300.0, 50.0, 0.0, "DU12345"),
+        ]
+        mock.place_order(_contract(), _order())  # one open order
+
+        refresh_account_state(mock, app_state)
+
+        assert app_state.account_summary["NetLiquidation"] == 100000.50
+        assert len(app_state.positions) == 1
+        assert len(app_state.open_orders) == 1
+
+        # Emulate a concurrent append on the socket thread after the snapshot.
+        mock.account_values.append(AccountValue("BuyingPower", "5000.0", "USD"))
+        mock.portfolio.append(PortfolioItem(_contract(), 5, 3.0, 1500.0,
+                                            1400.0, 100.0, 0.0, "DU12345"))
+        assert app_state.account_summary.get("BuyingPower") is None
+        assert len(app_state.positions) == 1
+        assert len(app_state.open_orders) == 1
 
 
 class TestExecutionTimeParsing:
@@ -227,11 +344,16 @@ class TestExecutionTimeParsing:
         assert parsed.astimezone(ET).hour == 1
         assert parsed.astimezone(ET).minute == 44
 
-    def test_parse_ib_timezone_name_string(self):
-        parsed = parse_execution_time("20260410 01:44:00 US/Eastern")
+    def test_parse_native_ib_execution_time_string(self):
+        # Native ibapi execution.time format: "YYYYMMDD HH:MM:SS" (no tz suffix).
+        parsed = parse_execution_time("20260820 14:30:00")
         assert parsed is not None
-        assert parsed.hour == 1
-        assert parsed.minute == 44
+        assert parsed.year == 2026
+        assert parsed.month == 8
+        assert parsed.day == 20
+        assert parsed.hour == 14
+        assert parsed.minute == 30
+        assert parsed.tzinfo is ET
 
     def test_format_execution_time_uses_dst_label_in_april(self):
         dt = datetime(2026, 4, 10, 1, 44, 0, tzinfo=ET)

@@ -11,16 +11,18 @@ import asyncio
 import copy
 import sys
 import os
-from types import SimpleNamespace
+import time
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from order_manager import (
-    await_order_status, handle_place_order, handle_cancel_order, _PENDING_STATUSES,
+    handle_place_order, handle_cancel_order,
     watch_and_push_status, watch_parent_and_cancel_child,
 )
+from ib_client import OrderHandle
+from tests.conftest import MockContract, MockOrder
 from config import spx_tick_for_price, round_abs_to_tick, round_signed_to_tick
 
 
@@ -224,7 +226,7 @@ async def test_dynamic_fill_reprice(mock_ib, app_state):
 
     # Poll until orders exist, then wait for reprice loop to iterate, then fill
     async def fill_after_delay():
-        # Wait for the first placeOrder to happen
+        # Wait for the first place_order to happen
         for _ in range(200):
             if mock_ib.get_placed_orders():
                 break
@@ -234,10 +236,10 @@ async def test_dynamic_fill_reprice(mock_ib, app_state):
         orders = mock_ib.get_placed_orders()
         if orders:
             last = orders[-1]
-            last.orderStatus.status = "Filled"
-            last.orderStatus.filled = 1
-            last.orderStatus.remaining = 0
-            last.orderStatus.avgFillPrice = last.order.lmtPrice
+            last.status = "Filled"
+            last.filled = 1
+            last.remaining = 0
+            last.avg_fill_price = last.order.lmtPrice
 
     task = asyncio.create_task(fill_after_delay())
     result = await handle_place_order(mock_ib, app_state, payload)
@@ -247,10 +249,18 @@ async def test_dynamic_fill_reprice(mock_ib, app_state):
     # Should eventually get a status (either Filled or the last known)
     assert "orderId" in data
 
-    # Verify repricing happened — multiple placeOrder calls
-    place_calls = [c for c in mock_ib.call_log if c["method"] == "placeOrder"]
+    # Verify repricing happened — multiple place_order calls
+    place_calls = [c for c in mock_ib.call_log if c["method"] == "place_order"]
     assert len(place_calls) >= 2, (
-        f"Expected multiple placeOrder calls from reprice loop, got {len(place_calls)}"
+        f"Expected multiple place_order calls from reprice loop, got {len(place_calls)}"
+    )
+
+    # Every reprice must MODIFY the same live order (same orderId) — not submit
+    # a new order each iteration (which would leave N+1 live orders).
+    order_ids = {c["orderId"] for c in place_calls}
+    assert len(order_ids) == 1, f"Reprices must reuse one orderId, got {order_ids}"
+    assert len(mock_ib.get_placed_orders()) == 1, (
+        "Reprice modifies the existing order; only one order should be live"
     )
 
     # Limit price should have increased (BUY direction = +1)
@@ -262,10 +272,10 @@ async def test_dynamic_fill_reprice(mock_ib, app_state):
 
 
 @pytest.mark.asyncio
-async def test_dynamic_fill_handles_filled_order_before_modify(monkeypatch, mock_ib, app_state):
-    """Verify dynamic fill does not crash when the order is filled before a modify."""
-    mock_ib._fill_immediately = False
-
+async def test_dynamic_fill_filled_order_skips_modify(mock_ib, app_state):
+    """When the order is already filled, the reprice loop breaks before any
+    modify — exactly one place_order call (the original submission)."""
+    # mock_ib (fill_immediately=True) fills the order at placement time.
     payload = {
         "legs": [{
             "symbol": "SPX",
@@ -281,22 +291,15 @@ async def test_dynamic_fill_handles_filled_order_before_modify(monkeypatch, mock
         "repriceIntervalSec": 0.01,
     }
 
-    original_place = mock_ib.placeOrder
-    call_count = {"count": 0}
-
-    def place_order_wrapper(contract, order):
-        call_count["count"] += 1
-        if call_count["count"] == 1:
-            return original_place(contract, order)
-        raise AssertionError("Cannot modify a filled order.")
-
-    monkeypatch.setattr(mock_ib, "placeOrder", place_order_wrapper)
-
     result = await handle_place_order(mock_ib, app_state, payload)
 
     assert result["type"] == "order_status"
-    assert result["data"]["status"] != "Error"
-    assert call_count["count"] == 2
+    assert result["data"]["status"] == "Filled"
+    place_calls = [c for c in mock_ib.call_log if c["method"] == "place_order"]
+    assert len(place_calls) == 1, (
+        f"Filled order must not be modified: got {len(place_calls)} place_order calls"
+    )
+    assert len(mock_ib.get_placed_orders()) == 1
 
 
 @pytest.mark.asyncio
@@ -328,16 +331,18 @@ async def test_dynamic_fill_spx_above_two_uses_ten_cent_tick(mock_ib, app_state)
         orders = mock_ib.get_placed_orders()
         if orders:
             last = orders[-1]
-            last.orderStatus.status = "Filled"
-            last.orderStatus.filled = 1
-            last.orderStatus.remaining = 0
-            last.orderStatus.avgFillPrice = last.order.lmtPrice
+            last.status = "Filled"
+            last.filled = 1
+            last.remaining = 0
+            last.avg_fill_price = last.order.lmtPrice
 
     task = asyncio.create_task(fill_after_delay())
     await handle_place_order(mock_ib, app_state, payload)
     await task
 
-    place_calls = [c for c in mock_ib.call_log if c["method"] == "placeOrder"]
+    place_calls = [c for c in mock_ib.call_log if c["method"] == "place_order"]
+    order_ids = {c["orderId"] for c in place_calls}
+    assert len(order_ids) == 1, f"Reprices must reuse one orderId, got {order_ids}"
     lmts = [float(c["lmtPrice"]) for c in place_calls if c.get("lmtPrice") is not None]
     assert len(lmts) >= 2
 
@@ -373,17 +378,17 @@ async def test_dynamic_fill_cancellation(mock_ib, app_state):
         "repriceIntervalSec": 0.01,
     }
 
-    # Poll until orders exist, then cancel
+    # Poll until the first order exists, then cancel it while the reprice loop
+    # is still active. The loop yields inside its first wait_fill before doing
+    # any status re-check, so cancelling the placed order the moment we detect
+    # it guarantees the loop's next status check sees Cancelled.
     async def cancel_after_delay():
         for _ in range(200):
             if mock_ib.get_placed_orders():
                 break
             await asyncio.sleep(0.01)
-        await asyncio.sleep(0.15)
-        orders = mock_ib.get_placed_orders()
-        if orders:
-            last = orders[-1]
-            last.orderStatus.status = "Cancelled"
+        for h in mock_ib.get_placed_orders():
+            h.status = "Cancelled"
 
     task = asyncio.create_task(cancel_after_delay())
     result = await handle_place_order(mock_ib, app_state, payload)
@@ -721,14 +726,14 @@ async def test_stop_order_stays_presubmitted_until_parent_fills(mock_ib_bracket,
     stop = orders[1]
 
     # Parent fills immediately in bracket_mode
-    assert parent.orderStatus.status == "Filled"
+    assert parent.status == "Filled"
     # Stop should be PreSubmitted (bracket child)
-    assert stop.orderStatus.status == "PreSubmitted"
+    assert stop.status == "PreSubmitted"
     assert stop.order.parentId == parent.order.orderId
 
     # Simulate IB fill propagation
     mock_ib_bracket.simulate_parent_fill(parent.order.orderId)
-    assert stop.orderStatus.status == "Submitted"
+    assert stop.status == "Submitted"
 
 
 # ---------------------------------------------------------------------------
@@ -759,12 +764,12 @@ async def test_stop_order_cancelled_when_parent_cancelled(mock_ib_bracket, app_s
     parent = orders[0]
     stop = orders[1]
 
-    assert stop.orderStatus.status == "PreSubmitted"
+    assert stop.status == "PreSubmitted"
 
     # Cancel the parent — MockIB now cascades to children
-    mock_ib_bracket.cancelOrder(parent.order)
-    assert parent.orderStatus.status == "Cancelled"
-    assert stop.orderStatus.status == "Cancelled"
+    mock_ib_bracket.cancel_order(parent.order_id)
+    assert parent.status == "Cancelled"
+    assert stop.status == "Cancelled"
     assert stop.order.orderId in mock_ib_bracket._cancelled_orders
 
 
@@ -835,63 +840,48 @@ async def test_stop_order_persists_in_active_trades(mock_ib, app_state, sample_s
 
 
 # ---------------------------------------------------------------------------
-# 22A. Combo parent PreSubmitted should still settle to Submitted
+# 22A. Combo parent PreSubmitted stages there — ack resolves immediately
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_combo_parent_waits_through_presubmitted_for_initial_ack():
-    trade = SimpleNamespace(
-        order=SimpleNamespace(orderId=1234),
-        orderStatus=SimpleNamespace(
-            status="PreSubmitted",
-            filled=0,
-            remaining=1,
-            avgFillPrice=0.0,
-        ),
-        log=[],
-    )
+async def test_combo_parent_ack_resolves_at_presubmitted():
+    """Combo parents stage at PreSubmitted; PreSubmitted is not a pending status
+    (faithful to IBClient.orderStatus), so handle.ack() resolves immediately —
+    no status polling / reqOpenOrders re-poll."""
+    contract = MockContract(symbol="SPX", secType="BAG", exchange="CBOE")
+    order = MockOrder(action="BUY", totalQuantity=1, lmtPrice=2.0, orderId=1234)
+    handle = OrderHandle(1234, contract, order)
+    handle.status = "PreSubmitted"
+    handle.filled = 0
+    handle.remaining = 1
+    handle.avg_fill_price = 0.0
+    handle.ack_event.set()  # ack already fired at PreSubmitted
 
-    async def simulate_submit():
-        await asyncio.sleep(0.2)
-        trade.orderStatus.status = "Submitted"
+    await handle.ack(timeout=1.0)
 
-    task = asyncio.create_task(simulate_submit())
-    status = await await_order_status(trade, timeout=1.0, include_presubmitted=True)
-    await task
-
-    assert status == "Submitted"
+    assert handle.status == "PreSubmitted"
 
 
 @pytest.mark.asyncio
-async def test_combo_parent_ws_status_push_waits_through_presubmitted(mock_ws):
-    trade = SimpleNamespace(
-        order=SimpleNamespace(orderId=1235),
-        orderStatus=SimpleNamespace(
-            status="PreSubmitted",
-            filled=0,
-            remaining=1,
-            avgFillPrice=0.0,
-        ),
-        log=[],
-    )
+async def test_combo_parent_ws_status_push_at_presubmitted(mock_ws):
+    """watch_and_push_status for a non-bracket combo parent pushes its current
+    status once the ack resolves — at PreSubmitted that's immediately (no
+    waiting through the staged state, which is bracket-child behaviour)."""
+    contract = MockContract(symbol="SPX", secType="BAG", exchange="CBOE")
+    order = MockOrder(action="BUY", totalQuantity=1, lmtPrice=2.0, orderId=1235)
+    handle = OrderHandle(1235, contract, order)
+    handle.status = "PreSubmitted"
+    handle.filled = 0
+    handle.remaining = 1
+    handle.avg_fill_price = 0.0
+    handle.ack_event.set()
 
-    async def simulate_submit():
-        await asyncio.sleep(0.2)
-        trade.orderStatus.status = "Submitted"
-
-    task = asyncio.create_task(simulate_submit())
-    await watch_and_push_status(
-        mock_ws,
-        trade,
-        timeout=1.0,
-        include_presubmitted=True,
-    )
-    await task
+    await watch_and_push_status(mock_ws, handle, timeout=1.0)
 
     statuses = mock_ws.get_order_statuses()
     assert len(statuses) == 1
     assert statuses[0]["orderId"] == 1235
-    assert statuses[0]["status"] == "Submitted"
+    assert statuses[0]["status"] == "PreSubmitted"
 
 
 # ---------------------------------------------------------------------------
@@ -921,22 +911,27 @@ async def test_stop_order_ws_status_push_on_parent_fill(mock_ib_bracket, app_sta
     parent = orders[0]
     stop = orders[1]
 
-    assert stop.orderStatus.status == "PreSubmitted"
+    assert stop.status == "PreSubmitted"
 
-    # Start watching the stop trade (bracket_child=True)
+    # Start watching the stop trade (bracket_child=True). The watcher must push
+    # as soon as the child activates (PreSubmitted -> Submitted), not wait out the
+    # full terminal timeout.
     async def simulate_fill():
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.05)
         mock_ib_bracket.simulate_parent_fill(parent.order.orderId)
 
     task = asyncio.create_task(simulate_fill())
-    await watch_and_push_status(mock_ws, stop, timeout=3.0, bracket_child=True)
+    t0 = time.monotonic()
+    await watch_and_push_status(mock_ws, stop, timeout=5.0, bracket_child=True)
+    elapsed = time.monotonic() - t0
     await task
 
     statuses = mock_ws.get_order_statuses()
-    assert len(statuses) >= 1
     stop_push = [s for s in statuses if s["orderId"] == stop.order.orderId]
     assert len(stop_push) == 1
     assert stop_push[0]["status"] == "Submitted"
+    # Activation push is prompt — far under the 5s terminal timeout.
+    assert elapsed < 1.0, f"bracket-child push should be prompt, took {elapsed:.2f}s"
 
 
 # ---------------------------------------------------------------------------
@@ -969,12 +964,12 @@ async def test_stop_order_ws_status_push_on_parent_cancel(mock_ib_bracket, app_s
 
     # Parent fills immediately in bracket_mode — set it back to Submitted
     # so the watcher can observe the cancel transition
-    parent.orderStatus.status = "Submitted"
+    parent.status = "Submitted"
 
     # Cancel parent after a short delay
     async def cancel_parent():
         await asyncio.sleep(0.2)
-        mock_ib_bracket.cancelOrder(parent.order)
+        mock_ib_bracket.cancel_order(parent.order_id)
 
     task = asyncio.create_task(cancel_parent())
     await watch_parent_and_cancel_child(
@@ -982,7 +977,7 @@ async def test_stop_order_ws_status_push_on_parent_cancel(mock_ib_bracket, app_s
     )
     await task
 
-    assert stop.orderStatus.status == "Cancelled"
+    assert stop.status == "Cancelled"
     statuses = mock_ws.get_order_statuses()
     cancel_pushes = [s for s in statuses if s["orderId"] == stop.order.orderId]
     assert len(cancel_pushes) >= 1
@@ -1019,7 +1014,7 @@ async def test_watcher_exits_on_parent_fill_without_cancelling_stop(mock_ib_brac
     stop = orders[1]
 
     # Parent is already Filled in bracket_mode
-    assert parent.orderStatus.status == "Filled"
+    assert parent.status == "Filled"
 
     # Watcher should exit immediately since parent is already terminal
     await watch_parent_and_cancel_child(
@@ -1027,7 +1022,7 @@ async def test_watcher_exits_on_parent_fill_without_cancelling_stop(mock_ib_brac
     )
 
     # Stop should NOT be cancelled — it's still PreSubmitted (waiting for activation)
-    assert stop.orderStatus.status == "PreSubmitted"
+    assert stop.status == "PreSubmitted"
     # No cancel WS messages should have been sent
     cancel_msgs = [s for s in mock_ws.get_order_statuses() if s["status"] == "Cancelled"]
     assert len(cancel_msgs) == 0
@@ -1079,15 +1074,15 @@ async def test_combo_debit_spread_stop_lifecycle(mock_ib_bracket, app_state, sam
     parent_bag = orders[0]
     stop_bag = orders[1]
 
-    assert parent_bag.orderStatus.status == "Filled"
-    assert stop_bag.orderStatus.status == "PreSubmitted"
+    assert parent_bag.status == "Filled"
+    assert stop_bag.status == "PreSubmitted"
     assert stop_bag.order.parentId == parent_bag.order.orderId
     assert stop_bag.order.orderType == "STP LMT"
     assert stop_bag.order.action == "SELL"  # opposite of BUY parent
 
     # Simulate IB fill propagation
     mock_ib_bracket.simulate_parent_fill(parent_bag.order.orderId)
-    assert stop_bag.orderStatus.status == "Submitted"
+    assert stop_bag.status == "Submitted"
 
 
 # ---------------------------------------------------------------------------
@@ -1135,7 +1130,7 @@ async def test_combo_credit_spread_stop_lifecycle(mock_ib_bracket, app_state, sa
     assert parent_bag.order.action == "SELL"
     assert stop_bag.order.action == "BUY"  # opposite
     assert stop_bag.order.orderType == "STP LMT"
-    assert stop_bag.orderStatus.status == "PreSubmitted"
+    assert stop_bag.status == "PreSubmitted"
 
     # Verify stop prices
     assert stop_bag.order.auxPrice == 1.50  # stopPrice
@@ -1182,9 +1177,9 @@ async def test_combo_stop_cancelled_when_parent_cancelled(mock_ib_bracket, app_s
     stop_bag = orders[1]
 
     # Cancel parent — cascade to child
-    mock_ib_bracket.cancelOrder(parent_bag.order)
-    assert parent_bag.orderStatus.status == "Cancelled"
-    assert stop_bag.orderStatus.status == "Cancelled"
+    mock_ib_bracket.cancel_order(parent_bag.order_id)
+    assert parent_bag.status == "Cancelled"
+    assert stop_bag.status == "Cancelled"
 
 
 # ---------------------------------------------------------------------------
@@ -1317,7 +1312,7 @@ async def test_stop_order_invalid_stop_price_zero(mock_ib, app_state):
     assert result["data"]["status"] == "Filled"
 
     orders = mock_ib.get_placed_orders()
-    # The first placeOrder had transmit=False, then re-submitted with transmit=True
+    # The first place_order had transmit=False, then re-submitted with transmit=True
     # So we may have 2 placed orders (same parent, retransmitted) or just 1 if re-submitted
     # Either way, no STP LMT order should exist
     stp_orders = [o for o in orders if o.order.orderType == "STP LMT"]
@@ -1446,16 +1441,16 @@ async def test_stop_not_cancelled_when_parent_already_filled(mock_ib, app_state,
     stop = orders[1]
 
     # Parent is already Filled (mock_ib fills immediately)
-    assert parent.orderStatus.status == "Filled"
+    assert parent.status == "Filled"
 
     # Trying to cancel a filled parent should not affect the stop
     # (In real IB, filled orders can't be cancelled; here we test the watcher logic)
-    stop_status_before = stop.orderStatus.status
+    stop_status_before = stop.status
     # watcher should exit immediately without cancelling stop
     await watch_parent_and_cancel_child(
         mock_ib, None, parent, stop, timeout=1.0
     )
-    assert stop.orderStatus.status == stop_status_before
+    assert stop.status == stop_status_before
 
 
 # ---------------------------------------------------------------------------
@@ -1591,12 +1586,12 @@ async def test_iron_condor_stop_lifecycle(mock_ib_bracket, app_state, sample_sto
 
     # Parent is iron condor SELL
     assert parent_bag.order.action == "SELL"
-    assert parent_bag.orderStatus.status == "Filled"
+    assert parent_bag.status == "Filled"
 
     # Stop is the reverse (BUY to close)
     assert stop_bag.order.action == "BUY"
     assert stop_bag.order.orderType == "STP LMT"
-    assert stop_bag.orderStatus.status == "PreSubmitted"
+    assert stop_bag.status == "PreSubmitted"
     assert stop_bag.order.parentId == parent_bag.order.orderId
 
     # Verify all 4 legs reversed
@@ -1610,7 +1605,7 @@ async def test_iron_condor_stop_lifecycle(mock_ib_bracket, app_state, sample_sto
 
     # Simulate parent fill → stop activates
     mock_ib_bracket.simulate_parent_fill(parent_bag.order.orderId)
-    assert stop_bag.orderStatus.status == "Submitted"
+    assert stop_bag.status == "Submitted"
 
 
 # ---------------------------------------------------------------------------
@@ -1655,11 +1650,11 @@ async def test_combo_stop_ws_push_on_parent_cancel(mock_ib_bracket, app_state, m
 
     # Parent fills immediately in bracket_mode — set it back to Submitted
     # so the watcher can observe the cancel transition
-    parent_bag.orderStatus.status = "Submitted"
+    parent_bag.status = "Submitted"
 
     async def cancel_parent():
         await asyncio.sleep(0.2)
-        mock_ib_bracket.cancelOrder(parent_bag.order)
+        mock_ib_bracket.cancel_order(parent_bag.order_id)
 
     task = asyncio.create_task(cancel_parent())
     await watch_parent_and_cancel_child(
@@ -1667,7 +1662,7 @@ async def test_combo_stop_ws_push_on_parent_cancel(mock_ib_bracket, app_state, m
     )
     await task
 
-    assert stop_bag.orderStatus.status == "Cancelled"
+    assert stop_bag.status == "Cancelled"
     statuses = mock_ws.get_order_statuses()
     cancel_pushes = [s for s in statuses if s["orderId"] == stop_bag.order.orderId]
     assert len(cancel_pushes) >= 1

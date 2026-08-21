@@ -3,6 +3,10 @@ Batched option chain fetcher for IB.
 
 Fetches the full SPXW 0DTE option chain using snapshot requests in batches
 to stay within IB's 100 simultaneous market-data-line limit.
+
+Consumes the native bridge surface (ib_client.py): ``req_sec_def_opt_params``,
+``req_contract_details``, and ``fetch_snapshot`` -> ``TickStream``. Native only —
+no legacy broker wrapper.
 """
 
 import asyncio
@@ -10,8 +14,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Set, Tuple
 
-from ib_insync import IB, Option, Contract, Ticker
+from ibapi.contract import Contract
 
+from order_manager import _option_contract
+from ib_client import TickStream
 from gex_calculator import OptionData
 from config import (
     BATCH_SIZE,
@@ -28,7 +34,7 @@ class QualificationCache:
     """Cache of qualified contracts and unknown contract keys for one expiration."""
     expiration: str = ""
     anchor_spot: float = 0.0
-    qualified: List[Option] = field(default_factory=list)
+    qualified: List[Contract] = field(default_factory=list)
     unknown_keys: Set[str] = field(default_factory=set)
 
 
@@ -64,7 +70,7 @@ def _strike_range_for_std_devs(
 
 
 async def fetch_option_chain(
-    ib: IB,
+    ib,
     underlying: Contract,
     expiration: str,
     strikes: List[float],
@@ -114,22 +120,20 @@ async def fetch_option_chain(
     if allow_unknown_retry:
         cache.unknown_keys.clear()
 
-    contracts: List[Option] = []
+    contracts: List[Contract] = []
     for strike in filtered_strikes:
         for right in ('C', 'P'):
             key = _contract_key(expiration, strike, right)
             if key in cache.unknown_keys and not allow_unknown_retry:
                 continue
             contracts.append(
-                Option(
+                _option_contract(
                     symbol='SPX',
-                    lastTradeDateOrContractMonth=expiration,
+                    expiry=expiration,
                     strike=strike,
                     right=right,
                     exchange='SMART',
-                    multiplier='100',
-                    currency='USD',
-                    tradingClass=trading_class,
+                    trading_class=trading_class,
                 )
             )
 
@@ -145,7 +149,7 @@ async def fetch_option_chain(
     elif not cache.qualified:
         need_requalify = True
 
-    qualified: List[Option] = []
+    qualified: List[Contract] = []
     if not need_requalify:
         valid_keys = {
             _contract_key(expiration, c.strike, c.right)
@@ -162,15 +166,19 @@ async def fetch_option_chain(
     else:
         # Phase 1: Qualify contracts in batches
         logger.info("Re-qualifying contracts (cache miss / spot moved / manual retry)")
-        newly_qualified: List[Option] = []
+        newly_qualified: List[Contract] = []
         unknown_keys: Set[str] = set(cache.unknown_keys)
 
         for i in range(0, len(contracts), QUALIFY_BATCH_SIZE):
             batch = contracts[i:i + QUALIFY_BATCH_SIZE]
             batch_num = i // QUALIFY_BATCH_SIZE + 1
             try:
-                result = ib.qualifyContracts(*batch)
-                result_ok = [c for c in result if c.conId > 0]
+                results = await asyncio.gather(*(ib.req_contract_details(c) for c in batch))
+                result_ok = []
+                for c, res in zip(batch, results):
+                    if res and res[0].contract.conId > 0:
+                        qualified_contract = res[0].contract
+                        result_ok.append(qualified_contract)
                 newly_qualified.extend(result_ok)
 
                 qualified_keys = {
@@ -212,12 +220,14 @@ async def fetch_option_chain(
     if progress_callback and need_requalify:
         await progress_callback('qualifying', 1, 1, 10)
 
-    # Phase 2: Snapshot market data in batches
+    # Phase 2: Snapshot market data in batches (each batch capped at 50 for IB's
+    # 100 market-data-line pacing guard)
+    snap_batch_size = min(BATCH_SIZE, 50)
     all_option_data: List[OptionData] = []
-    for i in range(0, len(qualified), BATCH_SIZE):
-        batch = qualified[i:i + BATCH_SIZE]
-        batch_num = i // BATCH_SIZE + 1
-        total_batches = (len(qualified) + BATCH_SIZE - 1) // BATCH_SIZE
+    for i in range(0, len(qualified), snap_batch_size):
+        batch = qualified[i:i + snap_batch_size]
+        batch_num = i // snap_batch_size + 1
+        total_batches = (len(qualified) + snap_batch_size - 1) // snap_batch_size
         logger.info(f"Fetching snapshot batch {batch_num}/{total_batches} ({len(batch)} contracts)")
 
         if progress_callback:
@@ -225,9 +235,9 @@ async def fetch_option_chain(
             await progress_callback('fetching', batch_num, total_batches, pct)
 
         try:
-            tickers = await _snapshot_batch(ib, batch)
-            for ticker in tickers:
-                opt_data = _ticker_to_option_data(ticker)
+            streams = await _snapshot_batch(ib, batch)
+            for stream in streams:
+                opt_data = _stream_to_option_data(stream)
                 if opt_data is not None:
                     all_option_data.append(opt_data)
         except Exception as e:
@@ -249,33 +259,17 @@ async def fetch_option_chain(
     return all_option_data
 
 
-async def _snapshot_batch(ib: IB, contracts: List[Option], timeout: float = 12.0) -> List[Ticker]:
+async def _snapshot_batch(ib, contracts: List[Contract], timeout: float = 6.0) -> List[TickStream]:
     """
-    Request streaming market data for a batch of contracts (snapshot=False so that
-    genericTickList='101' for open interest is accepted by IB), then wait for data
-    to arrive and cancel all subscriptions.
+    Fetch a batch of market-data snapshots (generic tick list '101' for OI).
 
-    Note: IB rejects genericTickList with snapshot=True (Error 321). We use
-    streaming mode and cancel manually after `timeout` seconds.
+    The batch is capped at 50 requests to stay safely under IB's 100-line
+    pacing guard. ``ib.fetch_snapshot`` handles subscription, first-tick (or
+    timeout) completion, and cancellation internally.
     """
-    tickers: List[Ticker] = []
-
-    for contract in contracts:
-        # snapshot=False required when using genericTickList; we cancel manually below
-        ticker = ib.reqMktData(contract, genericTickList='101', snapshot=False)
-        tickers.append(ticker)
-
-    # Wait for streaming data to arrive
-    await asyncio.sleep(timeout)
-
-    # Cancel all subscriptions
-    for contract in contracts:
-        try:
-            ib.cancelMktData(contract)
-        except Exception:
-            pass
-
-    return tickers
+    batch_cap = min(len(contracts), 50)     # 100-line pacing guard
+    streams = await ib.fetch_snapshot(contracts[:batch_cap], generic="101", timeout=timeout)
+    return [s for s in streams]
 
 
 def _safe_int(val) -> int:
@@ -320,13 +314,13 @@ def _normalize_iv(iv_val):
     return iv
 
 
-def _pick_greek_value(ticker: Ticker, field: str):
+def _pick_greek_value(stream: TickStream, field: str):
     """Pick first valid greek field from model/last/bid/ask greeks."""
     for source in (
-        getattr(ticker, 'modelGreeks', None),
-        getattr(ticker, 'lastGreeks', None),
-        getattr(ticker, 'bidGreeks', None),
-        getattr(ticker, 'askGreeks', None),
+        getattr(stream, 'model_greeks', None),
+        getattr(stream, 'last_greeks', None),
+        getattr(stream, 'bid_greeks', None),
+        getattr(stream, 'ask_greeks', None),
     ):
         if source is None:
             continue
@@ -336,40 +330,40 @@ def _pick_greek_value(ticker: Ticker, field: str):
     return None
 
 
-def _ticker_to_option_data(ticker: Ticker) -> Optional[OptionData]:
-    """Convert an IB Ticker to our OptionData model."""
-    contract = ticker.contract
-    if not hasattr(contract, 'strike') or not hasattr(contract, 'right'):
+def _stream_to_option_data(stream: TickStream) -> Optional[OptionData]:
+    """Convert an IB TickStream to our OptionData model."""
+    contract = stream.contract
+    if contract is None or not hasattr(contract, 'strike') or not hasattr(contract, 'right'):
         return None
 
-    gamma = _pick_greek_value(ticker, 'gamma')
-    delta = _pick_greek_value(ticker, 'delta')
-    implied_vol = _normalize_iv(_pick_greek_value(ticker, 'impliedVol'))
+    gamma = _pick_greek_value(stream, 'gamma')
+    delta = _pick_greek_value(stream, 'delta')
+    implied_vol = _normalize_iv(_pick_greek_value(stream, 'implied_vol'))
     if implied_vol is None:
-        implied_vol = _normalize_iv(getattr(ticker, 'impliedVolatility', None))
+        implied_vol = _normalize_iv(getattr(stream, 'implied_volatility', None))
 
-    # Open interest — generic tick 101 populates callOpenInterest (tick 27) / putOpenInterest (tick 28)
-    # on the individual option Ticker. Some IB responses may populate the other field
-    # or use `openInterest` instead.
+    # Open interest — generic tick 101 populates call_oi (tick 27) / put_oi (tick 28)
+    # on the individual option TickStream. Some IB responses may populate the other
+    # field or use `open_interest` instead.
     if contract.right == 'P':
-        oi = _safe_int(getattr(ticker, 'putOpenInterest', None))
+        oi = _safe_int(stream.put_oi)
         if oi == 0:
-            oi = _safe_int(getattr(ticker, 'callOpenInterest', None))
+            oi = _safe_int(stream.call_oi)
     else:
-        oi = _safe_int(getattr(ticker, 'callOpenInterest', None))
+        oi = _safe_int(stream.call_oi)
         if oi == 0:
-            oi = _safe_int(getattr(ticker, 'putOpenInterest', None))
+            oi = _safe_int(stream.put_oi)
 
     if oi == 0:
-        oi = _safe_int(getattr(ticker, 'openInterest', None))
+        oi = _safe_int(stream.open_interest)
 
-    volume = _safe_int(ticker.volume)
+    volume = _safe_int(stream.volume)
 
-    bid = _safe_float(ticker.bid) if ticker.bid not in (None, -1) else None
-    ask = _safe_float(ticker.ask) if ticker.ask not in (None, -1) else None
-    last = _safe_float(ticker.last) if ticker.last not in (None, -1) else None
-    bid_size = _safe_int(ticker.bidSize)
-    ask_size = _safe_int(ticker.askSize)
+    bid = _safe_float(stream.bid) if stream.bid not in (None, -1) else None
+    ask = _safe_float(stream.ask) if stream.ask not in (None, -1) else None
+    last = _safe_float(stream.last) if stream.last not in (None, -1) else None
+    bid_size = _safe_int(stream.bid_size)
+    ask_size = _safe_int(stream.ask_size)
 
     return OptionData(
         strike=contract.strike,
@@ -387,30 +381,24 @@ def _ticker_to_option_data(ticker: Ticker) -> Optional[OptionData]:
     )
 
 
-async def get_chain_params(ib: IB, underlying: Contract) -> Tuple[List[str], List[float]]:
+async def get_chain_params(ib, underlying: Contract) -> Tuple[List[str], List[float]]:
     """
     Get available SPXW expirations and strikes.
 
     Returns:
         (expirations, strikes) - sorted lists.
     """
-    chains = await ib.reqSecDefOptParamsAsync(
+    chains = await ib.req_sec_def_opt_params(
         underlying.symbol, '', underlying.secType, underlying.conId
     )
 
     # Filter for SPXW (0DTE capable) on SMART exchange
-    spxw_chain = None
-    for chain in chains:
-        if chain.tradingClass == 'SPXW' and chain.exchange == 'SMART':
-            spxw_chain = chain
-            break
+    spxw_chain = next((ch for ch in chains
+                       if ch.tradingClass == 'SPXW' and ch.exchange == 'SMART'), None)
 
     if spxw_chain is None:
         # Fallback: try any SPXW chain
-        for chain in chains:
-            if chain.tradingClass == 'SPXW':
-                spxw_chain = chain
-                break
+        spxw_chain = next((ch for ch in chains if ch.tradingClass == 'SPXW'), None)
 
     if spxw_chain is None:
         logger.error("No SPXW chain found!")
@@ -427,28 +415,23 @@ async def get_chain_params(ib: IB, underlying: Contract) -> Tuple[List[str], Lis
     return expirations, strikes
 
 
-async def get_monthly_chain_params(ib: IB, underlying: Contract) -> Tuple[List[str], List[float]]:
+async def get_monthly_chain_params(ib, underlying: Contract) -> Tuple[List[str], List[float]]:
     """
     Get available SPX monthly expirations and strikes.
 
     Returns:
         (expirations, strikes) - sorted lists for tradingClass='SPX'.
     """
-    chains = await ib.reqSecDefOptParamsAsync(
+    chains = await ib.req_sec_def_opt_params(
         underlying.symbol, '', underlying.secType, underlying.conId
     )
 
-    spx_chain = None
-    for chain in chains:
-        if chain.tradingClass == 'SPX' and chain.exchange == 'SMART':
-            spx_chain = chain
-            break
+    # Filter for SPX (monthly) on SMART exchange
+    spx_chain = next((ch for ch in chains
+                      if ch.tradingClass == 'SPX' and ch.exchange == 'SMART'), None)
 
     if spx_chain is None:
-        for chain in chains:
-            if chain.tradingClass == 'SPX':
-                spx_chain = chain
-                break
+        spx_chain = next((ch for ch in chains if ch.tradingClass == 'SPX'), None)
 
     if spx_chain is None:
         logger.error("No SPX monthly chain found!")

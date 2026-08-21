@@ -26,13 +26,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from ib_insync import IB
+from ib_client import IBClient
 
 import config
 from app_state import AppState
 from ib_connection import (
     connect_ib, setup_spx_subscription, setup_chain_info,
-    make_pending_tickers_handler, setup_es_subscription, fetch_es_baseline,
+    setup_es_subscription, fetch_es_baseline,
     setup_monthly_chain_info,
 )
 from account_manager import (
@@ -43,7 +43,7 @@ from price_bars import fetch_historical_bars, price_push_loop
 from chain_manager import chain_fetch_loop, chain_stream_loop
 from ws_handler import (
     broadcast, make_broadcast_fn, make_ib_error_handler, status_push_loop,
-    ib_keepalive_loop, websocket_endpoint as ws_endpoint,
+    websocket_endpoint as ws_endpoint,
 )
 from market_hours import is_within_rth, market_status, get_expiration_display
 from risk_free import get_risk_free_rate
@@ -61,7 +61,7 @@ logger = logging.getLogger("server")
 # ---------------------------------------------------------------------------
 # Module-level wiring (created in lifespan, used by routes)
 # ---------------------------------------------------------------------------
-ib: Optional[IB] = None
+ib: Optional[IBClient] = None
 state = AppState()
 broadcast_fn = None  # set in lifespan
 
@@ -77,11 +77,12 @@ async def lifespan(_app):
 
     loop = asyncio.get_event_loop()
     nest_asyncio.apply(loop)
-    ib = IB()
+    ib = IBClient()
     broadcast_fn = make_broadcast_fn(state)
 
     try:
         await connect_ib(ib, state)
+        ib.error_handler = make_ib_error_handler(state, broadcast_fn)
         await setup_spx_subscription(ib, state)
         await setup_chain_info(ib, state)
         await setup_monthly_chain_info(ib, state)
@@ -105,15 +106,10 @@ async def lifespan(_app):
                 f"ES baseline={state.es_at_spx_close:.2f}"
             )
 
-        # Register ticker update callback
-        ib.pendingTickersEvent += make_pending_tickers_handler(state)
-        ib.errorEvent += make_ib_error_handler(state, broadcast_fn)
-
         # Account subscription
         await setup_account_subscription(ib, state)
 
         # Start background loops
-        state.background_tasks.append(asyncio.create_task(ib_keepalive_loop(ib)))
         state.background_tasks.append(asyncio.create_task(price_push_loop(ib, state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(status_push_loop(state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(account_push_loop(ib, state, broadcast_fn)))
@@ -149,7 +145,7 @@ async def lifespan(_app):
     logger.info("Shutting down...")
     for task in state.background_tasks:
         task.cancel()
-    if ib.isConnected():
+    if getattr(ib, "connected", False):
         ib.disconnect()
         logger.info("Disconnected from IB")
 
@@ -191,6 +187,7 @@ async def get_state():
 @app.post("/api/reconnect_ib")
 async def reconnect_ib(payload: dict):
     """Reconnect to the IB API using a specified port number."""
+    global ib
     if payload is None:
         raise HTTPException(status_code=400, detail="Request JSON body required")
     port = payload.get("port")
@@ -208,27 +205,51 @@ async def reconnect_ib(payload: dict):
     if state.chain_fetch_active is not None:
         state.chain_fetch_active.clear()
 
-    for key, contract in list(state.chain_stream_contracts.items()):
-        try:
-            ib.cancelMktData(contract)
-        except Exception:
-            pass
+    # Stop the old background loops up front. If the reconnect fails below, we
+    # must not leave them running against the (soon to be disconnected) old
+    # client — cancel and clear them now so a failure is atomic: no loops, but
+    # a consistent fresh client, and a retry recovers cleanly.
+    for task in state.background_tasks:
+        task.cancel()
+    await asyncio.gather(*state.background_tasks, return_exceptions=True)
+    state.background_tasks.clear()
+
+    # Tear down every active market-data stream on the old client (the native
+    # bridge tracks subscriptions by reqId, not per-contract).
+    try:
+        ib.unsubscribe_all()
+    except Exception:
+        pass
     state.chain_stream_tickers.clear()
     state.chain_stream_contracts.clear()
     state.chain_stream_unknown_keys.clear()
 
+    # Disconnect the old client, then swap in a fresh IBClient — the native
+    # bridge does not support re-connecting a disconnected instance.
     try:
-        if ib.isConnected():
-            ib.disconnect()
-            logger.info("Disconnected IB before reconnecting")
+        ib.disconnect()
+        logger.info("Disconnected IB before reconnecting")
     except Exception as e:
         logger.warning(f"Error disconnecting IB before reconnect: {e}")
+    ib = IBClient()
 
     try:
         await connect_ib(ib, state, port=port)
+        ib.error_handler = make_ib_error_handler(state, broadcast_fn)
         await setup_spx_subscription(ib, state)
         await setup_chain_info(ib, state)
         await setup_monthly_chain_info(ib, state)
+        # The fresh IBClient has no account/ES subscriptions (unlike the
+        # pre-migration in-place reconnect), so re-subscribe them here.
+        await setup_account_subscription(ib, state)
+        await setup_es_subscription(ib, state)
+        # Restart the background loops against the new client (the originals
+        # were cancelled up front so a failed reconnect leaves no loops running).
+        state.background_tasks.append(asyncio.create_task(price_push_loop(ib, state, broadcast_fn)))
+        state.background_tasks.append(asyncio.create_task(status_push_loop(state, broadcast_fn)))
+        state.background_tasks.append(asyncio.create_task(account_push_loop(ib, state, broadcast_fn)))
+        state.background_tasks.append(asyncio.create_task(chain_fetch_loop(ib, state, broadcast_fn)))
+        state.background_tasks.append(asyncio.create_task(chain_stream_loop(ib, state, broadcast_fn)))
         state.manual_refresh_requested = True
         if state.force_chain_fetch_event is not None:
             state.force_chain_fetch_event.set()

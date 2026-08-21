@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from ib_client import OrderHandle
 from ws_handler import make_ib_error_handler
 
 
@@ -51,7 +52,7 @@ async def test_ib_error_handler_broadcasts_actionable_error_with_trade_contract(
             SimpleNamespace(conId=2, ratio=1, action="SELL", exchange="SMART"),
         ],
     )
-    trade = SimpleNamespace(contract=bag_contract)
+    trade = OrderHandle(123, bag_contract, None)
     state = SimpleNamespace(active_trades={123: trade})
     handler = make_ib_error_handler(state, broadcast_fn)
 
