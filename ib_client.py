@@ -149,6 +149,8 @@ class OrderHandle:
         self.ack_event = asyncio.Event()
         self.fill_event = asyncio.Event()
         self.terminal_event = asyncio.Event()
+        self.status_event = asyncio.Event()      # fires on every status change
+        self.activated_event = asyncio.Event()   # fires on PreSubmitted -> non-PreSubmitted
 
     async def ack(self, timeout=5.0):
         await asyncio.wait_for(self.ack_event.wait(), timeout)
@@ -227,6 +229,8 @@ class IBClient(EWrapper, EClient):
         logger.warning("IB error reqId=%s code=%s: %s", reqId, errorCode, errorString)
         if self._snapshot_pending is not None:
             self._snapshot_pending.discard(reqId)   # don't let a dead stream hold a batch
+            if not self._snapshot_pending and self._loop is not None and self._snapshot_done is not None:
+                self._loop.call_soon_threadsafe(self._snapshot_done.set)
         # Resolve any pending one-shot request so awaiting callers don't hang:
         # IB rejects some requests (e.g. error 200 contract-not-found, 321 invalid
         # contract id) with an error but no matching ...End callback, which would
@@ -244,14 +248,27 @@ class IBClient(EWrapper, EClient):
 
     # -- order placement / lifecycle ----------------------------------------
 
-    def place_order(self, contract, order):
-        if self._next_order_id is None:
-            raise RuntimeError("Order ID unavailable (not connected / no nextValidId)")
-        order_id = self._next_order_id
-        self._next_order_id += 1
+    def place_order(self, contract, order, order_id=None):
+        """Submit a new order, or modify an existing one when ``order_id`` is given.
+
+        Native ibapi treats ``placeOrder`` with a fresh orderId as a NEW order;
+        a modify must reuse the SAME orderId. Pass the original ``order_id`` to
+        reprice/re-transmit an existing order (single live order), or omit it to
+        allocate the next order id.
+        """
+        if order_id is None:
+            if self._next_order_id is None:
+                raise RuntimeError("Order ID unavailable (not connected / no nextValidId)")
+            order_id = self._next_order_id
+            self._next_order_id += 1
         order.orderId = order_id
-        handle = OrderHandle(order_id, contract, order)
-        self._orders[order_id] = handle
+        handle = self._orders.get(order_id)
+        if handle is None:
+            handle = OrderHandle(order_id, contract, order)
+            self._orders[order_id] = handle
+        else:
+            handle.contract = contract
+            handle.order = order
         EClient.placeOrder(self, order_id, contract, order)
         return handle
 
@@ -281,6 +298,7 @@ class IBClient(EWrapper, EClient):
         handle = self._orders.get(orderId)
         if handle is None:
             return
+        prev_status = handle.status
         handle.status = status
         handle.filled = float(filled)
         handle.remaining = float(remaining)
@@ -289,6 +307,9 @@ class IBClient(EWrapper, EClient):
         handle.perm_id = permId
         handle.parent_id = parentId
         if self._loop is not None:
+            self._loop.call_soon_threadsafe(handle.status_event.set)
+            if prev_status == "PreSubmitted" and status != "PreSubmitted":
+                self._loop.call_soon_threadsafe(handle.activated_event.set)
             if status not in _PENDING_STATUSES:
                 self._loop.call_soon_threadsafe(handle.ack_event.set)
             if status == "Filled" and float(remaining) <= 0:
@@ -319,7 +340,12 @@ class IBClient(EWrapper, EClient):
     def _mark_dirty(self):
         self.account_dirty = True
         if self.on_account_dirty is not None:
-            self.on_account_dirty()
+            # Account callbacks fire on the socket thread; route the callback onto
+            # the asyncio loop so the handler never runs on the socket thread.
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(self.on_account_dirty)
+            else:
+                self.on_account_dirty()
 
     # -- EWrapper: account ----------------------------------------------------
 
@@ -366,31 +392,38 @@ class IBClient(EWrapper, EClient):
         if req is not None and not req.future.done():
             self._loop.call_soon_threadsafe(req.future.set_result, list(req.items))
 
-    async def req_contract_details(self, contract):
+    async def req_contract_details(self, contract, timeout=30.0):
         req_id, req = self._start_request()
         EClient.reqContractDetails(self, req_id, contract)
         try:
-            return await req.future
+            return await asyncio.wait_for(req.future, timeout=timeout)
+        except asyncio.TimeoutError:
+            return []
         finally:
             self._requests.pop(req_id, None)
 
-    async def req_sec_def_opt_params(self, symbol, fut_fop_exchange, sec_type, con_id):
+    async def req_sec_def_opt_params(self, symbol, fut_fop_exchange, sec_type, con_id,
+                                     timeout=30.0):
         req_id, req = self._start_request()
         EClient.reqSecDefOptParams(self, req_id, symbol, fut_fop_exchange, sec_type, con_id)
         try:
-            return await req.future
+            return await asyncio.wait_for(req.future, timeout=timeout)
+        except asyncio.TimeoutError:
+            return []
         finally:
             self._requests.pop(req_id, None)
 
     async def req_historical_bars(self, contract, end_date_time="", duration="1 D",
                                   bar_size="1 min", what_to_show="TRADES",
-                                  use_rth=True, format_date=2):
+                                  use_rth=True, format_date=2, timeout=30.0):
         req_id, req = self._start_request()
         EClient.reqHistoricalData(
             self, req_id, contract, end_date_time, duration, bar_size,
             what_to_show, use_rth, format_date, False, [])
         try:
-            bars = await req.future
+            bars = await asyncio.wait_for(req.future, timeout=timeout)
+        except asyncio.TimeoutError:
+            return []
         finally:
             self._requests.pop(req_id, None)
         return [_coerce_bar(b) for b in bars]
@@ -486,11 +519,15 @@ class IBClient(EWrapper, EClient):
 
     # -- market data subscription -------------------------------------------
 
-    def subscribe_tick(self, contract, generic=""):
+    def _register_stream(self, contract):
         req_id = next(self._req_id)
         stream = TickStream(req_id, contract)
         self._streams[req_id] = stream
-        EClient.reqMktData(self, req_id, contract, generic, False, False, [])
+        return stream
+
+    def subscribe_tick(self, contract, generic=""):
+        stream = self._register_stream(contract)
+        EClient.reqMktData(self, stream.req_id, contract, generic, False, False, [])
         return stream
 
     def unsubscribe_tick(self, req_id):
@@ -500,6 +537,16 @@ class IBClient(EWrapper, EClient):
         except Exception:
             pass
 
+    def unsubscribe_all(self):
+        """Unsubscribe every active market-data stream.
+
+        The native bridge tracks subscriptions by reqId; callers tearing down a
+        client (e.g. reconnect) should use this instead of reaching into
+        ``_streams`` directly.
+        """
+        for req_id in list(self._streams.keys()):
+            self.unsubscribe_tick(req_id)
+
     # -- snapshot completion state ------------------------------------------
 
     def _on_stream_tick(self, stream):
@@ -508,14 +555,23 @@ class IBClient(EWrapper, EClient):
             if not self._snapshot_pending and self._loop is not None and self._snapshot_done is not None:
                 self._loop.call_soon_threadsafe(self._snapshot_done.set)
 
-    async def fetch_snapshot(self, contracts, generic="101", timeout=5.0):
-        streams = [self.subscribe_tick(c, generic) for c in contracts]
-        self._snapshot_pending = {s.req_id for s in streams}
+    async def fetch_snapshot(self, contracts, generic="101", timeout=5.0, grace=0.5):
+        # Register the streams and mark them pending BEFORE issuing reqMktData so a
+        # fast first tick can't land in the gap between subscribe and pending-set.
         self._snapshot_done = asyncio.Event()
+        streams = [self._register_stream(c) for c in contracts]
+        self._snapshot_pending = {s.req_id for s in streams}
+        for s in streams:
+            EClient.reqMktData(self, s.req_id, s.contract, generic, False, False, [])
         try:
             await asyncio.wait_for(self._snapshot_done.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             pass
+        # Grace window: the batch completes on first-tick per stream, which is
+        # often a bid/ask arriving before OI (tick 27/28) or greeks (10-13). Let
+        # that initial burst land before cancelling so snapshots keep OI/greeks.
+        if grace > 0:
+            await asyncio.sleep(grace)
         for s in streams:
             self.unsubscribe_tick(s.req_id)
         self._snapshot_pending = None
