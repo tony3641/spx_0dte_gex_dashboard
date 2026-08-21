@@ -205,10 +205,22 @@ class MockIBClient:
     # -- Market data ---------------------------------------------------------
 
     def subscribe_tick(self, contract, generic=""):
-        """Subscribe a real TickStream (no ticks seeded)."""
+        """Subscribe a real TickStream.
+
+        Bare quote subscriptions (generic="") seed an immediate quote so the
+        dynamic-liquidation mid-price fetch (order_manager._get_mid_price) has
+        data to read — mirroring the pre-migration mock's reqMktData. Batch /
+        filtered subscriptions (e.g. generic="101") stay tick-free so the mock
+        can also exercise "no quote yet" paths.
+        """
         req_id = self._next_req_id
         self._next_req_id += 1
         stream = TickStream(req_id, contract)
+        if generic == "":
+            stream.bid = 3.40
+            stream.ask = 3.60
+            stream.last = 3.50
+            stream._mark(True)
         self._streams[req_id] = stream
         self.call_log.append({"method": "subscribe_tick", "reqId": req_id,
                               "symbol": getattr(contract, "symbol", ""), "generic": generic})
