@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
-from ib_insync import Option
+from order_manager import _option_contract
 
 from config import (
     CHAIN_STREAM_MAX_LINES, CHAIN_STREAM_UPDATE_INTERVAL,
@@ -26,6 +26,21 @@ from gex_calculator import compute_gex, gex_result_to_dict, GEXResult, OptionDat
 from price_bars import compute_annual_vol, fetch_historical_bars
 
 logger = logging.getLogger(__name__)
+
+
+def _cancel_stream_subs(ib, state):
+    """Unsubscribe every active chain stream and clear subscription state.
+
+    Uses the TickStream's own req_id (the native bridge's unsubscribe key)
+    rather than the raw contract, mirroring the old `cancelMktData` teardown.
+    """
+    for key, stream in list(state.chain_stream_tickers.items()):
+        try:
+            ib.unsubscribe_tick(stream.req_id)
+        except Exception:
+            pass
+    state.chain_stream_tickers.clear()
+    state.chain_stream_contracts.clear()
 
 
 def _safe_stream_float(val):
@@ -49,17 +64,17 @@ def _normalize_stream_iv(iv_val):
     return iv
 
 
-def _extract_stream_greeks(ticker):
+def _extract_stream_greeks(stream):
     """Pick greek fields from model/last/bid/ask greeks with sane fallbacks."""
     gamma = None
     delta = None
     iv_dec = None
 
     for greeks in (
-        getattr(ticker, 'modelGreeks', None),
-        getattr(ticker, 'lastGreeks', None),
-        getattr(ticker, 'bidGreeks', None),
-        getattr(ticker, 'askGreeks', None),
+        getattr(stream, 'model_greeks', None),
+        getattr(stream, 'last_greeks', None),
+        getattr(stream, 'bid_greeks', None),
+        getattr(stream, 'ask_greeks', None),
     ):
         if greeks is None:
             continue
@@ -69,13 +84,13 @@ def _extract_stream_greeks(ticker):
         if gamma is None:
             gamma = _safe_stream_float(getattr(greeks, 'gamma', None))
         if iv_dec is None:
-            iv_dec = _normalize_stream_iv(getattr(greeks, 'impliedVol', None))
+            iv_dec = _normalize_stream_iv(getattr(greeks, 'implied_vol', None))
 
         if delta is not None and gamma is not None and iv_dec is not None:
             break
 
     if iv_dec is None:
-        iv_dec = _normalize_stream_iv(getattr(ticker, 'impliedVolatility', None))
+        iv_dec = _normalize_stream_iv(getattr(stream, 'implied_volatility', None))
 
     return delta, gamma, iv_dec
 
@@ -209,13 +224,7 @@ async def chain_fetch_loop(ib, state, broadcast_fn):
             # Pause live chain streaming to free market data lines
             if state.chain_fetch_active is not None:
                 state.chain_fetch_active.clear()
-                for key, contract in list(state.chain_stream_contracts.items()):
-                    try:
-                        ib.cancelMktData(contract)
-                    except Exception:
-                        pass
-                state.chain_stream_tickers.clear()
-                state.chain_stream_contracts.clear()
+                _cancel_stream_subs(ib, state)
 
             mode_label = "LIVE" if state.data_mode == "live" else "HIST"
             logger.info(
@@ -385,13 +394,7 @@ async def chain_stream_loop(ib, state, broadcast_fn):
 
             if state.expiration != last_expiration:
                 state.chain_stream_unknown_keys.clear()
-                for _, contract in list(state.chain_stream_contracts.items()):
-                    try:
-                        ib.cancelMktData(contract)
-                    except Exception:
-                        pass
-                state.chain_stream_tickers.clear()
-                state.chain_stream_contracts.clear()
+                _cancel_stream_subs(ib, state)
                 last_expiration = state.expiration
                 logger.info(f"Chain stream expiration switched to {state.expiration}; reset subscriptions")
 
@@ -429,24 +432,25 @@ async def chain_stream_loop(ib, state, broadcast_fn):
             desired_keys = {k for k in desired_keys if k not in state.chain_stream_unknown_keys}
 
             for key in current_keys - desired_keys:
-                try:
-                    contract = state.chain_stream_contracts.pop(key, None)
-                    if contract:
-                        ib.cancelMktData(contract)
-                except Exception:
-                    pass
-                state.chain_stream_tickers.pop(key, None)
+                stream = state.chain_stream_tickers.pop(key, None)
+                state.chain_stream_contracts.pop(key, None)
+                if stream is not None:
+                    try:
+                        ib.unsubscribe_tick(stream.req_id)
+                    except Exception:
+                        pass
 
             new_keys = desired_keys - current_keys
             if new_keys:
                 new_contracts = []
                 for (strike, right) in new_keys:
-                    c = Option(
+                    c = _option_contract(
                         symbol='SPX',
-                        lastTradeDateOrContractMonth=state.expiration,
-                        strike=strike, right=right,
-                        exchange='SMART', multiplier='100',
-                        currency='USD', tradingClass='SPXW',
+                        expiry=state.expiration,
+                        strike=strike,
+                        right=right,
+                        exchange='SMART',
+                        trading_class='SPXW',
                     )
                     new_contracts.append(((strike, right), c))
 
@@ -455,24 +459,21 @@ async def chain_stream_loop(ib, state, broadcast_fn):
                     for i in range(0, len(new_contracts), batch_size):
                         batch = new_contracts[i:i + batch_size]
                         raw = [c for _, c in batch]
-                        result = ib.qualifyContracts(*raw)
-                        qualified_by_key = {}
-                        for qc in result:
-                            if qc is not None and getattr(qc, 'conId', 0) > 0:
-                                qualified_by_key[_norm_key(qc.strike, qc.right)] = qc
-
-                        for (key, _) in batch:
-                            qc = qualified_by_key.get(key)
+                        results = await asyncio.gather(*(ib.req_contract_details(c) for c in raw))
+                        qualified_count = 0
+                        for (key, _), res in zip(batch, results):
+                            qc = res[0].contract if res and res[0].contract.conId > 0 else None
                             if qc is None:
                                 state.chain_stream_unknown_keys.add(key)
                                 continue
-                            ticker = ib.reqMktData(qc, genericTickList='101', snapshot=False)
-                            state.chain_stream_tickers[key] = ticker
+                            stream = ib.subscribe_tick(qc, "101")
+                            state.chain_stream_tickers[key] = stream
                             state.chain_stream_contracts[key] = qc
+                            qualified_count += 1
 
-                        if qualified_by_key:
+                        if qualified_count:
                             logger.info(
-                                f"Chain stream subscribed {len(qualified_by_key)}/{len(batch)} in batch; "
+                                f"Chain stream subscribed {qualified_count}/{len(batch)} in batch; "
                                 f"active_subs={len(state.chain_stream_tickers)}"
                             )
                         await asyncio.sleep(0.05)
@@ -494,23 +495,23 @@ async def chain_stream_loop(ib, state, broadcast_fn):
                 (o.strike, o.right): o.open_interest
                 for o in state.chain_data
             }
-            for (strike, right), ticker in state.chain_stream_tickers.items():
-                bid = _finite_or_none(ticker.bid)
-                ask = _finite_or_none(ticker.ask)
-                last_val = _finite_or_none(ticker.last)
-                bid_sz = int(ticker.bidSize) if ticker.bidSize not in (None, -1) and not (isinstance(ticker.bidSize, float) and math.isnan(ticker.bidSize)) else 0
-                ask_sz = int(ticker.askSize) if ticker.askSize not in (None, -1) and not (isinstance(ticker.askSize, float) and math.isnan(ticker.askSize)) else 0
-                vol = int(ticker.volume) if ticker.volume not in (None, -1) and not (isinstance(ticker.volume, float) and math.isnan(ticker.volume)) else 0
+            for (strike, right), stream in state.chain_stream_tickers.items():
+                bid = _finite_or_none(stream.bid)
+                ask = _finite_or_none(stream.ask)
+                last_val = _finite_or_none(stream.last)
+                bid_sz = int(stream.bid_size) if stream.bid_size not in (None, -1) and not (isinstance(stream.bid_size, float) and math.isnan(stream.bid_size)) else 0
+                ask_sz = int(stream.ask_size) if stream.ask_size not in (None, -1) and not (isinstance(stream.ask_size, float) and math.isnan(stream.ask_size)) else 0
+                vol = int(stream.volume) if stream.volume not in (None, -1) and not (isinstance(stream.volume, float) and math.isnan(stream.volume)) else 0
 
-                delta_raw, gamma_raw, iv_dec = _extract_stream_greeks(ticker)
+                delta_raw, gamma_raw, iv_dec = _extract_stream_greeks(stream)
                 delta = round(delta_raw, 4) if delta_raw is not None else None
                 gamma = round(gamma_raw, 6) if gamma_raw is not None else None
                 iv = round(iv_dec * 100, 2) if iv_dec is not None else None
 
                 if right == 'C':
-                    oi_raw = ticker.callOpenInterest
+                    oi_raw = stream.call_oi
                 else:
-                    oi_raw = ticker.putOpenInterest
+                    oi_raw = stream.put_oi
                 oi = int(oi_raw) if oi_raw not in (None, -1) and not (isinstance(oi_raw, float) and math.isnan(oi_raw)) else oi_fallback.get((strike, right), 0)
 
                 ticks.append({
@@ -568,13 +569,7 @@ async def chain_stream_loop(ib, state, broadcast_fn):
                 await broadcast_fn({"type": "chain_quotes", "data": live_quotes})
 
         except asyncio.CancelledError:
-            for key, contract in state.chain_stream_contracts.items():
-                try:
-                    ib.cancelMktData(contract)
-                except Exception:
-                    pass
-            state.chain_stream_tickers.clear()
-            state.chain_stream_contracts.clear()
+            _cancel_stream_subs(ib, state)
             break
         except Exception as e:
             logger.error(f"Chain stream error: {e}")
