@@ -149,3 +149,44 @@ async def test_tick_option_computation_populates_model_greeks():
     # -1.0 sentinel from IB → None (not the raw -1.0, not stale 0.18)
     assert stream.model_greeks.implied_vol is None
     assert stream.model_greeks.implied_vol != -1.0
+
+
+# Task 6: subscribe/unsubscribe + fetch_snapshot (first-tick completion)
+from unittest import mock
+from ibapi.contract import Contract
+
+
+@pytest.mark.asyncio
+async def test_fetch_snapshot_returns_on_first_ticks(monkeypatch):
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(EClient, "reqMktData", lambda self, *a, **k: None)
+    monkeypatch.setattr(EClient, "cancelMktData", lambda self, *a, **k: None)
+
+    contracts = []
+    for i in range(3):
+        c = Contract(); c.symbol = "SPX"; c.secType = "OPT"; c.strike = float(i)
+        contracts.append(c)
+
+    task = asyncio.create_task(client.fetch_snapshot(contracts, timeout=5.0))
+    await asyncio.sleep(0.01)
+    # simulate socket thread delivering one tick per contract
+    for req_id, stream in list(client._streams.items()):
+        client.tickPrice(req_id, 1, 3.50, None)
+    streams = await asyncio.wait_for(task, timeout=1)
+    assert len(streams) == 3
+    assert all(s.bid == 3.50 for s in streams)
+    assert len(client._streams) == 0      # cancelled
+
+
+@pytest.mark.asyncio
+async def test_fetch_snapshot_falls_back_to_timeout(monkeypatch):
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(EClient, "reqMktData", lambda self, *a, **k: None)
+    monkeypatch.setattr(EClient, "cancelMktData", lambda self, *a, **k: None)
+    c = Contract(); c.symbol = "SPX"; c.secType = "OPT"
+    streams = await client.fetch_snapshot([c], timeout=0.05)   # no ticks arrive
+    assert len(streams) == 1
+    assert not streams[0].received_any_tick()
+    assert len(client._streams) == 0

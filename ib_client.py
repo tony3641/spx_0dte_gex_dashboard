@@ -138,6 +138,8 @@ class IBClient(EWrapper, EClient):
         self._account_code: Optional[str] = None
         self._requests: Dict[int, _Request] = {}
         self._streams: Dict[int, "TickStream"] = {}
+        self._snapshot_pending: Optional[set] = None
+        self._snapshot_done: Optional[asyncio.Event] = None
         self._orders: Dict[int, "OrderHandle"] = {}
         self._thread: Optional[threading.Thread] = None
         self._connected_evt: Optional[asyncio.Event] = None
@@ -305,6 +307,40 @@ class IBClient(EWrapper, EClient):
         stream._mark(has_quote=False)
         self._on_stream_tick(stream)
 
+    # -- market data subscription -------------------------------------------
+
+    def subscribe_tick(self, contract, generic=""):
+        req_id = next(self._req_id)
+        stream = TickStream(req_id, contract)
+        self._streams[req_id] = stream
+        EClient.reqMktData(self, req_id, contract, generic, False, False, [])
+        return stream
+
+    def unsubscribe_tick(self, req_id):
+        self._streams.pop(req_id, None)
+        try:
+            EClient.cancelMktData(self, req_id)
+        except Exception:
+            pass
+
+    # -- snapshot completion state ------------------------------------------
+
     def _on_stream_tick(self, stream):
-        """Hook for fetch_snapshot completion (implemented in Task 6)."""
-        pass
+        if self._snapshot_pending is not None:
+            self._snapshot_pending.discard(stream.req_id)
+            if not self._snapshot_pending and self._loop is not None and self._snapshot_done is not None:
+                self._loop.call_soon_threadsafe(self._snapshot_done.set)
+
+    async def fetch_snapshot(self, contracts, generic="101", timeout=5.0):
+        streams = [self.subscribe_tick(c, generic) for c in contracts]
+        self._snapshot_pending = {s.req_id for s in streams}
+        self._snapshot_done = asyncio.Event()
+        try:
+            await asyncio.wait_for(self._snapshot_done.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+        for s in streams:
+            self.unsubscribe_tick(s.req_id)
+        self._snapshot_pending = None
+        self._snapshot_done = None
+        return streams
