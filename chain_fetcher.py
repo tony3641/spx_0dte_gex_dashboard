@@ -5,7 +5,8 @@ Fetches the full SPXW 0DTE option chain using snapshot requests in batches
 to stay within IB's 100 simultaneous market-data-line limit.
 
 Consumes the native bridge surface (ib_client.py): ``req_sec_def_opt_params``,
-``req_contract_details``, and ``fetch_snapshot`` -> ``TickStream``. No ib_insync.
+``req_contract_details``, and ``fetch_snapshot`` -> ``TickStream``. Native only —
+no legacy broker wrapper.
 """
 
 import asyncio

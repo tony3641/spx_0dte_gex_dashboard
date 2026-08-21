@@ -5,7 +5,7 @@ Functions accept `ib` (IB client) and `state` (AppState) explicitly
 so they can be tested without globals.
 
 Consumes the native bridge surface from ib_client.py (IBClient, TickStream).
-No ib_insync.
+Native only — no legacy broker wrapper.
 """
 
 import logging
@@ -114,7 +114,8 @@ async def update_spx_es_prices(state):
             spx.ask if spx.ask and spx.ask > 0 else spx.last
         if price is None or price <= 0:
             # Index feeds (esp. paper) can stream close-only with no BBO — fall
-            # back to the last close tick (mirrors ib_insync Ticker.marketPrice).
+            # back to the last close tick (mirrors the legacy Ticker.marketPrice
+            # behaviour).
             price = spx.close
         if price is not None and price > 0:
             if is_within_rth():

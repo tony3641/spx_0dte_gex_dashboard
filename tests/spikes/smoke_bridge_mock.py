@@ -136,9 +136,8 @@ async def main():
     check("fetch_es_baseline: no bars leaves baseline 0 (bootstrap)", es_state2.es_at_spx_close == 0.0)
 
     # -- setup_chain_info / setup_monthly_chain_info -------------------------
-    # chain_fetcher is still on the ib_insync surface until Task 12, so these
-    # two entry points can't run against MockIBClient yet. The function bodies
-    # are unchanged from the original (per the brief); verified by inspection.
+    # These two entry points aren't exercised against MockIBClient here
+    # (chain_fetcher drives them through the native surface; see test_chain_fetcher).
     print("  SKIP  setup_chain_info / setup_monthly_chain_info"
           " (chain_fetcher ported in Task 12)")
 
