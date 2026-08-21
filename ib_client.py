@@ -123,6 +123,41 @@ class TickStream:
             self._has_quote = True
 
 
+_TERMINAL_STATUSES = {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
+_PENDING_STATUSES = {"", "PendingSubmit", "ApiPending"}
+
+
+class OrderHandle:
+    """Tracks one order's lifecycle. Events fire on the asyncio loop thread;
+    the socket thread only touches plain attributes + set()s events."""
+    def __init__(self, order_id, contract, order):
+        self.order_id = order_id
+        self.contract = contract
+        self.order = order
+        self.status = ""
+        self.filled = 0.0
+        self.remaining = 0.0
+        self.avg_fill_price = None
+        self.last_fill_price = None
+        self.perm_id = None
+        self.parent_id = None
+        self.ack_event = asyncio.Event()
+        self.fill_event = asyncio.Event()
+        self.terminal_event = asyncio.Event()
+
+    async def ack(self, timeout=5.0):
+        await asyncio.wait_for(self.ack_event.wait(), timeout)
+
+    async def wait_fill(self, timeout=30.0):
+        await asyncio.wait_for(self.fill_event.wait(), timeout)
+
+    async def wait_terminal(self, timeout=30.0):
+        await asyncio.wait_for(self.terminal_event.wait(), timeout)
+
+    def is_terminal(self):
+        return self.status in _TERMINAL_STATUSES
+
+
 class IBClient(EWrapper, EClient):
     def __init__(self):
         EClient.__init__(self, self)
@@ -175,6 +210,60 @@ class IBClient(EWrapper, EClient):
 
     def managedAccounts(self, accountsList):
         self._account_code = (accountsList or "").split(",")[0] or None
+
+    # -- order placement / lifecycle ----------------------------------------
+
+    def place_order(self, contract, order):
+        if self._next_order_id is None:
+            raise RuntimeError("Order ID unavailable (not connected / no nextValidId)")
+        order_id = self._next_order_id
+        self._next_order_id += 1
+        order.orderId = order_id
+        handle = OrderHandle(order_id, contract, order)
+        self._orders[order_id] = handle
+        EClient.placeOrder(self, order_id, contract, order)
+        return handle
+
+    def cancel_order(self, order_id):
+        from ibapi.order_cancel import OrderCancel
+        try:
+            EClient.cancelOrder(self, order_id, OrderCancel())
+        except Exception:
+            pass
+
+    def req_open_orders(self):
+        EClient.reqOpenOrders(self)
+
+    # -- EWrapper: order status ----------------------------------------------
+
+    def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId,
+                    parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):
+        handle = self._orders.get(orderId)
+        if handle is None:
+            return
+        handle.status = status
+        handle.filled = float(filled)
+        handle.remaining = float(remaining)
+        handle.avg_fill_price = _finite_or_none(avgFillPrice)
+        handle.last_fill_price = _finite_or_none(lastFillPrice)
+        handle.perm_id = permId
+        handle.parent_id = parentId
+        if self._loop is not None:
+            if status not in _PENDING_STATUSES:
+                self._loop.call_soon_threadsafe(handle.ack_event.set)
+            if status == "Filled" and float(remaining) <= 0:
+                self._loop.call_soon_threadsafe(handle.fill_event.set)
+            if status in _TERMINAL_STATUSES:
+                self._loop.call_soon_threadsafe(handle.terminal_event.set)
+
+    def openOrder(self, orderId, contract, order, orderState):
+        handle = self._orders.get(orderId)
+        if handle is None:
+            handle = OrderHandle(orderId, contract, order)
+            self._orders[orderId] = handle
+        handle.contract = contract
+        handle.order = order
+        handle.status = orderState.status
 
     # -- one-shot request plumbing ------------------------------------------
 

@@ -190,3 +190,43 @@ async def test_fetch_snapshot_falls_back_to_timeout(monkeypatch):
     assert len(streams) == 1
     assert not streams[0].received_any_tick()
     assert len(client._streams) == 0
+
+
+# Task 7: OrderHandle + place/cancel/open-orders
+from ibapi.order import Order
+from ibapi.order_state import OrderState
+
+
+@pytest.mark.asyncio
+async def test_place_order_ack_and_fill_events(monkeypatch):
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    client._next_order_id = 100
+    monkeypatch.setattr(EClient, "placeOrder", lambda self, *a, **k: None)
+
+    c = Contract(); c.symbol = "SPX"; c.secType = "OPT"
+    o = Order(); o.action = "BUY"; o.totalQuantity = 1; o.orderType = "LMT"; o.lmtPrice = 3.50
+    handle = client.place_order(c, o)
+
+    ack_task = asyncio.create_task(handle.ack(timeout=1))
+    await asyncio.sleep(0.01)
+    client.orderStatus(100, "PendingSubmit", 0, 1, 0.0, 1, 0, 0.0, 1, "", 0.0)
+    client.orderStatus(100, "Submitted", 0, 1, 0.0, 1, 0, 0.0, 1, "", 0.0)
+    await asyncio.wait_for(ack_task, timeout=1)
+    assert handle.status == "Submitted"
+    assert handle.ack_event.is_set()
+
+    fill_task = asyncio.create_task(handle.wait_fill(timeout=1))
+    client.orderStatus(100, "Filled", 1, 0, 3.50, 1, 0, 3.50, 1, "", 0.0)
+    await asyncio.wait_for(fill_task, timeout=1)
+    assert handle.filled == 1 and handle.avg_fill_price == 3.50
+
+
+@pytest.mark.asyncio
+async def test_cancel_order(monkeypatch):
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    calls = []
+    monkeypatch.setattr(EClient, "cancelOrder", lambda self, oid, oc: calls.append(oid))
+    client.cancel_order(55)
+    assert calls == [55]
