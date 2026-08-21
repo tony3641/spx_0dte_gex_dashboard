@@ -346,6 +346,78 @@ async def test_account_callbacks_populate_state_and_mark_dirty(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Account-value / portfolio upsert (no duplicate positions)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_account_value_upserts_by_tag_currency():
+    """Re-pushed account values replace in place; duplicates never accumulate."""
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    client.updateAccountValue("NetLiquidation", "100000.0", "USD", "DU123")
+    client.updateAccountValue("NetLiquidation", "100500.0", "USD", "DU123")
+    assert len(client.account_values) == 1
+    assert client.account_values[0].value == "100500.0"
+    # Different currency is a distinct key
+    client.updateAccountValue("NetLiquidation", "1.0", "EUR", "DU123")
+    assert len(client.account_values) == 2
+
+
+@pytest.mark.asyncio
+async def test_portfolio_upserts_and_removes_closed():
+    """Same contract re-pushed each account cycle updates in place; position=0
+    (fully closed) removes the entry."""
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+
+    def make_contract(con_id=0):
+        c = Contract()
+        c.symbol = "SPX"; c.secType = "OPT"; c.conId = con_id
+        c.lastTradeDateOrContractMonth = "20260821"; c.strike = 7680.0; c.right = "P"
+        return c
+
+    c = make_contract(con_id=12345)
+    client.updatePortfolio(c, Decimal(1), 4.0, 400.0, 3.5, 0.5, 0.0, "DU123")
+    client.updatePortfolio(c, Decimal(1), 4.2, 420.0, 3.5, 0.7, 0.0, "DU123")
+    assert len(client.portfolio) == 1
+    assert client.portfolio[0].marketPrice == 4.2
+    assert client.portfolio[0].position == 1
+
+    # Fully closed → removed, not kept as a phantom position
+    client.updatePortfolio(c, Decimal(0), 0.0, 0.0, 3.5, 0.0, 0.0, "DU123")
+    assert client.portfolio == []
+
+
+@pytest.mark.asyncio
+async def test_portfolio_separates_distinct_contracts():
+    """Two different contracts on the same account are distinct positions."""
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    a = Contract(); a.symbol = "SPY"; a.secType = "STK"; a.conId = 1
+    b = Contract(); b.symbol = "SPX"; b.secType = "OPT"; b.conId = 2
+    b.lastTradeDateOrContractMonth = "20260821"; b.strike = 7680.0; b.right = "P"
+    client.updatePortfolio(a, Decimal(-100), 700.0, -70000.0, 710.0, -1000.0, 0.0, "DU123")
+    client.updatePortfolio(b, Decimal(1), 4.0, 400.0, 3.5, 0.5, 0.0, "DU123")
+    assert len(client.portfolio) == 2
+    assert {p.contract.symbol for p in client.portfolio} == {"SPY", "SPX"}
+
+
+@pytest.mark.asyncio
+async def test_req_account_updates_clears_on_subscribe(monkeypatch):
+    """(Re)subscribing resets the account lists so reconnects don't double up."""
+    client = IBClient()
+    client._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(EClient, "reqAccountUpdates", lambda self, *a, **k: None)
+    client.updateAccountValue("NetLiquidation", "1", "USD", "DU123")
+    client.req_account_updates(True)
+    assert client.account_values == []
+    # Unsubscribe does not clear
+    client.updateAccountValue("NetLiquidation", "2", "USD", "DU123")
+    client.req_account_updates(False)
+    assert len(client.account_values) == 1
+
+
+# ---------------------------------------------------------------------------
 # place_order modify (same orderId) — CRITICAL fix
 # ---------------------------------------------------------------------------
 

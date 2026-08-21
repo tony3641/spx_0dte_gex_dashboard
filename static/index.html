@@ -202,20 +202,20 @@
             <!-- Order entry row (only visible when strategy has legs) -->
             <div class="order-entry-row" id="orderEntryRow" style="display:none;">
                 <span class="order-entry-label">Limit Price</span>
-                <input type="number" step="0.05" class="order-lmt-input" id="stratLmtPrice" placeholder="0.00" title="Combo limit price (negative for credit spreads)"
+                <input type="number" step="0.05" class="order-lmt-input" id="stratLmtPrice" placeholder="0.00" title="Limit price (positive; Buy/Sell carries the direction)"
                     oninput="this.dataset.autofilled='false'; updatePriceInputStep(this)"
-                    onchange="this.value=_roundSpxPrice(this.value).toFixed(2); updatePriceInputStep(this)">
+                    onchange="this.value=_roundSpxPrice(Math.abs(this.value)).toFixed(2); updatePriceInputStep(this)">
                 <button class="btn-place-order" id="stratPlaceBtn" onclick="placeStrategyOrder()">Place Order</button>
                 <div class="stop-loss-sep"></div>
                 <label class="stop-loss-label" title="Attach a stop-limit bracket order (supported for single-leg and spreads)">
                     <input type="checkbox" id="stopLossEnabled" onchange="toggleStopLossInput()"> Stop Loss
                 </label>
-                <input type="number" step="0.05" class="order-lmt-input" id="stopLossStop" placeholder="Stop" title="Stop trigger price (negative for credit)" disabled
+                <input type="number" step="0.05" class="order-lmt-input" id="stopLossStop" placeholder="Stop" title="Stop trigger price (positive; the close direction follows the position)" disabled
                     oninput="updatePriceInputStep(this)"
-                    onchange="this.value=_roundSpxPrice(this.value).toFixed(2); updatePriceInputStep(this)">
-                <input type="number" step="0.05" class="order-lmt-input" id="stopLossLimit" placeholder="Limit" title="Limit price for stop-limit (negative for credit)" disabled
+                    onchange="this.value=_roundSpxPrice(Math.abs(this.value)).toFixed(2); updatePriceInputStep(this)">
+                <input type="number" step="0.05" class="order-lmt-input" id="stopLossLimit" placeholder="Limit" title="Limit price for stop-limit (positive)" disabled
                     oninput="updatePriceInputStep(this)"
-                    onchange="this.value=_roundSpxPrice(this.value).toFixed(2); updatePriceInputStep(this)">
+                    onchange="this.value=_roundSpxPrice(Math.abs(this.value)).toFixed(2); updatePriceInputStep(this)">
                 <span id="outsideRthBadge" class="outside-rth-badge" style="display:none;">Extended Hours</span>
                 <span class="order-entry-label" id="orderEntryHint" style="color:#475569;font-size:11px;"></span>
             </div>
