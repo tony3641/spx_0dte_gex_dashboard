@@ -189,6 +189,7 @@ class IBClient(EWrapper, EClient):
         self.account_dirty = False
         self.on_account_dirty: Optional[Callable] = None
         self._exec_by_id: Dict[str, ExecutionRecord] = {}
+        self.error_handler: Optional[Callable] = None
 
     # -- connection ---------------------------------------------------------
 
@@ -221,6 +222,17 @@ class IBClient(EWrapper, EClient):
 
     def managedAccounts(self, accountsList):
         self._account_code = (accountsList or "").split(",")[0] or None
+
+    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=""):
+        logger.warning("IB error reqId=%s code=%s: %s", reqId, errorCode, errorString)
+        if self._snapshot_pending is not None:
+            self._snapshot_pending.discard(reqId)   # don't let a dead stream hold a batch
+        handler = self.error_handler
+        if handler is not None and self._loop is not None:
+            handle = self._orders.get(reqId)
+            contract = handle.contract if handle is not None else None
+            self._loop.call_soon_threadsafe(
+                handler, reqId, errorCode, errorString, contract)
 
     # -- order placement / lifecycle ----------------------------------------
 
