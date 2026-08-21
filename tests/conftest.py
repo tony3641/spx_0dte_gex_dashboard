@@ -182,7 +182,7 @@ class MockIBClient:
         return [MockContractDetails(minTick=0.05, contract=mc)]
 
     async def req_sec_def_opt_params(self, symbol, fut_fop_exchange="", sec_type="OPT", con_id=0):
-        """Minimal fake — one SPXW chain (exchange SMART) the tests can rely on."""
+        """Minimal fake — SPXW (exchange SMART) plus an SPX monthly chain."""
         self.call_log.append({"method": "req_sec_def_opt_params", "symbol": symbol,
                               "fut_fop_exchange": fut_fop_exchange, "sec_type": sec_type,
                               "con_id": con_id})
@@ -190,6 +190,10 @@ class MockIBClient:
             exchange="SMART", tradingClass="SPXW", multiplier="100",
             expirations=["20260410", "20260417", "20260619"],
             strikes=[5000.0, 5100.0, 5200.0, 5300.0, 5400.0, 5500.0],
+        ), SecDefOptParams(
+            exchange="SMART", tradingClass="SPX", multiplier="100",
+            expirations=["20260619"],
+            strikes=[5000.0, 5200.0, 5400.0],
         )]
 
     async def req_historical_bars(self, contract, end_date_time="", duration="1 D",
@@ -231,8 +235,22 @@ class MockIBClient:
         self._streams.pop(req_id, None)
 
     async def fetch_snapshot(self, contracts, generic="101", timeout=5.0):
-        """Subscribe a batch, seed no ticks, then cancel it — returns immediately."""
+        """Subscribe a batch, seed a minimal quote + greeks, then cancel it.
+
+        The seed mirrors ``subscribe_tick``'s bare-quote seed (bid/ask/last +
+        model greeks) so ported ``chain_fetcher`` tests have data to convert
+        into ``OptionData``. Unlike ``subscribe_tick`` the streams are not
+        marked tick-received (``received_any_tick()`` stays False) — the mock
+        returns with data already populated.
+        """
         streams = [self.subscribe_tick(c, generic) for c in contracts]
+        for s in streams:
+            s.bid = 3.40
+            s.ask = 3.60
+            s.last = 3.50
+            s.bid_size = 5
+            s.ask_size = 5
+            s.model_greeks.update(0.18, 0.5, 0.02, 0.0, 0.0, 3.50, 0.0)
         self.call_log.append({"method": "fetch_snapshot", "count": len(streams),
                               "generic": generic, "timeout": timeout})
         for s in streams:
