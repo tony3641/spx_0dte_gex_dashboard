@@ -374,3 +374,21 @@ Changed default `std_dev_range` from **8.0 to 5.0** in `chain_fetcher.py`:
 - **Chain loop cadence:** every `CHAIN_REFRESH_SECONDS` (default 60 s); skipped during the CBOE daily maintenance gap (17:00–20:15 ET).
 - **Vol estimate:** `compute_annual_vol()` fetches 30 days of daily bars from IB and computes annualised historical vol; falls back to 20% if unavailable.
 - **Mode labels:** `state.data_mode` = `"live"` | `"historical"` | `"initializing"` — broadcast in every `status` and `gex` WebSocket message.
+
+---
+
+## Native API spike
+
+Task 1 of the native ibapi migration: spike latency probe comparing native `ibapi` vs `ib_insync` against TWS paper (`127.0.0.1:7497`). Throwaway probe lives in `tests/spikes/spike_native_latency.py` (not wired into the app). Run with `python tests/spikes/spike_native_latency.py` (native) or `python tests/spikes/spike_native_latency.py --insync`.
+
+**Method:** The brief's far-OTM SPXW call (strike 100, exp 20260918) is **not listed** — TWS returns error 200 "No security definition has been found". Per the controller ruling, the probe falls back to qualifying AAPL and placing a resting GTC buy-limit at $5.00 (AAPL ~$200 — can never fill), measuring orderStatus latency identically, then cancelling. Every run exercised the fallback. `details_ms` times the successful `reqContractDetails` request itself (native from `req_t0`, insync from the `reqContractDetailsAsync` call), so both sides measure the same round trip. The brief's `time.sleep(8)` was raised to a `TOTAL_TIMEOUT = 12 s` cap; runs complete in ~1 s (insync), ~1 s (native, immediate error path) or ~5.5 s (native, watchdog path when the error-200 response took >5 s).
+
+**Latencies (single-shot, 1 order each, paper):**
+
+| metric | native ibapi | ib_insync |
+|---|---|---|
+| connect → nextValidId | 5.8 / 7.8 / 9.6 ms | 117.1 / 120.2 / 313.4 ms |
+| reqContractDetails (AAPL) | 80.8 / 81.2 ms | 73.9 / 75.0 / 83.7 / 84.0 ms |
+| placeOrder → orderStatus(PreSubmitted) | 115.7 / 121.2 / 121.5 ms | 108.0 / 112.4 / 226.6 ms |
+
+**Result:** premise validated. Native `ibapi` is dramatically faster at connection establishment — `connect→nextValidId` ~6–10 ms vs ~117–320 ms for ib_insync (roughly 15–50×). `reqContractDetails` and `placeOrder→orderStatus` latencies are on par (~80 ms and ~115–120 ms native vs ~75–84 ms and ~108–227 ms insync); both are dominated by TWS/SMART network round-trip time, with ib_insync showing noticeably higher variance. No latency penalty in native ibapi that would block the migration; the one caveat is that an unlisted-contract `reqContractDetails` produces error 200 and can take up to ~5 s to respond, which the client wrapper will need to treat as a "no contract found" condition.
