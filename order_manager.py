@@ -4,6 +4,10 @@ Order placement, cancellation, and status tracking.
 All functions accept `ib` and `state` explicitly for testability.
 The `refresh_fn` callback is used to trigger account state refresh after
 order actions (injected by the caller, typically account_manager.refresh_account_state).
+
+The module is event-driven over the native ``IBClient`` surface: ``ib.place_order``
+returns an ``OrderHandle`` whose ack/fill/terminal events are awaited rather than
+polling ``orderStatus``. Contracts/orders are native ibapi objects.
 """
 
 import asyncio
@@ -11,67 +15,78 @@ import json
 import logging
 from typing import Optional
 
-from ib_insync import Option, Stock, Order, Contract, ComboLeg, TagValue
+from ibapi.contract import Contract, ComboLeg
+from ibapi.order import Order
+from ibapi.tag_value import TagValue
 
 from config import spx_tick_for_price, round_abs_to_tick, round_signed_to_tick
+from ib_client import _PENDING_STATUSES, _TERMINAL_STATUSES
 
 logger = logging.getLogger(__name__)
 
-_PENDING_STATUSES = {'', 'PendingSubmit', 'ApiPending'}
-_PRESUBMITTED_PENDING_STATUSES = _PENDING_STATUSES | {'PreSubmitted'}
-_TERMINAL_STATUSES = {'Filled', 'Cancelled', 'ApiCancelled', 'Inactive'}
+
+def _option_contract(symbol, expiry, strike, right, exchange,
+                     trading_class="SPXW"):
+    """Build a native ibapi OPT Contract (ibapi.contract.Contract)."""
+    c = Contract()
+    c.symbol = symbol
+    c.secType = "OPT"
+    c.exchange = exchange
+    c.currency = "USD"
+    c.lastTradeDateOrContractMonth = expiry
+    c.strike = float(strike)
+    c.right = right
+    c.multiplier = "100"
+    c.tradingClass = trading_class
+    return c
 
 
-def _pending_statuses(include_presubmitted: bool = False) -> set[str]:
-    return _PRESUBMITTED_PENDING_STATUSES if include_presubmitted else _PENDING_STATUSES
+def _stock_contract(symbol):
+    """Build a native ibapi STK Contract."""
+    c = Contract()
+    c.symbol = symbol
+    c.secType = "STK"
+    c.exchange = "SMART"
+    c.currency = "USD"
+    return c
 
 
-async def await_order_status(trade, timeout: float = 5.0,
-                             include_presubmitted: bool = False) -> str:
-    """Poll trade.orderStatus until it leaves pending status, or timeout."""
-    wait_statuses = _pending_statuses(include_presubmitted)
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        st = trade.orderStatus.status or ''
-        if st not in wait_statuses:
-            return st
-        await asyncio.sleep(0.1)
-    return trade.orderStatus.status or 'PendingSubmit'
-
-
-async def watch_and_push_status(ws, trade, timeout: float = 30.0,
-                                bracket_child: bool = False,
-                                include_presubmitted: bool = False) -> None:
+async def watch_and_push_status(ws, handle, timeout: float = 30.0,
+                                bracket_child: bool = False) -> None:
     """Background task: push an order_status WS message once the order settles.
 
-    Parameters
-    ----------
-    bracket_child : bool
-        If True, also wait through 'PreSubmitted' status (bracket child
-        orders start as PreSubmitted until their parent fills).
-    include_presubmitted : bool
-        If True, also wait through 'PreSubmitted' for parent orders that
-        commonly stage there before becoming Submitted.
+    Non-bracket orders push once IB acknowledges the order — ``handle.ack()``
+    resolves the moment status leaves the pending set (for combo parents this
+    is 'PreSubmitted').
+
+    Bracket children stage at 'PreSubmitted' — their ack already fired there
+    (PreSubmitted is not a pending status), so with ``bracket_child=True`` we
+    additionally wait through PreSubmitted before pushing.
     """
-    wait_statuses = _pending_statuses(include_presubmitted or bracket_child)
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        st = trade.orderStatus.status or ''
-        if st not in wait_statuses:
-            break
-        await asyncio.sleep(0.5)
     try:
-        st = trade.orderStatus.status or 'Unknown'
-        filled = trade.orderStatus.filled
-        avg_fill = trade.orderStatus.avgFillPrice
+        await handle.ack(timeout=timeout)
+    except asyncio.TimeoutError:
+        pass
+    if bracket_child and handle.status == "PreSubmitted":
+        try:
+            await handle.wait_terminal(timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+    try:
+        st = handle.status or "Unknown"
+        filled = handle.filled or 0
+        avg_fill = handle.avg_fill_price
         msg = f"Order {st}"
         if filled:
-            msg += f" — filled {filled} @ {avg_fill:.2f}"
+            if avg_fill is not None:
+                msg += f" — filled {filled} @ {avg_fill:.2f}"
+            else:
+                msg += f" — filled {filled}"
         await ws.send_text(json.dumps({
             "type": "order_status",
             "data": {
                 "status": st,
-                "orderId": trade.order.orderId,
+                "orderId": handle.order.orderId,
                 "message": msg,
                 "filled": filled,
                 "avgFillPrice": avg_fill,
@@ -81,51 +96,40 @@ async def watch_and_push_status(ws, trade, timeout: float = 30.0,
         pass  # WS already closed
 
 
-async def watch_parent_and_cancel_child(ib, ws, parent_trade, child_trade,
+async def watch_parent_and_cancel_child(ib, ws, parent, child,
                                         timeout: float = 86400.0) -> None:
     """Background task: cancel a bracket child order if its parent is cancelled.
 
-    Monitors the parent trade's status.  If the parent reaches a terminal
-    status that is NOT 'Filled' (i.e. Cancelled/Inactive), explicitly cancel
-    the child order and push a status update over WS.  Self-terminates once
-    the parent reaches any terminal status.
+    Awaits the parent's terminal event.  If the parent reaches a terminal status
+    other than 'Filled' (i.e. Cancelled/Inactive), explicitly cancel the child
+    order and push a status update over WS.  Self-terminates once the parent is
+    terminal.
     """
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        pst = parent_trade.orderStatus.status or ''
-        cst = child_trade.orderStatus.status or ''
-        # Parent reached a terminal status
-        if pst in _TERMINAL_STATUSES:
-            if pst != 'Filled':
-                # Parent was cancelled/inactive → cancel the child if not already
-                if cst not in _TERMINAL_STATUSES:
-                    try:
-                        ib.cancelOrder(child_trade.order)
-                    except Exception:
-                        pass
-                    await asyncio.sleep(0.1)
-                # Always push child cancellation to frontend (IB may have
-                # cascaded the cancel already, but the frontend needs to know)
-                if ws:
-                    child_st = child_trade.orderStatus.status or 'Cancelled'
-                    try:
-                        await ws.send_text(json.dumps({
-                            "type": "order_status",
-                            "data": {
-                                "status": child_st,
-                                "orderId": child_trade.order.orderId,
-                                "message": f"Stop order cancelled (parent {pst})",
-                                "filled": 0,
-                                "avgFillPrice": 0.0,
-                            },
-                        }))
-                    except Exception:
-                        pass
-            return  # parent is terminal, our job is done
-        # Child already in terminal state → nothing more to do
-        if cst in _TERMINAL_STATUSES:
-            return
-        await asyncio.sleep(0.5)
+    try:
+        await parent.wait_terminal(timeout=timeout)
+    except asyncio.TimeoutError:
+        return
+    if parent.status != "Filled":
+        if not child.is_terminal():
+            try:
+                ib.cancel_order(child.order_id)
+            except Exception:
+                pass
+        if ws:
+            child_st = child.status or "Cancelled"
+            try:
+                await ws.send_text(json.dumps({
+                    "type": "order_status",
+                    "data": {
+                        "status": child_st,
+                        "orderId": child.order_id,
+                        "message": f"Stop order cancelled (parent {parent.status})",
+                        "filled": 0,
+                        "avgFillPrice": 0.0,
+                    },
+                }))
+            except Exception:
+                pass
 
 
 async def handle_place_order(ib, state, payload: dict, ws=None,
@@ -206,15 +210,12 @@ async def _place_single_leg(ib, state, payload, leg,
             return {"type": "order_status", "data": {
                 "status": "Error", "message": f"Invalid strike value: {strike_raw}"
             }}
-        contract = Option(
+        contract = _option_contract(
             symbol=leg.get("symbol", "SPX"),
-            lastTradeDateOrContractMonth=leg["expiry"],
+            expiry=leg["expiry"],
             strike=strike_val,
             right=leg["right"],
             exchange="SMART",
-            multiplier="100",
-            currency="USD",
-            tradingClass="SPXW",
         )
         log_contract_desc = f"{leg['symbol']} {leg['expiry']} {leg['strike']}{leg['right']}"
         user_contract_desc = f"{leg['symbol']} {leg['strike']}{leg['right']}"
@@ -223,11 +224,7 @@ async def _place_single_leg(ib, state, payload, leg,
             return {"type": "order_status", "data": {
                 "status": "Error", "message": "Missing symbol for stock leg"
             }}
-        contract = Stock(
-            symbol=leg["symbol"],
-            exchange="SMART",
-            currency="USD",
-        )
+        contract = _stock_contract(leg["symbol"])
         log_contract_desc = f"{leg['symbol']} STK"
         user_contract_desc = f"{leg['symbol']}"
     else:
@@ -236,17 +233,16 @@ async def _place_single_leg(ib, state, payload, leg,
             "message": f"Unsupported secType for liquidate/order path: {sec_type}"
         }}
 
-    qualified = await ib.qualifyContractsAsync(contract)
-    if not qualified or not qualified[0].conId:
+    details = await ib.req_contract_details(contract)
+    if not details or not details[0].contract.conId:
         return {"type": "order_status", "data": {"status": "Error", "message": "Failed to qualify contract"}}
-    contract = qualified[0]
+    contract = details[0].contract
 
     is_spx_opt = (sec_type == "OPT" and leg.get("symbol", "").upper() == "SPX")
     tick_size = 0.05 if is_spx_opt else 0.01
     try:
-        cdetails = await ib.reqContractDetailsAsync(contract)
-        if cdetails and getattr(cdetails[0], "minTick", 0):
-            tick_size = max(0.0001, float(cdetails[0].minTick))
+        if details and getattr(details[0], "minTick", 0):
+            tick_size = max(0.0001, float(details[0].minTick))
     except Exception:
         pass
 
@@ -269,35 +265,28 @@ async def _place_single_leg(ib, state, payload, leg,
             return False
 
     async def _get_mid_price() -> Optional[float]:
-        ticker = ib.reqMktData(contract, genericTickList="", snapshot=False)
+        stream = ib.subscribe_tick(contract, "")
         mid = None
         try:
             for _ in range(8):
-                await asyncio.sleep(0.1)
-                bid = ticker.bid
-                ask = ticker.ask
-                if _valid_quote(bid) and _valid_quote(ask):
-                    mid = (float(bid) + float(ask)) / 2.0
-                    break
-            if mid is None:
-                last = ticker.last
-                if _valid_quote(last):
-                    mid = float(last)
+                if stream.has_quote():
+                    if _valid_quote(stream.bid) and _valid_quote(stream.ask):
+                        mid = (float(stream.bid) + float(stream.ask)) / 2.0
+                        break
+                await asyncio.sleep(0.05)
+            if mid is None and _valid_quote(stream.last):
+                mid = float(stream.last)
         finally:
-            try:
-                ib.cancelMktData(contract)
-            except Exception:
-                pass
+            ib.unsubscribe_tick(stream.req_id)
         return _round_to_tick(mid) if mid is not None else None
 
-    order = Order(
-        orderType=order_type,
-        action=leg["action"],
-        totalQuantity=int(leg["qty"]),
-        tif=tif,
-        outsideRth=outside_rth,
-        transmit=(stop_loss_price is None),
-    )
+    order = Order()
+    order.orderType = order_type
+    order.action = leg["action"]
+    order.totalQuantity = int(leg["qty"])
+    order.tif = tif
+    order.outsideRth = outside_rth
+    order.transmit = (stop_loss_price is None)
     if order_type == "LMT":
         if dynamic_fill:
             mid = await _get_mid_price()
@@ -322,8 +311,8 @@ async def _place_single_leg(ib, state, payload, leg,
                     "message": f"Invalid lmtPrice: {leg.get('lmtPrice')}"
                 }}
 
-    trade = ib.placeOrder(contract, order)
-    stop_trade = None
+    handle = ib.place_order(contract, order)
+    stop_handle = None
 
     # Attach stop-limit child BEFORE waiting for acknowledgment
     if stop_loss_price is not None:
@@ -342,20 +331,19 @@ async def _place_single_leg(ib, state, payload, leg,
                 stop_trigger = round_abs_to_tick(stop_trigger, spx_tick_for_price(stop_trigger))
                 stop_lmt = round_abs_to_tick(stop_lmt, spx_tick_for_price(stop_lmt))
             stop_action = "SELL" if leg["action"] == "BUY" else "BUY"
-            stop_order = Order(
-                orderType="STP LMT",
-                action=stop_action,
-                totalQuantity=int(leg["qty"]),
-                auxPrice=stop_trigger,
-                lmtPrice=stop_lmt,
-                parentId=order.orderId,
-                tif=tif,
-                outsideRth=outside_rth,
-                transmit=True,
-            )
-            stop_trade = ib.placeOrder(contract, stop_order)
+            stop_order = Order()
+            stop_order.orderType = "STP LMT"
+            stop_order.action = stop_action
+            stop_order.totalQuantity = int(leg["qty"])
+            stop_order.auxPrice = stop_trigger
+            stop_order.lmtPrice = stop_lmt
+            stop_order.parentId = order.orderId
+            stop_order.tif = tif
+            stop_order.outsideRth = outside_rth
+            stop_order.transmit = True
+            stop_handle = ib.place_order(contract, stop_order)
             await asyncio.sleep(0.05)
-            state.active_trades[stop_order.orderId] = stop_trade
+            state.active_trades[stop_order.orderId] = stop_handle
             logger.info(
                 f"Stop-limit attached: {stop_action} {leg['qty']} "
                 f"{log_contract_desc} STP LMT @ stop={stop_trigger} lmt={stop_lmt} — "
@@ -364,22 +352,17 @@ async def _place_single_leg(ib, state, payload, leg,
 
     # Safety: if stop was intended but not created (e.g. zero prices),
     # re-submit parent with transmit=True so it isn't stuck at IB.
-    if stop_loss_price is not None and stop_trade is None and not order.transmit:
+    if stop_loss_price is not None and stop_handle is None and not order.transmit:
         order.transmit = True
-        trade = ib.placeOrder(contract, order)
+        handle = ib.place_order(contract, order)
 
-    # Wait for IB acknowledgment
-    if dynamic_fill and order_type == "LMT":
-        final_status = await await_order_status(trade, timeout=3.0)
-    else:
-        final_status = await await_order_status(trade, timeout=10.0)
-        if final_status in _PENDING_STATUSES:
-            try:
-                ib.reqOpenOrders()
-            except Exception:
-                pass
-            await asyncio.sleep(0.5)
-            final_status = trade.orderStatus.status or "PendingSubmit"
+    # Wait for IB acknowledgment (event-driven: ack resolves once status leaves
+    # the pending set — no reqOpenOrders re-poll).
+    try:
+        await handle.ack(timeout=3.0 if (dynamic_fill and order_type == "LMT") else 10.0)
+    except asyncio.TimeoutError:
+        pass
+    final_status = handle.status or "PendingSubmit"
 
     # Dynamic fill reprice loop
     if dynamic_fill and order_type == "LMT":
@@ -389,28 +372,28 @@ async def _place_single_leg(ib, state, payload, leg,
         reprice_iteration = 0
         while asyncio.get_event_loop().time() < reprice_deadline:
             reprice_iteration += 1
-            status = trade.orderStatus.status or ""
-            remaining = trade.orderStatus.remaining
-            if status == "Filled" or (remaining is not None and remaining <= 0):
+            if handle.status == "Filled" or (handle.remaining is not None and handle.remaining <= 0):
                 break
-            if status in {"Cancelled", "ApiCancelled", "Inactive"}:
+            if handle.status in _TERMINAL_STATUSES:
                 return {"type": "order_status", "data": {
                     "status": "Error",
                     "orderId": order.orderId,
-                    "message": f"Order became {status} before fill"
+                    "message": f"Order became {handle.status} before fill"
                 }}
 
-            await asyncio.sleep(max(0.05, reprice_interval))
+            try:
+                await asyncio.wait_for(handle.wait_fill(timeout=reprice_interval),
+                                       timeout=reprice_interval)
+            except asyncio.TimeoutError:
+                pass
 
-            status = trade.orderStatus.status or ""
-            remaining = trade.orderStatus.remaining
-            if status == "Filled" or (remaining is not None and remaining <= 0):
+            if handle.status == "Filled" or (handle.remaining is not None and handle.remaining <= 0):
                 break
-            if status in {"Cancelled", "ApiCancelled", "Inactive"}:
+            if handle.status in _TERMINAL_STATUSES:
                 return {"type": "order_status", "data": {
                     "status": "Error",
                     "orderId": order.orderId,
-                    "message": f"Order became {status} before fill"
+                    "message": f"Order became {handle.status} before fill"
                 }}
 
             if reprice_iteration >= max_reprice_iterations:
@@ -427,28 +410,30 @@ async def _place_single_leg(ib, state, payload, leg,
                 next_price = round(current_price + direction * step_tick, 2)
             order.lmtPrice = max(step_tick, next_price)
             try:
-                trade = ib.placeOrder(contract, order)
+                handle = ib.place_order(contract, order)
             except AssertionError as exc:
                 logger.info(
                     "Dynamic fill modify aborted because order is already complete: %s",
                     exc,
                 )
-                await await_order_status(trade, timeout=1.0)
+                try:
+                    await handle.ack(timeout=1.0)
+                except asyncio.TimeoutError:
+                    pass
                 break
-            await asyncio.sleep(0.05)
-        final_status = trade.orderStatus.status or "Unknown"
+        final_status = handle.status or "Unknown"
 
-    state.active_trades[order.orderId] = trade
+    state.active_trades[order.orderId] = handle
     refresh_fn()
 
     if ws:
-        asyncio.create_task(watch_and_push_status(ws, trade))
-        if stop_trade:
+        asyncio.create_task(watch_and_push_status(ws, handle))
+        if stop_handle:
             asyncio.create_task(
-                watch_and_push_status(ws, stop_trade, bracket_child=True)
+                watch_and_push_status(ws, stop_handle, bracket_child=True)
             )
             asyncio.create_task(
-                watch_parent_and_cancel_child(ib, ws, trade, stop_trade)
+                watch_parent_and_cancel_child(ib, ws, handle, stop_handle)
             )
 
     logger.info(
@@ -460,15 +445,15 @@ async def _place_single_leg(ib, state, payload, leg,
     )
 
     stop_msg = ""
-    if stop_trade:
+    if stop_handle:
         if isinstance(stop_loss_price, dict):
             stop_msg = (
                 f" | STP LMT stop={abs(float(stop_loss_price['stopPrice'])):.2f}"
                 f" lmt={abs(float(stop_loss_price['limitPrice'])):.2f}"
-                f" orderId={stop_trade.order.orderId}"
+                f" orderId={stop_handle.order.orderId}"
             )
         else:
-            stop_msg = f" | STP LMT stop={stop_loss_price} orderId={stop_trade.order.orderId}"
+            stop_msg = f" | STP LMT stop={stop_loss_price} orderId={stop_handle.order.orderId}"
     return {"type": "order_status", "data": {
         "status": final_status,
         "orderId": order.orderId,
@@ -487,7 +472,7 @@ async def _place_multi_leg(ib, state, payload, legs,
     use_direct_cboe_combo = bag_symbol == "SPX"
     session_note = ""
 
-    # Qualify each leg contract
+    # Qualify each leg contract (native one-shot request per leg)
     individual_contracts = []
     for leg in legs:
         sec_type = leg.get("secType", "OPT")
@@ -508,23 +493,27 @@ async def _place_multi_leg(ib, state, payload, legs,
                 "status": "Error",
                 "message": f"Invalid strike in combo leg: {strike_raw}"
             }}
-        c = Option(
+        c = _option_contract(
             symbol=leg.get("symbol", "SPX"),
-            lastTradeDateOrContractMonth=leg["expiry"],
+            expiry=leg["expiry"],
             strike=strike_val,
             right=leg["right"],
             exchange="CBOE" if use_direct_cboe_combo else "SMART",
-            multiplier="100",
-            currency="USD",
-            tradingClass="SPXW",
         )
         individual_contracts.append(c)
 
-    qualified = await ib.qualifyContractsAsync(*individual_contracts)
-    if len(qualified) != len(legs):
+    qualified = []
+    for c in individual_contracts:
+        details = await ib.req_contract_details(c)
+        if not details or not details[0].contract.conId:
+            qualified = None
+            break
+        qualified.append(details[0].contract)
+
+    if qualified is None or len(qualified) != len(legs):
         return {"type": "order_status", "data": {
             "status": "Error",
-            "message": f"Qualified {len(qualified)}/{len(legs)} legs"
+            "message": f"Qualified {len(qualified) if qualified is not None else 0}/{len(legs)} legs"
         }}
 
     # Compute net combo limit price
@@ -596,23 +585,22 @@ async def _place_multi_leg(ib, state, payload, legs,
         bag.exchange,
     )
 
-    order = Order(
-        orderType=order_type,
-        action=bag_action,
-        totalQuantity=combo_quantity,
-        tif=tif,
-        outsideRth=outside_rth,
-        transmit=(stop_loss_price is None),
-    )
+    order = Order()
+    order.orderType = order_type
+    order.action = bag_action
+    order.totalQuantity = combo_quantity
+    order.tif = tif
+    order.outsideRth = outside_rth
+    order.transmit = (stop_loss_price is None)
     if not use_direct_cboe_combo:
         order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
     if order_type == "LMT":
         order.lmtPrice = bag_lmt
 
-    trade = ib.placeOrder(bag, order)
+    handle = ib.place_order(bag, order)
 
     # Attach stop-limit bracket for BAG
-    bag_stop_trade = None
+    bag_stop_handle = None
     if stop_loss_price is not None:
         try:
             if isinstance(stop_loss_price, dict):
@@ -643,22 +631,21 @@ async def _place_multi_leg(ib, state, payload, legs,
             close_bag.exchange = "CBOE" if use_direct_cboe_combo else (close_combo_legs[0].exchange if close_combo_legs else "SMART")
             close_bag.comboLegs = close_combo_legs
             stop_action = "SELL" if bag_action == "BUY" else "BUY"
-            bag_stop_order = Order(
-                orderType="STP LMT",
-                action=stop_action,
-                totalQuantity=combo_quantity,
-                auxPrice=bag_stop_trigger,
-                lmtPrice=bag_stop_lmt,
-                parentId=order.orderId,
-                tif=tif,
-                outsideRth=outside_rth,
-                transmit=True,
-            )
+            bag_stop_order = Order()
+            bag_stop_order.orderType = "STP LMT"
+            bag_stop_order.action = stop_action
+            bag_stop_order.totalQuantity = combo_quantity
+            bag_stop_order.auxPrice = bag_stop_trigger
+            bag_stop_order.lmtPrice = bag_stop_lmt
+            bag_stop_order.parentId = order.orderId
+            bag_stop_order.tif = tif
+            bag_stop_order.outsideRth = outside_rth
+            bag_stop_order.transmit = True
             if not use_direct_cboe_combo:
                 bag_stop_order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
-            bag_stop_trade = ib.placeOrder(close_bag, bag_stop_order)
+            bag_stop_handle = ib.place_order(close_bag, bag_stop_order)
             await asyncio.sleep(0.05)
-            state.active_trades[bag_stop_order.orderId] = bag_stop_trade
+            state.active_trades[bag_stop_order.orderId] = bag_stop_handle
             logger.info(
                 f"BAG stop-limit attached: {stop_action} combo STP LMT @ "
                 f"stop={bag_stop_trigger} lmt={bag_stop_lmt} — "
@@ -666,37 +653,30 @@ async def _place_multi_leg(ib, state, payload, legs,
             )
 
     # Safety: if stop was intended but not created, re-submit with transmit=True
-    if stop_loss_price is not None and bag_stop_trade is None and not order.transmit:
+    if stop_loss_price is not None and bag_stop_handle is None and not order.transmit:
         order.transmit = True
-        trade = ib.placeOrder(bag, order)
+        handle = ib.place_order(bag, order)
 
-    # Wait for initial IB ack
-    bag_status = await await_order_status(
-        trade,
-        timeout=5.0,
-        include_presubmitted=True,
-    )
-    if bag_status in _pending_statuses(include_presubmitted=True):
-        try:
-            ib.reqOpenOrders()
-        except Exception:
-            pass
-        await asyncio.sleep(0.5)
-        bag_status = trade.orderStatus.status or "PendingSubmit"
+    # Wait for initial IB ack (event-driven; no reqOpenOrders re-poll)
+    try:
+        await handle.ack(timeout=5.0)
+    except asyncio.TimeoutError:
+        pass
+    bag_status = handle.status or "PendingSubmit"
 
-    state.active_trades[order.orderId] = trade
+    state.active_trades[order.orderId] = handle
     refresh_fn()
 
     if ws:
         asyncio.create_task(
-            watch_and_push_status(ws, trade, include_presubmitted=True)
+            watch_and_push_status(ws, handle)
         )
-        if bag_stop_trade:
+        if bag_stop_handle:
             asyncio.create_task(
-                watch_and_push_status(ws, bag_stop_trade, bracket_child=True)
+                watch_and_push_status(ws, bag_stop_handle, bracket_child=True)
             )
             asyncio.create_task(
-                watch_parent_and_cancel_child(ib, ws, trade, bag_stop_trade)
+                watch_parent_and_cancel_child(ib, ws, handle, bag_stop_handle)
             )
 
     leg_desc = ", ".join(
@@ -704,15 +684,15 @@ async def _place_multi_leg(ib, state, payload, legs,
         for l in legs
     )
     stop_combo_msg = ""
-    if bag_stop_trade:
+    if bag_stop_handle:
         if isinstance(stop_loss_price, dict):
             stop_combo_msg = (
                 f" | STP LMT stop={abs(float(stop_loss_price['stopPrice'])):.2f}"
                 f" lmt={abs(float(stop_loss_price['limitPrice'])):.2f}"
-                f" orderId={bag_stop_trade.order.orderId}"
+                f" orderId={bag_stop_handle.order.orderId}"
             )
         else:
-            stop_combo_msg = f" | STP LMT stop={stop_loss_price} orderId={bag_stop_trade.order.orderId}"
+            stop_combo_msg = f" | STP LMT stop={stop_loss_price} orderId={bag_stop_handle.order.orderId}"
     logger.info(
         f"BAG order {bag_status}: {bag_action} combo @ {bag_lmt} — "
         f"legs=[{leg_desc}] orderId={order.orderId} outsideRth={outside_rth}"
@@ -732,30 +712,34 @@ async def handle_cancel_order(ib, state, order_id: int,
         return {"type": "order_status", "data": {"status": "Error", "message": "Not connected to IB"}}
 
     try:
-        trade = state.active_trades.get(order_id)
-        if trade is None:
-            for t in ib.openTrades():
-                if t.order.orderId == order_id:
-                    trade = t
+        handle = state.active_trades.get(order_id)
+        if handle is None:
+            # Fall back to the bridge's order registry (public `orders` dict on
+            # the mock; the real IBClient exposes it from Task 15).
+            for h in getattr(ib, "orders", {}).values():
+                if h.order_id == order_id:
+                    handle = h
                     break
 
-        if trade is None:
+        if handle is None:
+            logger.debug(f"Cancel order {order_id}: not found in open trades")
             return {"type": "order_status", "data": {
                 "status": "Error",
                 "message": f"Order {order_id} not found in open trades"
             }}
 
-        ib.cancelOrder(trade.order)
+        ib.cancel_order(order_id)
         await asyncio.sleep(0.1)
         if refresh_fn:
             refresh_fn(ib, state)
 
-        logger.info(f"Order {order_id} cancellation requested")
+        logger.debug(f"Order {order_id} cancellation requested")
         return {"type": "order_status", "data": {
             "status": "Cancelled",
             "orderId": order_id,
             "message": f"Cancel request sent for order {order_id}",
         }}
     except Exception as e:
+        logger.debug(f"Cancel order {order_id} failed: {e}")
         logger.error(f"handle_cancel_order exception: {e}", exc_info=True)
         return {"type": "order_status", "data": {"status": "Error", "message": str(e)}}
