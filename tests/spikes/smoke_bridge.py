@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from ib_client import IBClient          # noqa: E402
 from ib_connection import connect_ib, setup_spx_subscription  # noqa: E402
+from price_bars import fetch_historical_bars, compute_annual_vol  # noqa: E402
 from app_state import AppState          # noqa: E402
 
 
@@ -49,6 +50,22 @@ async def main():
         print("[smoke] FAILED: no SPX tick within ~10s")
         ib.disconnect()
         return 1
+
+    # Task 13: historical bars + volatility via the native bridge.
+    await fetch_historical_bars(ib, state)
+    if state.spx_price <= 0:
+        print(f"[smoke] FAILED: fetch_historical_bars left spx_price={state.spx_price}")
+        ib.disconnect()
+        return 1
+    print(f"[smoke] historical bars seeded (spx_price={state.spx_price}, "
+          f"mode={state.data_mode})")
+
+    await compute_annual_vol(ib, state)
+    if state.annual_vol <= 0:
+        print(f"[smoke] FAILED: compute_annual_vol gave annual_vol={state.annual_vol}")
+        ib.disconnect()
+        return 1
+    print(f"[smoke] annual vol computed: {state.annual_vol:.2%}")
 
     ib.disconnect()
     print("[smoke] disconnected")
