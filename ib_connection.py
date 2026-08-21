@@ -3,30 +3,50 @@ IB connection management and spot-price streaming.
 
 Functions accept `ib` (IB client) and `state` (AppState) explicitly
 so they can be tested without globals.
+
+Consumes the native bridge surface from ib_client.py (IBClient, TickStream).
+No ib_insync.
 """
 
-import math
 import logging
 from datetime import datetime
 
-from ib_insync import IB, Index, Future
+from ibapi.contract import Contract
 
 from config import IB_HOST, IB_PORT, IB_CLIENT_ID
-from market_hours import now_et, is_within_rth, last_trading_date
-from chain_fetcher import get_chain_params, get_monthly_chain_params, find_monthly_expiration
-from market_hours import find_next_expiration, get_expiration_display
+from market_hours import (
+    now_et,
+    is_within_rth,
+    last_trading_date,
+    find_next_expiration,
+    get_expiration_display,
+)
+from chain_fetcher import (
+    get_chain_params,
+    get_monthly_chain_params,
+    find_monthly_expiration,
+)
 
 logger = logging.getLogger(__name__)
 
 
-async def connect_ib(ib: IB, state, host: str = None, port: int = None,
+def _index_contract(symbol, exchange, currency):
+    c = Contract()
+    c.symbol = symbol
+    c.secType = "IND"
+    c.exchange = exchange
+    c.currency = currency
+    return c
+
+
+async def connect_ib(ib, state, host: str = None, port: int = None,
                      client_id: int = None):
     """Connect to IB TWS/Gateway."""
     h = host or IB_HOST
     p = port or IB_PORT
     cid = client_id or IB_CLIENT_ID
     try:
-        await ib.connectAsync(h, p, clientId=cid, timeout=15)
+        await ib.connect(h, p, cid, timeout=15)
         state.connected = True
         logger.info(f"Connected to IB at {h}:{p}")
     except Exception as e:
@@ -35,20 +55,16 @@ async def connect_ib(ib: IB, state, host: str = None, port: int = None,
         raise
 
 
-async def setup_spx_subscription(ib: IB, state):
-    """Qualify SPX contract and subscribe to live quotes."""
-    spx = Index('SPX', 'CBOE', 'USD')
-    qualified = ib.qualifyContracts(spx)
-    if not qualified:
-        logger.error("Failed to qualify SPX contract")
-        return
+async def setup_spx_subscription(ib, state):
+    """Build a native SPX IND contract and subscribe to live quotes."""
+    spx = _index_contract("SPX", "CBOE", "USD")
     state.spx_contract = spx
-    logger.info(f"SPX contract: {spx}")
-    ib.reqMktData(spx, genericTickList='233', snapshot=False)
-    logger.info("Subscribed to live SPX quotes")
+    stream = ib.subscribe_tick(spx, "233")
+    state.spx_stream = stream
+    logger.info(f"Subscribed to live SPX quotes (reqId={stream.req_id})")
 
 
-async def setup_chain_info(ib: IB, state):
+async def setup_chain_info(ib, state):
     """Fetch SPXW chain parameters and determine target expiration."""
     if state.spx_contract is None:
         return
@@ -63,7 +79,7 @@ async def setup_chain_info(ib: IB, state):
         logger.warning("No valid SPXW expiration found")
 
 
-async def setup_monthly_chain_info(ib: IB, state):
+async def setup_monthly_chain_info(ib, state):
     """Fetch SPX monthly chain parameters and determine target monthly expiration."""
     if state.spx_contract is None:
         return
@@ -78,56 +94,49 @@ async def setup_monthly_chain_info(ib: IB, state):
         logger.warning("No valid SPX monthly expiration found")
 
 
-def make_pending_tickers_handler(state):
-    """Return an on_pending_tickers callback bound to the given state."""
+async def update_spx_es_prices(state):
+    """Read SPX/ES TickStreams and update state (called at loop cadence)."""
+    spx = getattr(state, "spx_stream", None)
+    if spx is not None:
+        price = spx.bid if spx.bid and spx.bid > 0 else \
+            spx.ask if spx.ask and spx.ask > 0 else spx.last
+        if price is not None and price > 0:
+            if is_within_rth():
+                state.spx_price = price
+                state.live_price = price
+                state.es_derived = False
+                if state.data_mode != "live":
+                    state.data_mode = "live"
+                    logger.info("Switched to LIVE data mode")
+            else:
+                if state.data_mode == "live":
+                    state.data_mode = "historical"
+                    logger.info("Exited RTH: switched to HISTORICAL mode")
 
-    def on_pending_tickers(tickers):
-        for ticker in tickers:
-            contract = ticker.contract
-            spx_id = state.spx_contract.conId if state.spx_contract else None
-            es_id = state.es_contract.conId if state.es_contract else None
-
-            if spx_id and getattr(contract, 'conId', None) == spx_id:
-                price = ticker.marketPrice()
-                if price is not None and not math.isnan(price) and price > 0:
-                    if is_within_rth():
-                        state.spx_price = price
-                        state.live_price = price
-                        state.es_derived = False
-                        if state.data_mode != "live":
-                            state.data_mode = "live"
-                            logger.info("Switched to LIVE data mode")
-                    else:
-                        if state.data_mode == "live":
-                            state.data_mode = "historical"
-                            logger.info("Exited RTH: switched to HISTORICAL mode")
-
-            elif es_id and getattr(contract, 'conId', None) == es_id:
-                price = ticker.marketPrice()
-                if price is not None and not math.isnan(price) and price > 0:
-                    state.es_price = price
-                    if state.es_at_spx_close == 0:
-                        state.es_at_spx_close = price
-                        logger.info(
-                            f"ES baseline bootstrapped from first tick: {price:.2f} "
-                            f"(delta will accumulate from this point)"
-                        )
-                    if (state.data_mode != "live"
-                            and state.es_at_spx_close > 0
-                            and state.spx_last_close > 0):
-                        pct = (price - state.es_at_spx_close) / state.es_at_spx_close
-                        state.spx_price = round(state.spx_last_close * (1.0 + pct), 2)
-                        state.live_price = state.spx_price
-                        state.es_derived = True
-
-    return on_pending_tickers
+    es = getattr(state, "es_stream", None)
+    if es is not None and es.last and es.last > 0:
+        state.es_price = es.last
+        if state.es_at_spx_close == 0:
+            state.es_at_spx_close = es.last
+            logger.info(f"ES baseline bootstrapped from first tick: {es.last:.2f}")
+        if (state.data_mode != "live"
+                and state.es_at_spx_close > 0
+                and state.spx_last_close > 0):
+            pct = (es.last - state.es_at_spx_close) / state.es_at_spx_close
+            state.spx_price = round(state.spx_last_close * (1.0 + pct), 2)
+            state.live_price = state.spx_price
+            state.es_derived = True
 
 
-async def setup_es_subscription(ib: IB, state):
+async def setup_es_subscription(ib, state):
     """Find front-month ES futures and subscribe for off-hours SPX derivation."""
     try:
-        es_generic = Future('ES', exchange='CME', currency='USD')
-        details = await ib.reqContractDetailsAsync(es_generic)
+        es_generic = Contract()
+        es_generic.symbol = "ES"
+        es_generic.secType = "FUT"
+        es_generic.exchange = "CME"
+        es_generic.currency = "USD"
+        details = await ib.req_contract_details(es_generic)
         if not details:
             logger.warning("No ES contract details returned — off-hours derived price unavailable")
             return
@@ -141,14 +150,15 @@ async def setup_es_subscription(ib: IB, state):
             return
         upcoming.sort(key=lambda d: d.contract.lastTradeDateOrContractMonth)
         state.es_contract = upcoming[0].contract
-        ib.reqMktData(state.es_contract, genericTickList='', snapshot=False)
+        stream = ib.subscribe_tick(state.es_contract, "")
+        state.es_stream = stream
         logger.info(f"Subscribed to ES futures: {state.es_contract.localSymbol} "
                     f"(expiry {state.es_contract.lastTradeDateOrContractMonth})")
     except Exception as e:
         logger.warning(f"ES subscription failed: {e}")
 
 
-async def fetch_es_baseline(ib: IB, state):
+async def fetch_es_baseline(ib, state):
     """Fetch ES price at last SPX RTH close for off-hours delta calculation."""
     if state.es_contract is None:
         return
@@ -160,14 +170,13 @@ async def fetch_es_baseline(ib: IB, state):
 
     for what_to_show in ('TRADES', 'MIDPOINT'):
         try:
-            bars = await ib.reqHistoricalDataAsync(
+            bars = await ib.req_historical_bars(
                 contract=state.es_contract,
-                endDateTime=end_dt,
-                durationStr='600 S',
-                barSizeSetting='1 min',
-                whatToShow=what_to_show,
-                useRTH=False,
-                formatDate=1,
+                end_date_time=end_dt,
+                duration="600 S",
+                bar_size="1 min",
+                what_to_show=what_to_show,
+                use_rth=False,
             )
             if bars:
                 state.es_at_spx_close = bars[-1].close
