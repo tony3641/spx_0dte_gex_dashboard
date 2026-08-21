@@ -13,8 +13,9 @@ import itertools
 import logging
 import threading
 from collections import namedtuple
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Callable, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from ibapi.client import EClient
 from ibapi.common import BarData  # noqa: F401  (used in Task 4)
@@ -22,8 +23,9 @@ from ibapi.wrapper import EWrapper
 
 logger = logging.getLogger(__name__)
 
-# Historical bar timestamps arrive as epoch seconds (format_date=2) in ET.
-ET = timezone(timedelta(hours=-4))
+# Historical bar timestamps arrive as epoch seconds (format_date=2) in Eastern
+# Time. DST-aware zone matching market_hours.ET (canonical project timezone).
+ET = ZoneInfo("US/Eastern")
 
 # TickType values (ibapi.ticktype.TickTypeEnum)
 BID, ASK, LAST = 1, 2, 4
