@@ -12,6 +12,7 @@ from datetime import datetime
 
 from config import PRICE_PUSH_INTERVAL
 from market_hours import now_et, is_within_rth, last_trading_date, ET
+from ib_connection import update_spx_es_prices
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +23,13 @@ async def compute_annual_vol(ib, state, lookback_days: int = 30) -> float:
         return state.annual_vol
 
     try:
-        bars = await ib.reqHistoricalDataAsync(
+        bars = await ib.req_historical_bars(
             contract=state.spx_contract,
-            endDateTime='',
-            durationStr=f'{lookback_days} D',
-            barSizeSetting='1 day',
-            whatToShow='TRADES',
-            useRTH=True,
-            formatDate=1,
+            end_date_time="",
+            duration=f"{lookback_days} D",
+            bar_size="1 day",
+            what_to_show="TRADES",
+            use_rth=True,
         )
     except Exception as e:
         logger.warning(f"Vol fetch failed, keeping {state.annual_vol:.1%}: {e}")
@@ -70,14 +70,13 @@ async def fetch_historical_bars(ib, state):
                 f"(endDateTime={'now' if end_dt == '' else end_dt})...")
 
     try:
-        bars = await ib.reqHistoricalDataAsync(
+        bars = await ib.req_historical_bars(
             contract=state.spx_contract,
-            endDateTime=end_dt,
-            durationStr='1 D',
-            barSizeSetting='1 min',
-            whatToShow='TRADES',
-            useRTH=True,
-            formatDate=1,
+            end_date_time=end_dt,
+            duration="1 D",
+            bar_size="1 min",
+            what_to_show="TRADES",
+            use_rth=True,
         )
     except Exception as e:
         logger.error(f"Historical bar fetch failed: {e}")
@@ -120,6 +119,8 @@ async def price_push_loop(ib, state, broadcast_fn):
     while True:
         try:
             await asyncio.sleep(PRICE_PUSH_INTERVAL)
+
+            await update_spx_es_prices(state)
 
             if state.active_tab == "chain":
                 current_bar = None
