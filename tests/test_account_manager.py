@@ -222,6 +222,31 @@ class TestSerializeExecution:
     def test_empty_list(self):
         assert serialize_execution(MockIBClient()) == []
 
+    def test_reads_a_snapshot_not_the_live_list(self):
+        """serialize_execution iterates a copy of ib.executions, so a later
+        socket-thread append does not mutate the already-returned result."""
+        mock = MockIBClient()
+        today = now_et()
+        rec = ExecutionRecord(
+            _contract(symbol="SPX"),
+            SimpleNamespace(execId="E1", time=today.strftime("%Y%m%d %H:%M:%S"),
+                            side="BUY", shares=1, price=3.50, orderId=100),
+            None,
+        )
+        mock.executions = [rec]
+
+        result = serialize_execution(mock)
+        assert len(result) == 1
+
+        # Emulate a concurrent append after the snapshot was read.
+        mock.executions.append(ExecutionRecord(
+            _contract(symbol="SPX"),
+            SimpleNamespace(execId="E2", time=today.strftime("%Y%m%d %H:%M:%S"),
+                            side="SELL", shares=1, price=4.0, orderId=101),
+            None,
+        ))
+        assert len(result) == 1  # snapshot unaffected
+
 
 class TestBuildAccountPayload:
 
@@ -281,6 +306,33 @@ class TestRefreshAccountState:
         assert app_state.account_dirty is True
         assert app_state.account_summary == {}
         assert app_state.positions == []
+
+    def test_reads_snapshots_not_live_lists(self, app_state):
+        """refresh_account_state iterates copies of ib.account_values/portfolio/
+        orders, so a concurrent socket-thread append cannot mutate the state that
+        was just serialized (IMPORTANT 4)."""
+        mock = MockIBClient(connected=True, fill_immediately=False)
+        mock.account_values = [
+            AccountValue("NetLiquidation", "100000.50", "USD"),
+        ]
+        mock.portfolio = [
+            PortfolioItem(_contract(), 1, 3.50, 350.0, 300.0, 50.0, 0.0, "DU12345"),
+        ]
+        mock.place_order(_contract(), _order())  # one open order
+
+        refresh_account_state(mock, app_state)
+
+        assert app_state.account_summary["NetLiquidation"] == 100000.50
+        assert len(app_state.positions) == 1
+        assert len(app_state.open_orders) == 1
+
+        # Emulate a concurrent append on the socket thread after the snapshot.
+        mock.account_values.append(AccountValue("BuyingPower", "5000.0", "USD"))
+        mock.portfolio.append(PortfolioItem(_contract(), 5, 3.0, 1500.0,
+                                            1400.0, 100.0, 0.0, "DU12345"))
+        assert app_state.account_summary.get("BuyingPower") is None
+        assert len(app_state.positions) == 1
+        assert len(app_state.open_orders) == 1
 
 
 class TestExecutionTimeParsing:

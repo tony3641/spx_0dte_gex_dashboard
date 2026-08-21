@@ -259,31 +259,40 @@ class MockIBClient:
 
     # -- Order placement / lifecycle ------------------------------------------
 
-    def place_order(self, contract, order) -> OrderHandle:
-        order_id = self._next_order_id
-        self._next_order_id += 1
+    def place_order(self, contract, order, order_id=None) -> OrderHandle:
+        if order_id is None:
+            order_id = self._next_order_id
+            self._next_order_id += 1
         order.orderId = order_id
-        if self._reject:
-            status = "Cancelled"; filled = 0; remaining = float(order.totalQuantity)
-        elif self._bracket_mode and getattr(order, "parentId", 0) != 0:
-            status = "PreSubmitted"; filled = 0; remaining = float(order.totalQuantity)
-        elif self._fill_immediately:
-            status = "Filled"; filled = float(order.totalQuantity); remaining = 0
+        handle = self.orders.get(order_id)
+        if handle is None:
+            # Fresh placement
+            if self._reject:
+                status = "Cancelled"; filled = 0; remaining = float(order.totalQuantity)
+            elif self._bracket_mode and getattr(order, "parentId", 0) != 0:
+                status = "PreSubmitted"; filled = 0; remaining = float(order.totalQuantity)
+            elif self._fill_immediately:
+                status = "Filled"; filled = float(order.totalQuantity); remaining = 0
+            else:
+                status = "Submitted"; filled = 0; remaining = float(order.totalQuantity)
+            handle = OrderHandle(order_id, contract, order)
+            self._apply_status(handle, status, filled=filled, remaining=remaining,
+                               avg_fill_price=float(order.lmtPrice or 3.50))
+            self.orders[order_id] = handle
+            self._placed_orders.append(handle)
+            if getattr(order, "parentId", 0) != 0:
+                self._bracket_children.setdefault(order.parentId, []).append(handle)
         else:
-            status = "Submitted"; filled = 0; remaining = float(order.totalQuantity)
-        handle = OrderHandle(order_id, contract, order)
-        self._apply_status(handle, status, filled=filled, remaining=remaining,
-                           avg_fill_price=float(order.lmtPrice or 3.50))
-        self.orders[order_id] = handle
-        self._placed_orders.append(handle)
-        if getattr(order, "parentId", 0) != 0:
-            self._bracket_children.setdefault(order.parentId, []).append(handle)
+            # Modify existing order (same orderId) — update contract/order in
+            # place; do NOT append a new handle to _placed_orders.
+            handle.contract = contract
+            handle.order = order
         self.call_log.append({"method": "place_order", "orderId": order_id,
                               "action": order.action, "totalQuantity": float(order.totalQuantity),
                               "orderType": order.orderType, "lmtPrice": getattr(order, "lmtPrice", None),
                               "auxPrice": getattr(order, "auxPrice", None),
                               "transmit": order.transmit, "parentId": getattr(order, "parentId", 0),
-                              "status": status})
+                              "status": handle.status})
         return handle
 
     def cancel_order(self, order_id):
@@ -318,6 +327,7 @@ class MockIBClient:
         Sets the handle fields and fires the matching ack/fill/terminal events,
         exactly like the real bridge's ``orderStatus`` callback.
         """
+        prev_status = handle.status
         handle.status = status
         if filled is not None:
             handle.filled = float(filled)
@@ -325,6 +335,9 @@ class MockIBClient:
             handle.remaining = float(remaining)
         if avg_fill_price is not None:
             handle.avg_fill_price = avg_fill_price
+        handle.status_event.set()
+        if prev_status == "PreSubmitted" and status != "PreSubmitted":
+            handle.activated_event.set()
         if status not in _PENDING_STATUSES:
             handle.ack_event.set()
         if status == "Filled" and handle.remaining <= 0:

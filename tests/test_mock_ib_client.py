@@ -93,6 +93,27 @@ def test_place_order_reject_mode_cancels():
     assert handle.terminal_event.is_set()
 
 
+def test_place_order_with_explicit_order_id_modifies_existing():
+    """A place_order with an explicit order_id reuses the existing handle (a true
+    modify) — no new order id is allocated and no new handle is appended."""
+    mock = MockIBClient(connected=True, fill_immediately=False)
+    contract = _contract()
+    order = _order(lmt=3.50)
+    handle = mock.place_order(contract, order)
+    assert handle.order_id == 100
+
+    order.lmtPrice = 3.60
+    handle2 = mock.place_order(contract, order, order_id=handle.order_id)
+
+    assert handle2 is handle
+    assert handle.order_id == 100
+    assert order.orderId == 100
+    assert handle.order.lmtPrice == 3.60
+    assert handle.contract is contract
+    assert len(mock.get_placed_orders()) == 1
+    assert mock._next_order_id == 101  # modify does not allocate a fresh id
+
+
 # ---------------------------------------------------------------------------
 # Connection toggling
 # ---------------------------------------------------------------------------
@@ -141,6 +162,24 @@ async def test_bracket_child_activates_on_parent_fill():
     assert stop.status == "Submitted"
     assert stop.ack_event.is_set()  # watch_and_push_status's ack resolves
     assert mock.call_log[-1]["method"] == "simulate_parent_fill"
+
+
+def test_bracket_child_activated_event_fires_on_activation():
+    """activated_event fires exactly when a bracket child leaves PreSubmitted
+    (e.g. PreSubmitted -> Submitted on parent fill)."""
+    mock = MockIBClient(connected=True, fill_immediately=True, bracket_mode=True)
+    parent = mock.place_order(_contract(), _order(qty=1))
+    stop = mock.place_order(_contract(), _order(action="SELL", parent_id=parent.order_id))
+
+    # Still PreSubmitted → activated_event not yet fired (status_event has).
+    assert stop.status == "PreSubmitted"
+    assert stop.status_event.is_set()
+    assert not stop.activated_event.is_set()
+
+    mock.simulate_parent_fill(parent.order_id)
+
+    assert stop.status == "Submitted"
+    assert stop.activated_event.is_set()
 
 
 @pytest.mark.asyncio
