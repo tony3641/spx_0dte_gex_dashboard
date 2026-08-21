@@ -2,6 +2,11 @@
 Account data management: subscriptions, serialization, refresh, and push loop.
 
 All functions accept `ib` and/or `state` explicitly for testability.
+
+The native bridge (``IBClient``) exposes account/portfolio/order/execution
+state as plain lists/dicts (``account_values``, ``portfolio``, ``orders``,
+``executions``) and a single ``on_account_dirty`` callback; this module
+serializes that state for the frontend and runs the push loop.
 """
 
 import asyncio
@@ -11,11 +16,18 @@ import time
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from ib_insync.util import parseIBDatetime
 from config import FORCE_REFRESH_INTERVAL
 from market_hours import now_et, ET
 
 logger = logging.getLogger(__name__)
+
+# IB's "not set" double sentinel for prices (matches ib_client._UNSET).
+_UNSET_DOUBLE = 1.7976931348623157e+308
+
+
+def _unset_or_none(val):
+    """Return None for None / IB's UNSET double sentinel (prices that were never set)."""
+    return val if val not in (None, _UNSET_DOUBLE) else None
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +35,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def serialize_account_values(av_list) -> dict:
-    """Convert ib.accountValues() list into a flat dict of key metrics."""
+    """Convert ib.account_values list into a flat dict of key metrics."""
     keys_wanted = {
         "NetLiquidation", "ExcessLiquidity", "FullAvailableFunds",
         "BuyingPower", "MaintMarginReq", "GrossPositionValue",
@@ -41,7 +53,7 @@ def serialize_account_values(av_list) -> dict:
 
 
 def serialize_portfolio_item(item) -> dict:
-    """Serialize a PortfolioItem (from ib.portfolio()) to a dict."""
+    """Serialize a PortfolioItem (from ib.portfolio) to a dict."""
     c = item.contract
     contract_desc = {
         "conId": c.conId,
@@ -68,38 +80,37 @@ def serialize_portfolio_item(item) -> dict:
     }
 
 
-def serialize_trade(trade) -> dict:
-    """Serialize an ib_insync Trade to a dict for the frontend."""
-    o = trade.order
-    c = trade.contract
+def serialize_order_handle(handle) -> dict:
+    """Serialize a native OrderHandle to a dict for the frontend."""
+    o = handle.order
+    c = handle.contract
     contract_desc = {
         "conId": c.conId,
         "symbol": c.symbol,
         "secType": c.secType,
         "expiry": getattr(c, "lastTradeDateOrContractMonth", ""),
-        "strike": float(c.strike) if getattr(c, "strike", None) and c.strike else None,
+        "strike": float(c.strike) if getattr(c, "strike", None) else None,
         "right": getattr(c, "right", ""),
         "multiplier": getattr(c, "multiplier", ""),
         "currency": c.currency,
         "localSymbol": getattr(c, "localSymbol", ""),
     }
-    log = trade.log[-1] if trade.log else None
     return {
         "orderId": o.orderId,
-        "permId": o.permId,
-        "clientId": o.clientId,
+        "permId": handle.perm_id or 0,
+        "clientId": o.clientId if hasattr(o, "clientId") else 0,
         "action": o.action,
-        "totalQty": o.totalQuantity,
+        "totalQty": float(o.totalQuantity),
         "orderType": o.orderType,
-        "lmtPrice": o.lmtPrice if o.lmtPrice not in (None, 1.7976931348623157e+308) else None,
-        "auxPrice": o.auxPrice if o.auxPrice not in (None, 1.7976931348623157e+308) else None,
+        "lmtPrice": _unset_or_none(o.lmtPrice),
+        "auxPrice": _unset_or_none(o.auxPrice),
         "tif": o.tif,
-        "status": trade.orderStatus.status,
-        "filled": trade.orderStatus.filled,
-        "remaining": trade.orderStatus.remaining,
-        "avgFillPrice": trade.orderStatus.avgFillPrice if trade.orderStatus.avgFillPrice else None,
+        "status": handle.status,
+        "filled": handle.filled,
+        "remaining": handle.remaining,
+        "avgFillPrice": handle.avg_fill_price or None,
         "contract": contract_desc,
-        "lastLogMsg": log.message if log else "",
+        "lastLogMsg": "",
     }
 
 
@@ -108,7 +119,6 @@ def parse_execution_time(raw_time):
     if raw_time is None:
         return None
 
-    dt = None
     if isinstance(raw_time, datetime):
         dt = raw_time
     else:
@@ -116,49 +126,40 @@ def parse_execution_time(raw_time):
         if not text:
             return None
 
-        # Prefer ib_insync's own parser for IB-native date/time strings.
+        today_et = now_et().date()
+        used_today = False
+
+        if re.match(r'^\d{8}\s\d{2}(?:[:]\d{2})?(?:[:]\d{2})?(?:[+-]\d{2}:\d{2})?$', text):
+            date_part = text[:8]
+            time_part = text[9:]
+            if re.match(r'^\d{2}$', time_part):
+                time_part += ':00:00'
+            elif re.match(r'^\d{2}:\d{2}$', time_part):
+                time_part += ':00'
+            text = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}T{time_part}"
+        elif re.match(r'^\d{4}-\d{2}-\d{2}\s', text):
+            text = text.replace(' ', 'T', 1)
+        elif re.match(r'^\d{2}(?::\d{2})?(?::\d{2})?(?:[+-]\d{2}:\d{2})?$', text):
+            if re.match(r'^\d{2}$', text):
+                text += ':00:00'
+            elif re.match(r'^\d{2}:\d{2}$', text):
+                text += ':00'
+            if re.match(r'^\d{2}[+-]\d{2}:\d{2}$', text):
+                text = f"{today_et.isoformat()}T{text[:2]}:00:00{text[2:]}"
+            else:
+                text = f"{today_et.isoformat()}T{text}"
+                used_today = True
+
         try:
-            parsed = parseIBDatetime(text)
-            if isinstance(parsed, datetime):
-                dt = parsed
-        except Exception:
-            dt = None
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
 
-        if dt is None:
-            today_et = now_et().date()
-            used_today = False
-
-            if re.match(r'^\d{8}\s\d{2}(?:[:]\d{2})?(?:[:]\d{2})?(?:[+-]\d{2}:\d{2})?$', text):
-                date_part = text[:8]
-                time_part = text[9:]
-                if re.match(r'^\d{2}$', time_part):
-                    time_part += ':00:00'
-                elif re.match(r'^\d{2}:\d{2}$', time_part):
-                    time_part += ':00'
-                text = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}T{time_part}"
-            elif re.match(r'^\d{4}-\d{2}-\d{2}\s', text):
-                text = text.replace(' ', 'T', 1)
-            elif re.match(r'^\d{2}(?::\d{2})?(?::\d{2})?(?:[+-]\d{2}:\d{2})?$', text):
-                if re.match(r'^\d{2}$', text):
-                    text += ':00:00'
-                elif re.match(r'^\d{2}:\d{2}$', text):
-                    text += ':00'
-                if re.match(r'^\d{2}[+-]\d{2}:\d{2}$', text):
-                    text = f"{today_et.isoformat()}T{text[:2]}:00:00{text[2:]}"
-                else:
-                    text = f"{today_et.isoformat()}T{text}"
-                    used_today = True
-
-            try:
-                dt = datetime.fromisoformat(text)
-            except ValueError:
-                return None
-
-            if used_today:
-                dt = dt.replace(tzinfo=ET)
-                now_dt = now_et()
-                if dt > now_dt:
-                    dt -= timedelta(days=1)
+        if used_today:
+            dt = dt.replace(tzinfo=ET)
+            now_dt = now_et()
+            if dt > now_dt:
+                dt -= timedelta(days=1)
 
     if dt.tzinfo is None:
         # IB can return naive datetimes in TWS/session timezone; treat as ET.
@@ -178,18 +179,18 @@ def format_execution_time_et(dt: Optional[datetime]) -> str:
 
 
 def serialize_execution(ib, exec_filter=None) -> List[dict]:
-    """Serialize today's executions from ib.fills()."""
+    """Serialize today's executions from ib.executions (native records)."""
     today_et = now_et().date()
     result = []
-    for fill in ib.fills():
-        ex = fill.execution
+    for rec in ib.executions:
+        ex = rec.execution
         exec_dt = parse_execution_time(ex.time)
         if exec_dt is None:
             continue
         if exec_dt.astimezone(ET).date() != today_et:
             continue
-        c = fill.contract
-        commission_val = fill.commissionReport.commission if fill.commissionReport else None
+        c = rec.contract
+        commission_val = rec.commission.commissionAndFees if rec.commission else None
         result.append({
             "execId": ex.execId,
             "time": format_execution_time_et(exec_dt),
@@ -214,25 +215,25 @@ def serialize_execution(ib, exec_filter=None) -> List[dict]:
 # ---------------------------------------------------------------------------
 
 def refresh_account_state(ib, state):
-    """Pull current account / portfolio / order state from ib_insync cache."""
+    """Pull current account / portfolio / order state from the native bridge."""
     try:
-        avs = ib.accountValues()
-        if avs:
-            state.account_summary = serialize_account_values(avs)
+        if ib.account_values:
+            state.account_summary = serialize_account_values(ib.account_values)
     except Exception as e:
-        logger.debug(f"accountValues error: {e}")
+        logger.debug(f"account_values error: {e}")
 
     try:
-        state.positions = [serialize_portfolio_item(p) for p in ib.portfolio()]
+        state.positions = [serialize_portfolio_item(p) for p in ib.portfolio]
     except Exception as e:
         logger.debug(f"portfolio error: {e}")
 
     try:
-        trades = ib.openTrades()
-        state.open_orders = [serialize_trade(t) for t in trades]
-        state.active_trades = {t.order.orderId: t for t in trades}
+        trades = [h for h in ib.orders.values() if h.status not in
+                  {"Filled", "Cancelled", "ApiCancelled", "Inactive"}]
+        state.open_orders = [serialize_order_handle(h) for h in trades]
+        state.active_trades = dict(ib.orders)
     except Exception as e:
-        logger.debug(f"openTrades error: {e}")
+        logger.debug(f"open_orders error: {e}")
 
     try:
         state.executions = serialize_execution(ib)
@@ -258,23 +259,12 @@ def build_account_payload(state) -> dict:
 
 async def setup_account_subscription(ib, state):
     """Subscribe to IB account updates and wire up event callbacks."""
-    try:
-        ib.reqAccountUpdates(subscribe=True, account="")
-        logger.info("IB account subscription started")
-    except Exception as e:
-        logger.warning(f"reqAccountUpdates failed: {e}")
-
-    def _mark_dirty(*_args):
-        state.account_dirty = True
-
-    ib.updatePortfolioEvent += _mark_dirty
-    ib.accountValueEvent += _mark_dirty
-    ib.orderStatusEvent += _mark_dirty
-    ib.execDetailsEvent += _mark_dirty
-    ib.commissionReportEvent += _mark_dirty
-    ib.newOrderEvent += _mark_dirty
-
+    ib.on_account_dirty = lambda: setattr(state, "account_dirty", True)
+    ib.req_account_updates(True, "")
+    ib.req_open_orders()
+    ib.req_executions()
     refresh_account_state(ib, state)
+    logger.info("IB account subscription started")
 
 
 async def account_push_loop(ib, state, broadcast_fn):
