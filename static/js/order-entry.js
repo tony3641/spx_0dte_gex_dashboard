@@ -41,7 +41,7 @@
         const lmtInput = document.getElementById('stratLmtPrice');
         const rawLmt = lmtInput ? parseFloat(lmtInput.value) : NaN;
         if (isNaN(rawLmt) || rawLmt === 0) {
-            showOrderToast('Enter a valid limit price (negative for credit spreads)', 'err');
+            showOrderToast('Enter a valid limit price', 'err');
             return;
         }
 
@@ -83,20 +83,21 @@
                 right: leg.right,
                 action: leg.action,
                 qty: ratioQty,
-                lmtPrice: parseFloat(perLegLmt.toFixed(2)),
+                // Prices are always positive; the action (BUY/SELL) carries the
+                // direction. A SELL shows +4.00, never -4.00.
+                lmtPrice: parseFloat(Math.abs(perLegLmt).toFixed(2)),
                 secType: 'OPT',
             };
         });
 
-        let comboAction = rawLmt < 0 ? 'SELL' : 'BUY';
+        // Direction comes from the strategy legs, not the price sign: a net
+        // credit spread is SELL (you collect the credit), a net debit is BUY.
+        let comboAction = 'BUY';
         if (isCombo) {
             const roundedInferredComboPrice = _roundSpxPrice(inferredComboPrice);
             comboAction = roundedInferredComboPrice < 0 ? 'SELL' : 'BUY';
-            if ((comboAction === 'BUY' && rawLmt < 0) || (comboAction === 'SELL' && rawLmt > 0)) {
-                const expectedSide = comboAction === 'BUY' ? 'debit' : 'credit';
-                showOrderToast(`Entered limit sign does not match this ${expectedSide} combo`, 'err');
-                return;
-            }
+        } else {
+            comboAction = state.strategyLegs[0].action === 'SELL' ? 'SELL' : 'BUY';
         }
 
         // Build confirmation modal description
@@ -133,7 +134,7 @@
             legs,
             orderType: 'LMT',
             tif: 'DAY',
-            comboLmtPrice: parseFloat(rawLmt.toFixed(2)),
+            comboLmtPrice: parseFloat(Math.abs(rawLmt).toFixed(2)),
             comboAction,
             comboQuantity: isCombo ? comboNorm.comboQty : 1,
             outsideRth: isOutsideRth,

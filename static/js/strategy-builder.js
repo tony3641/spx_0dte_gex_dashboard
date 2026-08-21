@@ -271,18 +271,18 @@
             const ask = comboAsk;
             const mid = (bid + ask) / 2;
 
-            comboBidEl.textContent = bid.toFixed(2);
-            comboAskEl.textContent = ask.toFixed(2);
-            comboMidEl.textContent = mid.toFixed(2);
+            // Display prices positive; the Credit/Debit label carries direction.
+            comboBidEl.textContent = Math.abs(bid).toFixed(2);
+            comboAskEl.textContent = Math.abs(ask).toFixed(2);
+            comboMidEl.textContent = Math.abs(mid).toFixed(2);
 
-            // Auto-fill limit price input with signed combo mid (only if user hasn't typed yet).
-            // Credit spreads auto-fill a negative value; debit spreads positive.
+            // Auto-fill limit price input with the positive combo mid (only if
+            // user hasn't typed yet). Credit spreads auto-fill a positive value
+            // too — the action (SELL) carries the credit direction.
             const lmtInput = document.getElementById('stratLmtPrice');
             if (lmtInput && lmtInput.dataset.autofilled !== 'false') {
                 const tick = _spxTickForPrice(mid);
-                const signedMid = netCost <= 0
-                    ? -(Math.round(Math.abs(mid) / tick) * tick)
-                    :   (Math.round(mid / tick) * tick);
+                const signedMid = Math.round(Math.abs(mid) / tick) * tick;
                 lmtInput.value = signedMid.toFixed(2);
                 lmtInput.dataset.autofilled = 'true';
                 updatePriceInputStep(lmtInput);
@@ -292,7 +292,7 @@
                 comboNetEl.textContent = 'Debit ' + netCost.toFixed(2);
                 comboNetEl.className = 'summary-value summary-debit';
             } else {
-                comboNetEl.textContent = 'Credit ' + netCost.toFixed(2);
+                comboNetEl.textContent = 'Credit ' + Math.abs(netCost).toFixed(2);
                 comboNetEl.className = 'summary-value summary-credit';
             }
 
