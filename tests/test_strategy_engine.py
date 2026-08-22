@@ -133,3 +133,13 @@ async def test_place_strategy_entry_via_mock(mock_ib, app_state):
     assert resp is not None
     assert len(app_state.strategy_log) == 1
     assert len(mock_ib.get_placed_orders()) == 1
+
+
+def test_has_open_position():
+    from strategy_engine import _has_open_position
+    state = type("S", (), {"positions": [{"contract": {"strike": 5200.0, "right": "C"}}]})()
+    sig = {(5200.0, "C"), (5300.0, "C")}
+    assert _has_open_position(state, sig) is True
+    assert _has_open_position(type("S", (), {"positions": []})(), sig) is False
+    other = type("S", (), {"positions": [{"contract": {"strike": 5000.0, "right": "P"}}]})()
+    assert _has_open_position(other, sig) is False
