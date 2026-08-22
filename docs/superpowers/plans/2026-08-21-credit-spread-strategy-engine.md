@@ -1054,7 +1054,7 @@ from strategy_models import Strategy, Condition
 from strategy_engine import place_strategy_entry, _build_entry_payload
 
 
-def _state(spot=5200.0):
+def _state_t8(spot=5200.0):
     rows = {"strikes": [
         {"strike": 5100, "put_bid": 1.0, "put_ask": 1.4, "put_delta": -0.70, "put_iv": 21.0,
          "call_bid": 9.0, "call_ask": 9.6, "call_delta": 0.30, "call_iv": 20.0},
@@ -1076,7 +1076,7 @@ def test_build_entry_payload_credit_negative():
     strat = Strategy(name="t", direction="bear_call", conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
     cand = type("C", (), {"direction": "bear_call", "short_strike": 5200.0, "long_strike": 5300.0,
                           "credit_mid": 2.0})()
-    p = _build_entry_payload(strat, cand, _state())
+    p = _build_entry_payload(strat, cand, _state_t8())
     assert p["comboLmtPrice"] < 0
     assert p["legs"][0]["action"] == "SELL"
     assert p["legs"][1]["action"] == "BUY"
