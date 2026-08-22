@@ -1100,6 +1100,15 @@ def short_right_for(direction: str) -> str:
     return "P" if direction == "bull_put" else "C"
 
 
+def _has_open_position(state, sig) -> bool:
+    """True if any open position matches the signature set of (strike, right)."""
+    for pos in getattr(state, "positions", []) or []:
+        c = pos.get("contract") or {}
+        if (float(c.get("strike", 0) or 0), c.get("right", "")) in sig:
+            return True
+    return False
+
+
 def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dict:
     from config import spx_tick_for_price, round_signed_to_tick
     rows = chain_rows(state)
@@ -1161,6 +1170,8 @@ async def strategy_evaluation_loop(ib, state, broadcast_fn):
                     continue
                 if strat.auto_execute and ev.candidates:
                     best = ev.candidates[0]
+                    if _has_open_position(state, signature_for_candidate(best, state)):
+                        continue   # spec §11: one concurrent auto position per strategy
                     try:
                         await place_strategy_entry(ib, state, strat, best)
                         await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "auto_entry"}})
@@ -1195,6 +1206,15 @@ async def test_place_strategy_entry_via_mock(mock_ib, app_state):
     assert resp is not None
     assert len(app_state.strategy_log) == 1
     assert len(mock_ib.get_placed_orders()) == 1
+
+def test_has_open_position():
+    from strategy_engine import _has_open_position
+    state = type("S", (), {"positions": [{"contract": {"strike": 5200.0, "right": "C"}}]})()
+    sig = {(5200.0, "C"), (5300.0, "C")}
+    assert _has_open_position(state, sig) is True
+    assert _has_open_position(type("S", (), {"positions": []})(), sig) is False
+    other = type("S", (), {"positions": [{"contract": {"strike": 5000.0, "right": "P"}}]})()
+    assert _has_open_position(other, sig) is False
 ```
 
 Run: `pytest tests/test_strategy_engine.py -v`
