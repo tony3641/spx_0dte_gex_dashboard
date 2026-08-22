@@ -34,7 +34,7 @@
   - `Strategy` fields: `name: str`, `direction: str`, `conditions: list[Condition]`, `exit_rules: ExitRules`, `auto_execute: bool = False`, `armed: bool = False`, `target_expiry: str = ""`.
   - `Condition` fields: `kind: str` (`entry_window|short_delta|spread_width|credit|trend|volatility`), `enabled: bool = True`, `params: dict`.
   - `TakeProfit`: `mode: str` (`pct_credit|dollar|credit_price`), `value: float`.
-  - `StopLoss`: `stop_price: float`, `limit_price: float`.
+  - `StopLoss`: `multiplier: float` (stop trigger = |credit| × multiplier, signed negative).
   - `ExitRules`: `take_profit: TakeProfit|None`, `stop_loss: StopLoss|None`, `hold_to_expire: bool = False`.
 
 - [ ] **Step 1: Write the failing test**
@@ -53,7 +53,7 @@ def test_strategy_roundtrips():
             Condition(kind="short_delta", enabled=True, params={"min": 0.05, "max": 0.35}),
         ],
         exit_rules=ExitRules(take_profit=TakeProfit(mode="pct_credit", value=0.5),
-                             stop_loss=StopLoss(stop_price=1.0, limit_price=0.95),
+                             stop_loss=StopLoss(multiplier=5.0),
                              hold_to_expire=False),
         auto_execute=False,
     )
@@ -62,7 +62,7 @@ def test_strategy_roundtrips():
     assert s2.to_dict() == d
     assert s2.direction == "bull_put"
     assert isinstance(s2.exit_rules.take_profit, TakeProfit)
-    assert s2.exit_rules.stop_loss.limit_price == 0.95
+    assert s2.exit_rules.stop_loss.multiplier == 5.0
 
 
 def test_invalid_direction_rejected():
@@ -125,17 +125,22 @@ class TakeProfit:
 
 @dataclass
 class StopLoss:
-    stop_price: float
-    limit_price: float
+    """Stop-loss as a single multiplier of the collected credit.
+
+    The IB stop-limit bracket's trigger price = |credit| * multiplier (signed
+    negative, e.g. credit -0.30 with multiplier 5.0 -> -1.50). The engine
+    derives the bracket stop/limit from this one input.
+    """
+    multiplier: float = 1.0
 
     def to_dict(self) -> dict:
-        return {"stop_price": self.stop_price, "limit_price": self.limit_price}
+        return {"multiplier": self.multiplier}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> Optional["StopLoss"]:
         if not d:
             return None
-        return cls(stop_price=float(d["stop_price"]), limit_price=float(d["limit_price"]))
+        return cls(multiplier=float(d.get("multiplier", 1.0)))
 
 
 @dataclass
@@ -1080,6 +1085,24 @@ def test_build_entry_payload_credit_negative():
     assert p["comboLmtPrice"] < 0
     assert p["legs"][0]["action"] == "SELL"
     assert p["legs"][1]["action"] == "BUY"
+
+
+def test_build_entry_payload_stop_loss_multiplier():
+    import pytest
+    from strategy_models import StopLoss, ExitRules
+    from strategy_engine import Candidate, _build_entry_payload
+    strat = Strategy(
+        name="t", direction="bear_call",
+        conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})],
+        exit_rules=ExitRules(stop_loss=StopLoss(multiplier=5.0)),
+    )
+    cand = Candidate(direction="bear_call", short_strike=5200.0, long_strike=5300.0, width_points=100.0,
+                     margin=10000.0, credit_bid=1.8, credit_ask=2.2, credit_mid=0.30,
+                     short_delta=0.3, long_delta=0.1, atm_iv=18.0)
+    p = _build_entry_payload(strat, cand, _state_t8())
+    assert p["stopLoss"] is not None
+    assert p["stopLoss"]["stopPrice"] == pytest.approx(-1.5, abs=0.01)
+    assert p["stopLoss"]["limitPrice"] == pytest.approx(-1.5, abs=0.01)
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -1125,6 +1148,19 @@ def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dic
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.long_strike,
          "right": right, "action": "BUY", "qty": 1, "lmtPrice": float(long_lmt or 0.01), "secType": "OPT"},
     ]
+    # Stop-loss bracket: the trigger/limit price = |credit| * multiplier
+    # (signed negative, e.g. credit -0.30 with 5x -> -1.50). order_manager
+    # abs()s the stop/limit, so the sign is for clarity.
+    sl = strategy.exit_rules.stop_loss
+    payload_stop_loss = None
+    if sl is not None:
+        stop_mag = abs(candidate.credit_mid) * sl.multiplier
+        stop_tick = spx_tick_for_price(stop_mag)
+        payload_stop_loss = {
+            "stopPrice": round_signed_to_tick(-stop_mag, stop_tick),
+            "limitPrice": round_signed_to_tick(-stop_mag, stop_tick),
+        }
+
     return {
         "legs": legs,
         "orderType": "LMT", "tif": "DAY",
@@ -1132,8 +1168,7 @@ def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dic
         "comboLmtPrice": round_signed_to_tick(-abs(candidate.credit_mid), tick),
         "comboQuantity": 1,
         "outsideRth": False,
-        "stopLoss": (strategy.exit_rules.stop_loss.to_dict()
-                     if strategy.exit_rules.stop_loss else None),
+        "stopLoss": payload_stop_loss,
     }
 
 
@@ -1622,14 +1657,14 @@ function renderStrategyEditor(name) {
       <label><input type="checkbox" id="tpEnabled" onchange="toggleTp(this)"> Take Profit</label>
       <input id="tpValue" placeholder="% of credit or $" />
       <label><input type="checkbox" id="slEnabled"> Stop Loss</label>
-      <input id="slStop" placeholder="stop" /> <input id="slLimit" placeholder="limit" />
+      <input id="slMultiplier" type="number" step="0.1" placeholder="multiplier (e.g. 5 = 5x credit)" title="Stop trigger = credit * multiplier" />
     </div>
     <label class="caps"><input type="checkbox" id="autoExec" ${s.auto_execute?'checked':''}> Auto-execute</label>
     <button onclick="saveStrategyFromForm()">Save</button>
     <button onclick="armStrategy()">${s.armed?'Disarm':'Arm'}</button>
     <button onclick="deleteStrategy()">Delete</button>`;
     if (s.exit_rules.take_profit) { document.getElementById('tpEnabled').checked = true; document.getElementById('tpValue').value = s.exit_rules.take_profit.value; }
-    if (s.exit_rules.stop_loss) { document.getElementById('slEnabled').checked = true; document.getElementById('slStop').value = s.exit_rules.stop_loss.stop_price; document.getElementById('slLimit').value = s.exit_rules.stop_loss.limit_price; }
+    if (s.exit_rules.stop_loss) { document.getElementById('slEnabled').checked = true; document.getElementById('slMultiplier').value = s.exit_rules.stop_loss.multiplier; }
 }
 
 function saveStrategyFromForm() {
@@ -1638,7 +1673,7 @@ function saveStrategyFromForm() {
     s.direction = document.getElementById('stratDirection').value;
     s.auto_execute = document.getElementById('autoExec').checked;
     const tp = document.getElementById('tpEnabled').checked ? {mode:'pct_credit', value: parseFloat(document.getElementById('tpValue').value)||0} : null;
-    const sl = document.getElementById('slEnabled').checked ? {stop_price: parseFloat(document.getElementById('slStop').value)||0, limit_price: parseFloat(document.getElementById('slLimit').value)||0} : null;
+    const sl = document.getElementById('slEnabled').checked ? {multiplier: parseFloat(document.getElementById('slMultiplier').value)||0} : null;
     s.exit_rules = {take_profit: tp, stop_loss: sl, hold_to_expire: false};
     sendWsMessage('strategy_save:', s);
     renderStrategyList();

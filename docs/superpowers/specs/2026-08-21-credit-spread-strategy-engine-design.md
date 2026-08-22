@@ -151,8 +151,11 @@ When conditions pass and a candidate is accepted:
 
 ## 7. Exit management
 
-- **Stop-loss:** reused unchanged — the existing IB stop-limit bracket attached
-  on entry (`order_manager`). Config: signed stop / limit prices.
+- **Stop-loss:** reuses the existing IB stop-limit bracket attached on entry
+  (`order_manager`). Config is a **single stop-loss multiplier**: the bracket's
+  trigger/limit price = |collected credit| × multiplier, signed negative
+  (e.g. opening credit −0.30 with 5× → stop price −1.50). The engine derives
+  the bracket's stop/limit prices from the one multiplier input.
 - **Take-profit:** one **server-side watch loop** in `strategy_engine`. It tracks
   strategy-tagged positions and flattens (closes the vertical) when the TP target
   is reached. Config as a **% of max credit**, **$ per contract**, or an
