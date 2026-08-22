@@ -389,3 +389,89 @@ async def test_maybe_flatten_below_target_does_not_place(mock_ib, app_state):
     closed = await maybe_flatten_at_take_profit(mock_ib, app_state, cand, pos, tp)
     assert closed is False
     assert len(mock_ib.get_placed_orders()) == 0
+
+
+import datetime as dt
+import time
+from strategy_models import TriggerSpec, RuntimeState
+from strategy_engine import get_runtime, reset_strategy_runtime, _child_is_eligible
+
+
+def _parent_rt(entered=True, done=True, credit=0.30, high=1.5, low=-2.5, close_reason="stop_loss"):
+    rt = RuntimeState(entered=entered, done=done)
+    rt.trade = {"candidate": {"direction": "bull_put", "short_strike": 5100.0, "long_strike": 5000.0,
+                              "credit_mid": 0.30},
+                "credit": credit, "high_water_mult": high, "low_water_mult": low,
+                "close_reason": close_reason}
+    return rt
+
+
+def _populate():
+    state = type("S", (), {})()
+    state.strategies = {
+        "master": Strategy(name="master", direction="bull_put", conditions=[]),
+        "recovery": Strategy(
+            name="recovery", direction="bull_put", conditions=[],
+            parent_name="master",
+            subsequent_triggers=[TriggerSpec(kind="parent_exit_reason", params={"reason": "stop_loss"})],
+            trigger_logic="any",
+        ),
+    }
+    state.runtime = {"master": _parent_rt(), "recovery": RuntimeState()}
+    return state
+
+
+def test_get_runtime_creates_on_demand():
+    st = _populate()
+    rt = get_runtime(st, "master")
+    assert rt is st.runtime["master"]
+    assert get_runtime(st, "new").cycle == 0
+
+
+def test_trigger_exit_reason_fires_when_parent_closed():
+    from strategy_engine import _trigger_aggregate
+    st = _populate()
+    assert _trigger_aggregate(st.strategies["recovery"], st) is True
+
+
+def test_child_not_eligible_while_parent_open():
+    st = _populate()
+    st.runtime["master"].done = False           # parent still open
+    assert _child_is_eligible(st.strategies["recovery"], st) is False
+
+
+def test_child_eligible_when_parent_done_and_trigger_fired():
+    st = _populate()
+    assert _child_is_eligible(st.strategies["recovery"], st) is True
+
+
+def test_child_not_eligible_after_it_entered():
+    st = _populate()
+    st.runtime["recovery"].entered = True
+    assert _child_is_eligible(st.strategies["recovery"], st) is False
+
+
+def test_trigger_pnl_gain_multiple():
+    from strategy_engine import _trigger_aggregate
+    st = _populate()
+    st.strategies["recovery"].subsequent_triggers = [
+        TriggerSpec(kind="parent_unrealized_pnl", params={"gain_multiple": 1.0, "loss_multiple": 2.0})]
+    assert _trigger_aggregate(st.strategies["recovery"], st) is True    # high 1.5 >= 1.0
+
+
+def test_trigger_time_of_day_window():
+    from strategy_engine import _trigger_aggregate
+    st = _populate()
+    st.strategies["recovery"].subsequent_triggers = [
+        TriggerSpec(kind="time_of_day", params={"start": "13:00", "end": "15:00"})]
+    now = dt.datetime(2026, 8, 21, 14, 0)
+    assert _trigger_aggregate(st.strategies["recovery"], st, now=now) is True
+    assert _trigger_aggregate(st.strategies["recovery"], st, now=dt.datetime(2026, 8, 21, 12, 0)) is False
+
+
+def test_reset_strategy_runtime_increments_cycle():
+    st = _populate()
+    reset_strategy_runtime(st, "master")
+    assert st.runtime["master"].cycle == 1
+    assert st.runtime["master"].entered is False
+    assert st.runtime["master"].trade is None

@@ -10,7 +10,7 @@ from condition_helpers import (
     spread_width, spread_margin, combo_credit, nearest_row,
     wilder_rsi, percent_change, atm_iv,
 )
-from strategy_models import Strategy, Condition
+from strategy_models import Strategy, Condition, TriggerSpec, RuntimeState
 from market_hours import (
     now_et, is_short_trading_day, is_nfp_day, is_fomc_day, is_pm_settle,
     resolve_trading_expiration,
@@ -268,6 +268,90 @@ def signature_for_candidate(candidate: Candidate, state) -> set:
 
 def short_right_for(direction: str) -> str:
     return "P" if direction == "bull_put" else "C"
+
+
+def get_runtime(state, name: str) -> RuntimeState:
+    rt = getattr(state, "runtime", {}).get(name)
+    if rt is None:
+        rt = RuntimeState()
+        state.runtime[name] = rt
+    return rt
+
+
+def reset_strategy_runtime(state, name: str) -> None:
+    """Start a fresh arming cycle for a strategy and re-prime its children."""
+    rt = get_runtime(state, name)
+    rt.cycle += 1
+    rt.entered = False
+    rt.done = False
+    rt.trade = None
+    rt.time_met = False
+    rt.parent_cycle = 0
+    parent = state.strategies.get(name)
+    if parent is not None:
+        for child in state.strategies.values():
+            if child.parent_name == name:
+                crt = get_runtime(state, child.name)
+                crt.time_met = False
+                crt.parent_cycle = 0
+
+
+def _trigger_aggregate(child: Strategy, state, now=None):
+    """Aggregate a child's enabled triggers against the parent's current trade."""
+    import datetime as dt
+    now = now or dt.datetime.now()
+    prt = get_runtime(state, child.parent_name)
+    crt = get_runtime(state, child.name)
+    ptrade = prt.trade
+    enabled = [t for t in child.subsequent_triggers if t.enabled]
+    if not enabled:
+        return False
+
+    def one(t):
+        if t.kind == "time_of_day":
+            if crt.time_met and crt.parent_cycle == prt.cycle:
+                return True
+            hm = now.strftime("%H:%M")
+            start, end = t.params.get("start", "09:30"), t.params.get("end", "15:30")
+            return start <= hm <= end
+        if ptrade is None:
+            return False
+        if t.kind == "parent_exit_reason":
+            return ptrade.get("close_reason") == t.params.get("reason")
+        if t.kind == "parent_unrealized_pnl":
+            credit = float(ptrade.get("credit") or 0.0)
+            if credit <= 0:
+                return False
+            gain = t.params.get("gain_multiple")
+            loss = t.params.get("loss_multiple")
+            if gain is None and loss is None:
+                return False
+            hi = float(ptrade.get("high_water_mult") or 0.0)
+            lo = float(ptrade.get("low_water_mult") or 0.0)
+            if gain is not None and hi >= float(gain):
+                return True
+            if loss is not None and lo <= -float(loss):
+                return True
+            return False
+        return False
+
+    results = [one(t) for t in enabled]
+    return all(results) if child.trigger_logic == "all" else any(results)
+
+
+def _child_is_eligible(child: Strategy, state, now=None):
+    """A child may be evaluated/entered only if its trigger fired AND its
+    parent has closed its trade this cycle (child waits for parent flat)."""
+    parent = state.strategies.get(child.parent_name)
+    if parent is None:
+        return False
+    prt = get_runtime(state, parent.name)
+    crt = get_runtime(state, child.name)
+    if crt.entered or crt.done:
+        return False
+    if not prt.entered or not prt.done:
+        return False   # parent must have traded AND closed (flat)
+    return _trigger_aggregate(child, state, now)
 
 
 def _has_open_position(state, sig) -> bool:
