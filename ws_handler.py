@@ -19,6 +19,7 @@ from chain_fetcher import clear_qualification_cache
 from chain_manager import monthly_gex_fetch
 from account_manager import refresh_account_state, build_account_payload
 from order_manager import handle_place_order, handle_cancel_order
+from ib_connection import update_vix
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ async def status_push_loop(state, broadcast_fn):
     while True:
         try:
             await asyncio.sleep(5)
+            update_vix(state)
 
             if not is_within_rth() and state.data_mode == "live":
                 state.data_mode = "historical"
