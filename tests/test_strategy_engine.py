@@ -163,3 +163,22 @@ def test_match_positions():
     found = find_strategy_positions(cand, state)
     # both legs present -> matched
     assert len(found) == 2
+
+
+import asyncio, pytest
+from strategy_engine import maybe_flatten_at_take_profit, Candidate
+from strategy_models import TakeProfit
+
+@pytest.mark.asyncio
+async def test_maybe_flatten_below_target_does_not_place(mock_ib, app_state):
+    app_state.chain_quotes_cache = {"strikes": []}   # no quotes -> cannot price a close
+    app_state.expiration = "20260821"
+    cand = Candidate(direction="bear_call", short_strike=5200.0, long_strike=5300.0, width_points=100.0,
+                     margin=10000.0, credit_bid=1.8, credit_ask=2.2, credit_mid=2.0,
+                     short_delta=0.3, long_delta=0.1, atm_iv=18.0)
+    pos = [{"contract": {"strike": 5200.0, "right": "C"}, "unrealizedPNL": 0.5},
+           {"contract": {"strike": 5300.0, "right": "C"}, "unrealizedPNL": 0.2}]
+    tp = TakeProfit(mode="pct_credit", value=0.5)   # target 1.0; net 0.7 below
+    closed = await maybe_flatten_at_take_profit(mock_ib, app_state, cand, pos, tp)
+    assert closed is False
+    assert len(mock_ib.get_placed_orders()) == 0
