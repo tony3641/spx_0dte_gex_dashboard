@@ -120,8 +120,10 @@ async def test_strategy_save_rejects_budget_above_excess(app_state, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_strategy_save_allows_budget_when_excess_unknown(app_state, monkeypatch):
+async def test_strategy_save_allows_budget_when_excess_unknown(app_state, monkeypatch, tmp_path):
     # When liquidity is unknown (e.g. disconnected), a budget is not rejected.
+    # Isolate STRATEGIES_PATH so the save does not pollute the real config file.
+    monkeypatch.setattr(store, "STRATEGIES_PATH", tmp_path / "strategies.json")
     app_state.account_summary = {}
     body = _body("unknown")
     body["budget"] = 20000.0
