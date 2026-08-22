@@ -1080,7 +1080,7 @@ def test_build_entry_payload_credit_negative():
     assert p["comboLmtPrice"] < 0
     assert p["legs"][0]["action"] == "SELL"
     assert p["legs"][1]["action"] == "BUY"
-
+```
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1240,14 +1240,6 @@ git commit -m "feat: strategy entry placement (credit-signed payload) + eval loo
 - Produces: `find_strategy_positions(strategy, state) -> list`, `maybe_flatten_at_take_profit(ib, state, strategy, position, tp) -> bool`, `async take_profit_loop(ib, state, broadcast_fn)`. TP modes: `pct_credit` (close when PnL ≥ value% of max credit), `dollar` (PnL ≥ value), `credit_price` (position's current spread credit ≥ value).
 
 - [ ] **Step 1: Write the failing test**
-
-```python
-import pytest
-
-def test_find_strategy_positions_by_signature():
-    import asyncio
-    # (covered inline below)
-```
 
 ```python
 from strategy_engine import signature_for_candidate, find_strategy_positions
