@@ -1,0 +1,161 @@
+/* ======================================================
+   Strategies Tab (Tab 4)
+   ====================================================== */
+.tab-panel {
+    display: none;
+    height: calc(100vh - 134px);
+    padding: 8px;
+    box-sizing: border-box;
+}
+/* The #strategiesTab container ships with inline style="display:none" and
+   switchTab only toggles the .active class, so the active rule must carry
+   !important to win the cascade over the inline style. */
+.tab-panel.active { display: flex !important; }
+
+.strategy-tab-layout {
+    display: grid;
+    grid-template-columns: 220px minmax(320px, 1fr) minmax(320px, 1fr);
+    gap: 8px;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+}
+
+.strat-list-pane,
+.strat-editor-pane,
+.strat-scanner-pane {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    padding: 12px;
+    overflow-y: auto;
+}
+
+.strat-list-pane h3,
+.strat-editor-pane h3,
+.strat-scanner-pane h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e2e8f0;
+    margin: 0 0 10px;
+}
+
+/* Strategy list items */
+.strat-item {
+    padding: 7px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    color: #cbd5e1;
+    font-size: 12px;
+    border: 1px solid transparent;
+    margin-bottom: 4px;
+}
+.strat-item:hover { background: #1e293b; }
+.strat-item.active {
+    background: #1e293b;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+
+/* Editor form */
+.strat-editor-pane label {
+    display: block;
+    color: #64748b;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    margin: 10px 0 4px;
+}
+.strat-editor-pane select,
+.strat-editor-pane input[type="text"],
+.strat-editor-pane input[type="number"] {
+    width: 100%;
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #e2e8f0;
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 12px;
+    box-sizing: border-box;
+}
+.strat-editor-pane input[type="checkbox"] { margin-right: 6px; }
+.strat-editor-pane .caps {
+    display: flex;
+    align-items: center;
+    text-transform: none;
+    color: #cbd5e1;
+    font-size: 12px;
+    font-weight: 400;
+    margin: 12px 0 10px;
+}
+.strat-editor-pane ol {
+    margin: 0 0 6px;
+    padding-left: 20px;
+}
+.strat-editor-pane ol li {
+    color: #94a3b8;
+    font-size: 12px;
+    cursor: pointer;
+}
+.strat-editor-pane ol li:hover { color: #e2e8f0; }
+
+.strat-editor-pane button {
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #e2e8f0;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    margin: 4px 6px 4px 0;
+}
+.strat-editor-pane button:hover { border-color: #64748b; }
+
+/* Scanner candidate rows */
+.cand-row {
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: #cbd5e1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.cand-row button {
+    background: #14532d;
+    border: 1px solid #22c55e;
+    color: #86efac;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    margin-left: auto;
+}
+.cand-row button:hover { background: #166534; }
+
+.strat-scanner-pane p { color: #64748b; font-size: 12px; }
+
+/* Buttons (used by the "+ New Strategy" action) */
+.btn {
+    display: inline-block;
+    border-radius: 4px;
+    border: 1px solid #334155;
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 7px 14px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.btn:hover { border-color: #64748b; }
+.btn-primary {
+    background: #2563eb;
+    border-color: #2563eb;
+    color: #fff;
+    margin-top: 8px;
+    width: 100%;
+}
+.btn-primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
