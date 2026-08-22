@@ -260,6 +260,13 @@ async def reconnect_ib(payload: dict):
         state.background_tasks.append(asyncio.create_task(account_push_loop(ib, state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(chain_fetch_loop(ib, state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(chain_stream_loop(ib, state, broadcast_fn)))
+        # Strategy engine: re-subscribe VIX, reload strategies, and restart the
+        # auto-entry / take-profit loops so a manual reconnect does NOT silently
+        # stop auto-trading or position management.
+        await setup_vix_subscription(ib, state)
+        state.strategies = load_strategies()
+        state.background_tasks.append(asyncio.create_task(strategy_evaluation_loop(ib, state, broadcast_fn)))
+        state.background_tasks.append(asyncio.create_task(take_profit_loop(ib, state, broadcast_fn)))
         state.manual_refresh_requested = True
         if state.force_chain_fetch_event is not None:
             state.force_chain_fetch_event.set()

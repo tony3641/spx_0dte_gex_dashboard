@@ -247,6 +247,22 @@ def _has_open_position(state, sig) -> bool:
     return False
 
 
+def _has_margin(state, candidate) -> bool:
+    """Conservative buying-power check against account ExcessLiquidity.
+
+    Allows placement when account data is unavailable (excess unknown) or when
+    the candidate's margin requirement is within excess liquidity.
+    """
+    summary = getattr(state, "account_summary", {}) or {}
+    excess = summary.get("ExcessLiquidity")
+    if excess is None:
+        return True
+    try:
+        return candidate.margin <= float(excess)
+    except (TypeError, ValueError):
+        return True
+
+
 def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dict:
     from config import spx_tick_for_price, round_signed_to_tick
     rows = chain_rows(state)
@@ -292,10 +308,13 @@ async def place_strategy_entry(ib, state, strategy, candidate) -> dict:
     from account_manager import refresh_account_state
     payload = _build_entry_payload(strategy, candidate, state)
     resp = await handle_place_order(ib, state, payload, ws=None, refresh_fn=refresh_account_state)
+    status = (resp.get("data") or {}).get("status", "")
+    if status not in ("Error", ""):
+        state.strategy_open_positions[strategy.name] = candidate.to_dict()
     state.strategy_log.append({
         "ts": time.monotonic(), "slug": "entry",
         "strategy": strategy.name, "candidate": candidate.to_dict(), "resp": resp,
-        "status": getattr(resp, "status", None),
+        "status": status,
     })
     return resp
 
@@ -320,8 +339,11 @@ async def strategy_evaluation_loop(ib, state, broadcast_fn):
                     continue
                 if strat.auto_execute and ev.candidates:
                     best = ev.candidates[0]
-                    if _has_open_position(state, signature_for_candidate(best, state)):
-                        continue   # spec §11: one concurrent auto position per strategy
+                    if strat.name in state.strategy_open_positions:
+                        continue   # spec §11: one concurrent position per strategy
+                    if not _has_margin(state, best):
+                        logger.info(f"{strat.name}: insufficient margin, skipping auto entry")
+                        continue
                     try:
                         await place_strategy_entry(ib, state, strat, best)
                         await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "auto_entry"}})
@@ -401,25 +423,26 @@ async def maybe_flatten_at_take_profit(ib, state, candidate, positions, tp) -> b
 
 async def take_profit_loop(ib, state, broadcast_fn):
     """Watch strategy-tagged positions and flatten at take-profit target."""
-    from market_hours import now_et
     while True:
         try:
             await asyncio.sleep(3.0)
             if not getattr(state, "connected", False):
                 continue
-            for name, strat in list(state.strategies.items()):
+            for name, cand_dict in list(state.strategy_open_positions.items()):
+                strat = state.strategies.get(name)
+                if strat is None:
+                    continue
                 tp = strat.exit_rules.take_profit
                 if tp is None:
                     continue
-                cands = [Candidate(**c) for c in state.strategy_candidates.get(name, [])]
-                for cand in cands:
-                    positions = find_strategy_positions(cand, state)
-                    if len(positions) < 2:
-                        continue
-                    closed = await maybe_flatten_at_take_profit(ib, state, cand, positions, tp)
-                    if closed:
-                        await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "take_profit"}})
-                        break
+                cand = Candidate(**cand_dict)
+                positions = find_strategy_positions(cand, state)
+                if len(positions) < 2:
+                    continue
+                closed = await maybe_flatten_at_take_profit(ib, state, cand, positions, tp)
+                if closed:
+                    state.strategy_open_positions.pop(name, None)
+                    await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "take_profit"}})
         except asyncio.CancelledError:
             break
         except Exception as e:

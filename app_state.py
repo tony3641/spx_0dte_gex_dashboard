@@ -93,6 +93,7 @@ class AppState:
         self.vix_stream = None                   # Optional[TickStream] (native)
         self.auto_trade_kill_switch: bool = False
         self.strategy_log: list = []             # audit entries for auto trades
+        self.strategy_open_positions: dict = {}   # {strategy_name: entered Candidate dict}
 
 
 def create_app_state() -> AppState:

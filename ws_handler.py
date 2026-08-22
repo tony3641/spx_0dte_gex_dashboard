@@ -21,7 +21,6 @@ from account_manager import refresh_account_state, build_account_payload
 from order_manager import handle_place_order, handle_cancel_order
 from ib_connection import update_vix
 from strategy_store import load_strategies, save_strategy, delete_strategy
-from strategy_engine import evaluate_conditions
 from strategy_models import Strategy
 
 logger = logging.getLogger(__name__)

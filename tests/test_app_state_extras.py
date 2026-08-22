@@ -8,3 +8,4 @@ def test_strategy_state_defaults():
     assert s.vix is None
     assert s.auto_trade_kill_switch is False
     assert s.strategy_log == []
+    assert s.strategy_open_positions == {}
