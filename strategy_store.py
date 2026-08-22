@@ -24,10 +24,48 @@ def load_strategies(path=None) -> Dict[str, Strategy]:
             data = json.load(f)
         if not isinstance(data, dict):
             return {}
-        return {name: Strategy.from_dict(d) for name, d in data.items()}
+        data = {name: Strategy.from_dict(d) for name, d in data.items()}
+        return validate_strategy_tree(data)
     except Exception as e:
         logger.error(f"Failed to load strategies from {p}: {e} — starting empty")
         return {}
+
+
+def validate_strategy_tree(strategies) -> dict:
+    """Keep only strategies that are valid in the parent/child tree.
+
+    Drops (fail-safe, logged): a child whose parent is missing, a child with no
+    enabled trigger, and any strategy in a parent cycle. A master is always kept.
+    """
+    ok = dict(strategies)
+
+    def own_invalid(s):
+        if s.parent_name == "":
+            return False
+        return not any(t.enabled for t in s.subsequent_triggers)
+
+    changed = True
+    while changed:
+        changed = False
+        names = set(ok)
+        for n in list(ok):
+            s = ok[n]
+            if own_invalid(s):
+                logger.error(f"Dropping strategy '{n}': child must have >=1 enabled trigger")
+                del ok[n]; changed = True; continue
+            if s.parent_name != "" and s.parent_name not in names:
+                logger.error(f"Dropping strategy '{n}': parent '{s.parent_name}' not found")
+                del ok[n]; changed = True; continue
+        names = set(ok)
+        for n in list(ok):
+            seen = set(); cur = n
+            while cur in ok and cur != "":
+                if cur in seen:
+                    logger.error(f"Dropping strategy '{n}': parent cycle detected")
+                    del ok[n]; changed = True; break
+                seen.add(cur)
+                cur = ok[cur].parent_name
+    return ok
 
 
 def save_strategies(path, strategies: Dict[str, Strategy]) -> None:
