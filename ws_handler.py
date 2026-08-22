@@ -20,6 +20,9 @@ from chain_manager import monthly_gex_fetch
 from account_manager import refresh_account_state, build_account_payload
 from order_manager import handle_place_order, handle_cancel_order
 from ib_connection import update_vix
+from strategy_store import load_strategies, save_strategy, delete_strategy
+from strategy_engine import evaluate_conditions
+from strategy_models import Strategy
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +120,7 @@ async def status_push_loop(state, broadcast_fn):
         try:
             await asyncio.sleep(5)
             update_vix(state)
+            await broadcast_fn({"type": "vix_update", "data": {"vix": state.vix}})
 
             if not is_within_rth() and state.data_mode == "live":
                 state.data_mode = "historical"
@@ -223,6 +227,41 @@ async def websocket_endpoint(ws: WebSocket, ib, state, broadcast_fn):
                         "type": "account_update",
                         "data": build_account_payload(state),
                     }))
+
+                elif msg == "set_tab:strategies":
+                    state.active_tab = "strategies"
+                    logger.info("Client active tab: strategies")
+                    state.strategies = load_strategies()
+                    await ws.send_text(json.dumps({"type": "strategy_list", "data": {
+                        "strategies": [s.to_dict() for s in state.strategies.values()],
+                        "kill_switch": state.auto_trade_kill_switch,
+                    }}))
+
+                elif msg.startswith("strategy_save:"):
+                    try:
+                        body = json.loads(msg.split(":", 1)[1])
+                        strat = Strategy.from_dict(body)
+                        state.strategies[strat.name] = strat
+                        save_strategy(None, strat)
+                        await ws.send_text(json.dumps({"type": "strategy_list", "data": {
+                            "strategies": [s.to_dict() for s in state.strategies.values()],
+                            "kill_switch": state.auto_trade_kill_switch}}))
+                    except Exception as e:
+                        logger.error(f"strategy_save error: {e}", exc_info=True)
+
+                elif msg.startswith("strategy_delete:"):
+                    name = msg.split(":", 1)[1]
+                    state.strategies.pop(name, None)
+                    delete_strategy(None, name)
+
+                elif msg.startswith("strategy_arm:"):
+                    state.strategies[msg.split(":", 1)[1]].armed = True
+
+                elif msg.startswith("strategy_disarm:"):
+                    state.strategies[msg.split(":", 1)[1]].armed = False
+
+                elif msg.startswith("strategy_kill_switch:"):
+                    state.auto_trade_kill_switch = msg.split(":", 1)[1] == "true"
 
                 elif msg.startswith("place_order:"):
                     try:
