@@ -474,7 +474,7 @@
     }
 
     function renderTriggerFields(i, kind, params) {
-        const container = document.getElementById('triggerEditor');
+        const container = document.getElementById('triggerFields');
         const def = TRIGGER_DEFS[kind];
         if (!container || !def) return;
         const p = params || {};
