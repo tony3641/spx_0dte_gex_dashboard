@@ -1178,11 +1178,12 @@ An async integration test (add to the test module):
 ```python
 @pytest.mark.asyncio
 async def test_place_strategy_entry_via_mock(mock_ib, app_state):
-    from strategy_engine import _build_entry_payload, place_strategy_entry
+    from strategy_engine import _build_entry_payload, place_strategy_entry, Candidate
+    app_state.expiration = "20260821"
     strat = Strategy(name="t", direction="bear_call", conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
-    cand = type("C", (), {"direction": "bear_call", "short_strike": 5200.0, "long_strike": 5300.0, "credit_mid": 2.0,
-                          "width_points": 100.0, "margin": 10000.0, "credit_bid": 1.8, "credit_ask": 2.2,
-                          "short_delta": 0.3, "long_delta": 0.1, "atm_iv": 18.0})()
+    cand = Candidate(direction="bear_call", short_strike=5200.0, long_strike=5300.0, width_points=100.0,
+                     margin=10000.0, credit_bid=1.8, credit_ask=2.2, credit_mid=2.0,
+                     short_delta=0.3, long_delta=0.1, atm_iv=18.0)
     payload = _build_entry_payload(strat, cand, app_state)
     resp = await place_strategy_entry(mock_ib, app_state, strat, cand)
     assert resp is not None
