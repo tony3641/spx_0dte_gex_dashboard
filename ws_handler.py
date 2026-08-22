@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import time
+from typing import Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -19,10 +20,40 @@ from chain_fetcher import clear_qualification_cache
 from chain_manager import monthly_gex_fetch
 from account_manager import refresh_account_state, build_account_payload
 from order_manager import handle_place_order, handle_cancel_order
+from ib_connection import update_vix
+from strategy_store import load_strategies, save_strategy, delete_strategy
+from strategy_models import Strategy
 
 logger = logging.getLogger(__name__)
 
 _IGNORED_IB_ERROR_CODES = {2104, 2106, 2107, 2108, 2119, 2158}
+
+
+def _unquote_name(name: str) -> str:
+    """The strategy_* handlers expect a raw name, but a JSON-stringifying client
+    may send one wrapped in quotes (e.g. strategy_delete:\"Strat1\"). Strip a
+    single layer of surrounding double quotes so the delete/arm/disarm still work.
+    """
+    if len(name) >= 2 and name[0] == '"' and name[-1] == '"':
+        return name[1:-1]
+    return name
+
+
+def _budget_error(state, budget) -> Optional[str]:
+    """Return an error string when a strategy budget exceeds ExcessLiquidity.
+
+    Returns None when the budget is unset or liquidity is unknown (so a
+    disconnecting account never blocks saving).
+    """
+    if budget is None:
+        return None
+    summary = getattr(state, "account_summary", {}) or {}
+    excess = summary.get("ExcessLiquidity")
+    if excess is None:
+        return None
+    if budget > float(excess):
+        return f"Budget ${budget:,.2f} exceeds available excess liquidity ${float(excess):,.2f}"
+    return None
 
 
 async def broadcast(state, message: dict):
@@ -115,6 +146,8 @@ async def status_push_loop(state, broadcast_fn):
     while True:
         try:
             await asyncio.sleep(5)
+            update_vix(state)
+            await broadcast_fn({"type": "vix_update", "data": {"vix": state.vix}})
 
             if not is_within_rth() and state.data_mode == "live":
                 state.data_mode = "historical"
@@ -221,6 +254,49 @@ async def websocket_endpoint(ws: WebSocket, ib, state, broadcast_fn):
                         "type": "account_update",
                         "data": build_account_payload(state),
                     }))
+
+                elif msg == "set_tab:strategies":
+                    state.active_tab = "strategies"
+                    logger.info("Client active tab: strategies")
+                    state.strategies = load_strategies()
+                    await ws.send_text(json.dumps({"type": "strategy_list", "data": {
+                        "strategies": [s.to_dict() for s in state.strategies.values()],
+                        "kill_switch": state.auto_trade_kill_switch,
+                    }}))
+
+                elif msg.startswith("strategy_save:"):
+                    try:
+                        body = json.loads(msg.split(":", 1)[1])
+                        strat = Strategy.from_dict(body)
+                        err = _budget_error(state, strat.budget)
+                        if err:
+                            await ws.send_text(json.dumps({"type": "strategy_error", "data": {"message": err}}))
+                            continue
+                        state.strategies[strat.name] = strat
+                        save_strategy(None, strat)
+                        await ws.send_text(json.dumps({"type": "strategy_list", "data": {
+                            "strategies": [s.to_dict() for s in state.strategies.values()],
+                            "kill_switch": state.auto_trade_kill_switch}}))
+                    except Exception as e:
+                        logger.error(f"strategy_save error: {e}", exc_info=True)
+
+                elif msg.startswith("strategy_delete:"):
+                    name = _unquote_name(msg.split(":", 1)[1])
+                    state.strategies.pop(name, None)
+                    delete_strategy(None, name)
+
+                elif msg.startswith("strategy_arm:"):
+                    s = state.strategies.get(_unquote_name(msg.split(":", 1)[1]))
+                    if s is not None:
+                        s.armed = True
+
+                elif msg.startswith("strategy_disarm:"):
+                    s = state.strategies.get(_unquote_name(msg.split(":", 1)[1]))
+                    if s is not None:
+                        s.armed = False
+
+                elif msg.startswith("strategy_kill_switch:"):
+                    state.auto_trade_kill_switch = msg.split(":", 1)[1] == "true"
 
                 elif msg.startswith("place_order:"):
                     try:

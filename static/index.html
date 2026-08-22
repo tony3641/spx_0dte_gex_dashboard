@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="/static/css/strategy.css">
     <link rel="stylesheet" href="/static/css/account.css">
     <link rel="stylesheet" href="/static/css/order-entry.css">
+    <link rel="stylesheet" href="/static/css/strategies.css">
     <link rel="stylesheet" href="/static/css/mobile.css">
 </head>
 <body>
@@ -77,6 +78,7 @@
         <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
         <button class="tab-btn" data-tab="chain" onclick="switchTab('chain')">Option Chain</button>
         <button class="tab-btn" data-tab="account" onclick="switchTab('account')">Account</button>
+        <button class="tab-btn" data-tab="strategies" onclick="switchTab('strategies')">Strategies</button>
     </div>
 
     <!-- Charts (Tab 1) -->
@@ -349,6 +351,19 @@
         </div>
     </div>
 
+    <!-- Strategies Tab (Tab 4) -->
+    <div class="tab-panel" id="strategiesTab" style="display:none;">
+        <div class="strategy-tab-layout">
+            <div class="strat-list-pane">
+                <h3>Strategies</h3>
+                <div id="strategyNav"></div>
+                <button class="btn btn-primary" onclick="newStrategy()">+ New Strategy</button>
+            </div>
+            <div class="strat-editor-pane" id="strategyEditor"></div>
+            <div class="strat-scanner-pane" id="strategyScanner"></div>
+        </div>
+    </div>
+
     <!-- Order Confirmation Modal -->
     <div class="order-modal-backdrop hidden" id="orderModalBackdrop">
         <div class="order-modal">
@@ -357,6 +372,17 @@
             <div class="order-modal-footer">
                 <button class="order-modal-cancel" onclick="dismissOrderModal()">Cancel</button>
                 <button class="order-modal-confirm" id="orderModalConfirmBtn" onclick="confirmOrder()">Confirm Order</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Strategy Validation Modal -->
+    <div class="order-modal-backdrop hidden" id="stratValidateBackdrop">
+        <div class="order-modal">
+            <div class="order-modal-title">Strategy Preview / Validation</div>
+            <div class="order-modal-body" id="stratValidateBody"></div>
+            <div class="order-modal-footer">
+                <button class="order-modal-cancel" onclick="closeStrategyValidate()">Close</button>
             </div>
         </div>
     </div>
@@ -379,6 +405,7 @@
     <script src="/static/js/order-entry.js"></script>
     <script src="/static/js/chain-table.js"></script>
     <script src="/static/js/strategy-builder.js"></script>
+    <script src="/static/js/strategy-ui.js"></script>
     <script src="/static/js/main.js"></script>
 </body>
 </html>

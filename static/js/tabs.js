@@ -12,11 +12,14 @@
         const dashboard = document.getElementById('dashboardTab');
         const chain = document.getElementById('chainTab');
         const account = document.getElementById('accountTab');
+        const strategies = document.getElementById('strategiesTab');
         // Hide all first
         dashboard.style.display = 'none';
         dashboard.classList.remove('active');
         chain.classList.remove('active');
         account.classList.remove('active');
+        strategies.style.display = 'none';
+        strategies.classList.remove('active');
 
         if (tab === 'dashboard') {
             dashboard.style.display = '';
@@ -34,6 +37,9 @@
         } else if (tab === 'account') {
             account.classList.add('active');
             renderAccountTab();
+        } else if (tab === 'strategies') {
+            strategies.classList.add('active');
+            if (ws && ws.readyState === WebSocket.OPEN) ws.send('set_tab:strategies');
         }
     }
 

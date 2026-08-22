@@ -47,6 +47,9 @@ from ws_handler import (
 )
 from market_hours import is_within_rth, market_status, get_expiration_display
 from risk_free import get_risk_free_rate
+from strategy_store import load_strategies
+from strategy_engine import strategy_evaluation_loop, take_profit_loop
+from ib_connection import setup_vix_subscription
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -109,10 +112,17 @@ async def lifespan(_app):
         # Account subscription
         await setup_account_subscription(ib, state)
 
+        # Strategy engine: load persisted strategies and subscribe VIX for the
+        # volatility condition
+        state.strategies = load_strategies()
+        await setup_vix_subscription(ib, state)
+
         # Start background loops
         state.background_tasks.append(asyncio.create_task(price_push_loop(ib, state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(status_push_loop(state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(account_push_loop(ib, state, broadcast_fn)))
+        state.background_tasks.append(asyncio.create_task(strategy_evaluation_loop(ib, state, broadcast_fn)))
+        state.background_tasks.append(asyncio.create_task(take_profit_loop(ib, state, broadcast_fn)))
 
         # Chain snapshot loop — force immediate first snapshot
         if state.force_chain_fetch_event is None:
@@ -250,6 +260,13 @@ async def reconnect_ib(payload: dict):
         state.background_tasks.append(asyncio.create_task(account_push_loop(ib, state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(chain_fetch_loop(ib, state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(chain_stream_loop(ib, state, broadcast_fn)))
+        # Strategy engine: re-subscribe VIX, reload strategies, and restart the
+        # auto-entry / take-profit loops so a manual reconnect does NOT silently
+        # stop auto-trading or position management.
+        await setup_vix_subscription(ib, state)
+        state.strategies = load_strategies()
+        state.background_tasks.append(asyncio.create_task(strategy_evaluation_loop(ib, state, broadcast_fn)))
+        state.background_tasks.append(asyncio.create_task(take_profit_loop(ib, state, broadcast_fn)))
         state.manual_refresh_requested = True
         if state.force_chain_fetch_event is not None:
             state.force_chain_fetch_event.set()

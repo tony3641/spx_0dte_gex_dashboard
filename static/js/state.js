@@ -38,10 +38,15 @@
         pendingOrderPayload: null,
         // Tracks positions currently being liquidated (prevents duplicate orders)
         liquidatingPositions: new Set(),
+        // Strategies tab state
+        strategies: [],          // [{name, direction, conditions, exit_rules, auto_execute, armed}]
+        strategyCandidates: {},  // {name: [candidate]}
+        vix: null,
+        killSwitch: false,
     };
 
     const TAB_KEY = 'spx0dte.activeTab';
-    const VALID_TABS = new Set(['dashboard', 'chain', 'account']);
+    const VALID_TABS = new Set(['dashboard', 'chain', 'account', 'strategies']);
 
     function getValidTab(tab) {
         return VALID_TABS.has(tab) ? tab : 'dashboard';

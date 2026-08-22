@@ -446,7 +446,8 @@
             case 'ping':
                 break;
             default:
-                console.log('Unknown message type:', msg.type);
+                handleStrategyMessage(msg);   // route strategy_* / vix_update from strategy-ui.js
+                break;
         }
     }
 
