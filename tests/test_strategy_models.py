@@ -105,3 +105,63 @@ def test_run_days_invalid_rejected():
         Strategy.from_dict(_base_dict(run_days=[1, 6]))  # 6 = Sunday, out of range
     with pytest.raises(ValueError):
         Strategy.from_dict(_base_dict(run_days=["a"]))
+
+
+from strategy_models import TriggerSpec, RuntimeState, TRIGGER_KINDS, TRIGGER_LOGIC
+
+
+def test_trigger_spec_roundtrips():
+    t = TriggerSpec(kind="time_of_day", enabled=True, params={"start": "13:00", "end": "15:00"})
+    assert TriggerSpec.from_dict(t.to_dict()).to_dict() == t.to_dict()
+
+
+def test_child_strategy_roundtrip_with_triggers():
+    s = Strategy(
+        name="followup", direction="bull_put", conditions=[],
+        parent_name="master",
+        subsequent_triggers=[TriggerSpec(kind="parent_exit_reason", params={"reason": "stop_loss"})],
+        trigger_logic="any",
+    )
+    d = s.to_dict()
+    assert d["parent_name"] == "master"
+    assert d["subsequent_triggers"][0]["kind"] == "parent_exit_reason"
+    assert d["trigger_logic"] == "any"
+    s2 = Strategy.from_dict(d)
+    assert s2.parent_name == "master"
+    assert s2.subsequent_triggers[0].kind == "parent_exit_reason"
+    assert s2.trigger_logic == "any"
+
+
+def test_child_strategy_defaults_when_absent():
+    d = {"name": "x", "direction": "bull_put", "conditions": [],
+         "exit_rules": {"take_profit": None, "stop_loss": None, "hold_to_expire": False}}
+    s = Strategy.from_dict(d)
+    assert s.parent_name == ""
+    assert s.subsequent_triggers == []
+    assert s.trigger_logic == "any"
+
+
+def test_invalid_trigger_logic_rejected():
+    d = {"name": "x", "direction": "bull_put", "conditions": [],
+         "exit_rules": {"take_profit": None, "stop_loss": None, "hold_to_expire": False},
+         "trigger_logic": "or"}
+    with pytest.raises(ValueError):
+        Strategy.from_dict(d)
+
+
+def test_invalid_trigger_kind_rejected():
+    d = {"name": "x", "direction": "bull_put", "conditions": [],
+         "exit_rules": {"take_profit": None, "stop_loss": None, "hold_to_expire": False},
+         "subsequent_triggers": [{"kind": "parent_price", "enabled": True, "params": {}}]}
+    with pytest.raises(ValueError):
+        Strategy.from_dict(d)
+
+
+def test_runtime_state_defaults():
+    rt = RuntimeState()
+    assert rt.cycle == 0
+    assert rt.entered is False
+    assert rt.done is False
+    assert rt.trade is None
+    assert rt.time_met is False
+    assert rt.parent_cycle == 0
