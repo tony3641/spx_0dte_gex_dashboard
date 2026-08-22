@@ -253,3 +253,19 @@ async def test_status_push_loop_broadcasts_vix_update(monkeypatch):
     vix_msgs = [m for m in messages if m["type"] == "vix_update"]
     assert len(vix_msgs) >= 1
     assert vix_msgs[0]["data"]["vix"] == 18.5
+
+
+@pytest.mark.asyncio
+async def test_strategy_arm_resets_runtime(app_state):
+    from strategy_engine import get_runtime
+    app_state.strategies["a"] = Strategy(name="a", direction="bull_put", conditions=[])
+    rt = get_runtime(app_state, "a")
+    rt.entered = True
+    rt.done = True
+    ws = FakeWS(["strategy_arm:a"])
+
+    await websocket_endpoint(ws, None, app_state, _noop_broadcast)
+
+    assert app_state.strategies["a"].armed is True
+    assert rt.entered is False      # re-arm resets the one-shot latch
+    assert rt.trade is None
