@@ -399,8 +399,11 @@ from strategy_engine import get_runtime, reset_strategy_runtime, _child_is_eligi
 
 def _parent_rt(entered=True, done=True, credit=0.30, high=1.5, low=-2.5, close_reason="stop_loss"):
     rt = RuntimeState(entered=entered, done=done)
+    # Full candidate dict so _child_is_eligible can rebuild Candidate and check
+    # find_strategy_positions against it (spec §3 flat-parent gate).
     rt.trade = {"candidate": {"direction": "bull_put", "short_strike": 5100.0, "long_strike": 5000.0,
-                              "credit_mid": 0.30},
+                              "width_points": 100.0, "margin": 10000.0, "credit_bid": 0.2, "credit_ask": 0.4,
+                              "credit_mid": 0.30, "short_delta": 0.3, "long_delta": 0.1, "atm_iv": 18.0},
                 "credit": credit, "high_water_mult": high, "low_water_mult": low,
                 "close_reason": close_reason}
     return rt
@@ -418,6 +421,7 @@ def _populate():
         ),
     }
     state.runtime = {"master": _parent_rt(), "recovery": RuntimeState()}
+    state.strategy_open_positions = {}   # mirrors AppState (engine pops entries on reset)
     return state
 
 
@@ -451,6 +455,17 @@ def test_child_not_eligible_after_it_entered():
     assert _child_is_eligible(st.strategies["recovery"], st) is False
 
 
+def test_child_not_eligible_while_parent_close_legs_present():
+    """A parent marked done (TP close accepted) whose legs are still present in
+    state.positions is NOT flat yet — the child must wait (spec §3)."""
+    st = _populate()
+    st.positions = [{"contract": {"strike": 5100.0, "right": "P"}, "unrealizedPNL": 0.0},
+                    {"contract": {"strike": 5000.0, "right": "P"}, "unrealizedPNL": 0.0}]
+    assert _child_is_eligible(st.strategies["recovery"], st) is False   # close legs still working
+    st.positions = []   # parent now truly flat
+    assert _child_is_eligible(st.strategies["recovery"], st) is True
+
+
 def test_trigger_pnl_gain_multiple():
     from strategy_engine import _trigger_aggregate
     st = _populate()
@@ -475,6 +490,15 @@ def test_reset_strategy_runtime_increments_cycle():
     assert st.runtime["master"].cycle == 1
     assert st.runtime["master"].entered is False
     assert st.runtime["master"].trade is None
+
+
+def test_reset_strategy_runtime_clears_stale_open_position():
+    """A stale strategy_open_positions entry (non-TP close) must not re-block
+    a re-armed strategy; re-arm pops it (spec §6)."""
+    st = _populate()
+    st.strategy_open_positions = {"master": {"whatever": 1}}
+    reset_strategy_runtime(st, "master")
+    assert "master" not in st.strategy_open_positions
 
 
 import asyncio
@@ -595,9 +619,11 @@ def test_daily_reset_preserves_open_position():
     state.runtime = {"master": RuntimeState(entered=True)}
     state.runtime["master"].trade = {"candidate": cd, "credit": 0.30,
                                      "high_water_mult": 0.0, "low_water_mult": 0.0}
+    state.strategy_open_positions = {"master": cd}   # open -> entry stays in the map
     _daily_reset(state)
     assert state.runtime["master"].entered is True       # open -> preserved
     assert state.runtime["master"].trade is not None
+    assert "master" in state.strategy_open_positions     # open position still tracked
 
 
 def test_daily_reset_resets_closed() :
@@ -610,9 +636,30 @@ def test_daily_reset_resets_closed() :
     state.runtime = {"master": RuntimeState(entered=True, done=True)}
     state.runtime["master"].trade = {"candidate": cd, "credit": 0.30,
                                      "high_water_mult": 0.0, "low_water_mult": 0.0}
+    state.strategy_open_positions = {"master": cd}   # closed -> stale entry must be popped
     _daily_reset(state)
     assert state.runtime["master"].entered is False
     assert state.runtime["master"].trade is None
+    assert "master" not in state.strategy_open_positions
+
+
+def test_daily_reset_clears_stale_open_position_for_closed():
+    """A closed strategy (position gone) with a stale strategy_open_positions
+    entry gets it popped by the daily reset (spec §6 lifecycle)."""
+    state = type("S", (), {})()
+    state.strategies = {"master": Strategy(name="master", direction="bull_put", conditions=[])}
+    state.positions = []   # closed
+    state.executions = []
+    state.expiration = "20260821"
+    cd = _cand().to_dict()
+    state.runtime = {"master": RuntimeState(entered=True, done=True)}
+    state.runtime["master"].trade = {"candidate": cd, "credit": 0.30,
+                                     "high_water_mult": 0.0, "low_water_mult": 0.0}
+    state.strategy_open_positions = {"master": cd}   # stale map entry
+    _daily_reset(state)
+    assert state.runtime["master"].entered is False
+    assert state.runtime["master"].trade is None
+    assert "master" not in state.strategy_open_positions
 
 
 @pytest.mark.asyncio
@@ -644,9 +691,13 @@ async def test_eval_loop_child_enters_once_eligible(monkeypatch):
     state.strategies = {"master": parent, "child": child}
 
     # Parent has traded and CLOSED (flat) this cycle; the stop-loss trigger fired.
+    # Full candidate dict so the flat-parent gate can rebuild Candidate.
     state.runtime["master"] = RuntimeState(entered=True, done=True)
     state.runtime["master"].trade = {"candidate": {"direction": "bull_put", "short_strike": 5100.0,
-                                                   "long_strike": 5000.0, "credit_mid": 0.30},
+                                                   "long_strike": 5000.0, "width_points": 100.0,
+                                                   "margin": 10000.0, "credit_bid": 0.2, "credit_ask": 0.4,
+                                                   "credit_mid": 0.30, "short_delta": 0.3, "long_delta": 0.1,
+                                                   "atm_iv": 18.0},
                                      "credit": 0.30, "high_water_mult": 0.0, "low_water_mult": 0.0,
                                      "close_reason": "stop_loss"}
     state.runtime["child"] = RuntimeState()

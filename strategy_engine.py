@@ -287,6 +287,7 @@ def reset_strategy_runtime(state, name: str) -> None:
     rt.trade = None
     rt.time_met = False
     rt.parent_cycle = 0
+    state.strategy_open_positions.pop(name, None)   # stale map entry (non-TP close) must not re-block
     parent = state.strategies.get(name)
     if parent is not None:
         for child in state.strategies.values():
@@ -298,8 +299,7 @@ def reset_strategy_runtime(state, name: str) -> None:
 
 def _trigger_aggregate(child: Strategy, state, now=None):
     """Aggregate a child's enabled triggers against the parent's current trade."""
-    import datetime as dt
-    now = now or dt.datetime.now()
+    now = now or now_et()   # spec §5: T1 time-of-day binds to the ET clock
     prt = get_runtime(state, child.parent_name)
     crt = get_runtime(state, child.name)
     ptrade = prt.trade
@@ -350,7 +350,16 @@ def _child_is_eligible(child: Strategy, state, now=None):
     if crt.entered or crt.done:
         return False
     if not prt.entered or not prt.done:
-        return False   # parent must have traded AND closed (flat)
+        return False   # parent must have traded AND closed
+    # prt.done flips the moment a TP close order is accepted, possibly before
+    # the close legs are confirmed dropped — the child must wait for the parent
+    # to be truly flat (spec §3), or we'd briefly hold two positions in a branch.
+    parent_trade = prt.trade
+    if parent_trade is None:
+        return False
+    parent_cand = Candidate(**parent_trade["candidate"])
+    if len(find_strategy_positions(parent_cand, state)) >= 2:
+        return False   # parent not truly flat yet
     return _trigger_aggregate(child, state, now)
 
 
@@ -670,6 +679,7 @@ def _daily_reset(state) -> None:
         rt.trade = None
         rt.time_met = False
         rt.parent_cycle = 0
+        state.strategy_open_positions.pop(name, None)   # stale map entry (non-TP close) must not re-block
 
 
 def _tp_target(tp, max_credit: float) -> float:
