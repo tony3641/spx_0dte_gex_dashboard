@@ -1,6 +1,6 @@
 import pytest
 from strategy_models import Strategy, Condition
-from strategy_engine import generate_candidates
+from strategy_engine import generate_candidates, evaluate_conditions
 
 
 def _rows():
@@ -28,3 +28,61 @@ def test_bear_call_candidates():
     assert c.width_points == 100 and c.margin == 10000
     assert c.credit_mid > 0
     assert c.credit_mid == pytest.approx((4.3 - 2.3), abs=0.01)
+
+
+def _closes():
+    return [100.0 + 0.2 * i for i in range(20)]  # gently rising
+
+
+def _state(vix=15.0, spot=5200.0):
+    rows = {"strikes": [
+        {"strike": 5100, "put_bid": 1.0, "put_ask": 1.4, "put_delta": -0.70, "put_iv": 21.0,
+         "call_bid": 9.0, "call_ask": 9.6, "call_delta": 0.30, "call_iv": 20.0},
+        {"strike": 5200, "put_bid": 3.0, "put_ask": 3.4, "put_delta": -0.30, "put_iv": 19.0,
+         "call_bid": 4.0, "call_ask": 4.6, "call_delta": 0.30, "call_iv": 18.0},
+        {"strike": 5300, "put_bid": 6.0, "put_ask": 6.6, "put_delta": -0.10, "put_iv": 23.0,
+         "call_bid": 2.0, "call_ask": 2.6, "call_delta": 0.10, "call_iv": 22.0},
+    ], "spot_price": spot}
+    class S: pass
+    s = S()
+    s.chain_quotes_cache = rows
+    s.spx_price = spot
+    s.vix = vix
+    s.price_history = [{"close": c} for c in _closes()]
+    s.account_summary = {}
+    return s
+
+
+def _swe(d="bull_put"):
+    return Strategy(name="t", direction=d, conditions=[
+        Condition(kind="entry_window", params={"start": "09:32", "end": "11:00"}),
+        Condition(kind="volatility", params={"vix_enabled": True, "vix_op": "above", "vix_value": 14.0,
+                                             "atm_iv_enabled": False}),
+        Condition(kind="spread_width", params={"min": 50, "max": 150}),
+        Condition(kind="short_delta", params={"min": 0.2, "max": 0.4}),
+    ])
+
+
+def test_fail_window_blocker(monkeypatch):
+    import datetime as dt
+    from strategy_engine import evaluate_conditions
+    now = dt.datetime(2026, 8, 21, 12, 30)
+    ev = evaluate_conditions(_swe(), _state(), now=now)
+    assert ev.status == "blocked"
+    assert ev.blocker == "entry_window"
+
+
+def test_all_pass_ready():
+    import datetime as dt
+    now = dt.datetime(2026, 8, 21, 10, 0)
+    ev = evaluate_conditions(_swe(), _state(vix=20.0), now=now)
+    assert ev.status == "ready"
+    assert ev.candidates
+
+
+def test_vix_blocks_before_candidates():
+    import datetime as dt
+    now = dt.datetime(2026, 8, 21, 10, 0)
+    ev = evaluate_conditions(_swe(), _state(vix=10.0), now=now)
+    assert ev.blocker == "volatility"
+    assert ev.candidates == []
