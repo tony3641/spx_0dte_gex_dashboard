@@ -7,6 +7,8 @@ DIRECTIONS = ("bull_put", "bear_call")
 TREND_INDICATORS = ("rsi", "pmove")
 BUCKET_OPS = ("above", "below", "range")
 
+DEFAULT_RUN_DAYS = [0, 1, 2, 3, 4]   # Mon=0 .. Fri=4 (all weekdays)
+
 
 @dataclass
 class Condition:
@@ -79,6 +81,34 @@ class ExitRules:
         )
 
 
+TRIGGER_KINDS = ("time_of_day", "parent_exit_reason", "parent_unrealized_pnl")
+TRIGGER_LOGIC = ("any", "all")
+
+
+@dataclass
+class TriggerSpec:
+    kind: str
+    enabled: bool = True
+    params: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {"kind": self.kind, "enabled": self.enabled, "params": dict(self.params)}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TriggerSpec":
+        return cls(kind=d["kind"], enabled=d.get("enabled", True), params=dict(d.get("params") or {}))
+
+
+@dataclass
+class RuntimeState:
+    cycle: int = 0                 # current arming cycle (increments on re-arm / day roll)
+    entered: bool = False          # opened the cycle's one position
+    done: bool = False             # that position closed; idle until a reset
+    trade: Optional[dict] = None   # the single trade record (see strategy_engine)
+    time_met: bool = False         # T1: the time window was reached during the parent's current trade
+    parent_cycle: int = 0          # the parent cycle time_met was latched against
+
+
 @dataclass
 class Strategy:
     name: str
@@ -89,6 +119,13 @@ class Strategy:
     armed: bool = False
     target_expiry: str = ""
     budget: Optional[float] = None    # max per-trade margin this strategy may risk (None = no cap)
+    run_days: List[int] = field(default_factory=lambda: list(DEFAULT_RUN_DAYS))  # Mon=0..Fri=4
+    short_day_enabled: bool = False   # if True, allowed to execute on early-close (half) days
+    run_on_fomc: bool = True          # if True, allowed to execute on FOMC days
+    run_on_nfp: bool = True           # if True, allowed to execute on NFP (jobs) days
+    parent_name: str = ""                                # "" = master (standalone)
+    subsequent_triggers: List[TriggerSpec] = field(default_factory=list)
+    trigger_logic: str = "any"                           # "any" | "all"
 
     def to_dict(self) -> dict:
         return {
@@ -100,6 +137,13 @@ class Strategy:
             "armed": self.armed,
             "target_expiry": self.target_expiry,
             "budget": self.budget,
+            "run_days": list(self.run_days),
+            "short_day_enabled": self.short_day_enabled,
+            "run_on_fomc": self.run_on_fomc,
+            "run_on_nfp": self.run_on_nfp,
+            "parent_name": self.parent_name,
+            "subsequent_triggers": [t.to_dict() for t in self.subsequent_triggers],
+            "trigger_logic": self.trigger_logic,
         }
 
     @classmethod
@@ -112,6 +156,20 @@ class Strategy:
             budget = float(budget)
             if budget < 0:
                 raise ValueError(f"Invalid budget: {budget} (must be >= 0)")
+        run_days = d.get("run_days")
+        if run_days is None:
+            run_days = list(DEFAULT_RUN_DAYS)
+        else:
+            run_days = [int(x) for x in run_days]
+            if not run_days or any(x < 0 or x > 4 for x in run_days):
+                raise ValueError(f"Invalid run_days: {run_days} (each day must be 0-4)")
+        trigger_logic = d.get("trigger_logic", "any")
+        if trigger_logic not in TRIGGER_LOGIC:
+            raise ValueError(f"Invalid trigger_logic: {trigger_logic}")
+        triggers = [TriggerSpec.from_dict(t) for t in d.get("subsequent_triggers", [])]
+        for t in triggers:
+            if t.kind not in TRIGGER_KINDS:
+                raise ValueError(f"Invalid trigger kind: {t.kind}")
         return cls(
             name=d["name"],
             direction=direction,
@@ -121,4 +179,11 @@ class Strategy:
             armed=bool(d.get("armed", False)),
             target_expiry=d.get("target_expiry", ""),
             budget=budget,
+            run_days=run_days,
+            short_day_enabled=bool(d.get("short_day_enabled", False)),
+            run_on_fomc=bool(d.get("run_on_fomc", True)),
+            run_on_nfp=bool(d.get("run_on_nfp", True)),
+            parent_name=d.get("parent_name", ""),
+            subsequent_triggers=triggers,
+            trigger_logic=trigger_logic,
         )

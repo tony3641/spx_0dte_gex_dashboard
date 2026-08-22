@@ -10,7 +10,11 @@ from condition_helpers import (
     spread_width, spread_margin, combo_credit, nearest_row,
     wilder_rsi, percent_change, atm_iv,
 )
-from strategy_models import Strategy, Condition
+from strategy_models import Strategy, Condition, TriggerSpec, RuntimeState, ExitRules, StopLoss
+from market_hours import (
+    now_et, is_short_trading_day, is_nfp_day, is_fomc_day, is_pm_settle,
+    resolve_trading_expiration,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +270,99 @@ def short_right_for(direction: str) -> str:
     return "P" if direction == "bull_put" else "C"
 
 
+def get_runtime(state, name: str) -> RuntimeState:
+    rt = getattr(state, "runtime", {}).get(name)
+    if rt is None:
+        rt = RuntimeState()
+        state.runtime[name] = rt
+    return rt
+
+
+def reset_strategy_runtime(state, name: str) -> None:
+    """Start a fresh arming cycle for a strategy and re-prime its children."""
+    rt = get_runtime(state, name)
+    rt.cycle += 1
+    rt.entered = False
+    rt.done = False
+    rt.trade = None
+    rt.time_met = False
+    rt.parent_cycle = 0
+    state.strategy_open_positions.pop(name, None)   # stale map entry (non-TP close) must not re-block
+    parent = state.strategies.get(name)
+    if parent is not None:
+        for child in state.strategies.values():
+            if child.parent_name == name:
+                crt = get_runtime(state, child.name)
+                crt.time_met = False
+                crt.parent_cycle = 0
+
+
+def _trigger_aggregate(child: Strategy, state, now=None):
+    """Aggregate a child's enabled triggers against the parent's current trade."""
+    now = now or now_et()   # spec §5: T1 time-of-day binds to the ET clock
+    prt = get_runtime(state, child.parent_name)
+    crt = get_runtime(state, child.name)
+    ptrade = prt.trade
+    enabled = [t for t in child.subsequent_triggers if t.enabled]
+    if not enabled:
+        return False
+
+    def one(t):
+        if t.kind == "time_of_day":
+            if crt.time_met and crt.parent_cycle == prt.cycle:
+                return True
+            hm = now.strftime("%H:%M")
+            start, end = t.params.get("start", "09:30"), t.params.get("end", "15:30")
+            return start <= hm <= end
+        if ptrade is None:
+            return False
+        if t.kind == "parent_exit_reason":
+            return ptrade.get("close_reason") == t.params.get("reason")
+        if t.kind == "parent_unrealized_pnl":
+            credit = float(ptrade.get("credit") or 0.0)
+            if credit <= 0:
+                return False
+            gain = t.params.get("gain_multiple")
+            loss = t.params.get("loss_multiple")
+            if gain is None and loss is None:
+                return False
+            hi = float(ptrade.get("high_water_mult") or 0.0)
+            lo = float(ptrade.get("low_water_mult") or 0.0)
+            if gain is not None and hi >= float(gain):
+                return True
+            if loss is not None and lo <= -float(loss):
+                return True
+            return False
+        return False
+
+    results = [one(t) for t in enabled]
+    return all(results) if child.trigger_logic == "all" else any(results)
+
+
+def _child_is_eligible(child: Strategy, state, now=None):
+    """A child may be evaluated/entered only if its trigger fired AND its
+    parent has closed its trade this cycle (child waits for parent flat)."""
+    parent = state.strategies.get(child.parent_name)
+    if parent is None:
+        return False
+    prt = get_runtime(state, parent.name)
+    crt = get_runtime(state, child.name)
+    if crt.entered or crt.done:
+        return False
+    if not prt.entered or not prt.done:
+        return False   # parent must have traded AND closed
+    # prt.done flips the moment a TP close order is accepted, possibly before
+    # the close legs are confirmed dropped — the child must wait for the parent
+    # to be truly flat (spec §3), or we'd briefly hold two positions in a branch.
+    parent_trade = prt.trade
+    if parent_trade is None:
+        return False
+    parent_cand = Candidate(**parent_trade["candidate"])
+    if len(find_strategy_positions(parent_cand, state)) >= 2:
+        return False   # parent not truly flat yet
+    return _trigger_aggregate(child, state, now)
+
+
 def _has_open_position(state, sig) -> bool:
     """True if any open position matches the signature set of (strike, right)."""
     for pos in getattr(state, "positions", []) or []:
@@ -314,11 +411,14 @@ def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dic
     # Per-leg limit: SELL leg uses bid (receive), BUY leg uses ask (pay) — mirror order-entry.js.
     short_lmt = _side_field(short_row, right, "bid") if short_row else candidate.credit_mid
     long_lmt = _side_field(long_row, right, "ask") if long_row else candidate.credit_mid
+    trading_class = getattr(state, "trading_class", "SPXW")
     legs = [
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.short_strike,
-         "right": right, "action": "SELL", "qty": 1, "lmtPrice": float(short_lmt or 0.01), "secType": "OPT"},
+         "right": right, "action": "SELL", "qty": 1, "lmtPrice": float(short_lmt or 0.01),
+         "secType": "OPT", "trading_class": trading_class},
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.long_strike,
-         "right": right, "action": "BUY", "qty": 1, "lmtPrice": float(long_lmt or 0.01), "secType": "OPT"},
+         "right": right, "action": "BUY", "qty": 1, "lmtPrice": float(long_lmt or 0.01),
+         "secType": "OPT", "trading_class": trading_class},
     ]
     # Stop-loss bracket: the trigger/limit price = |credit| * multiplier
     # (signed negative, e.g. credit -0.30 with 5x -> -1.50). order_manager
@@ -347,6 +447,17 @@ def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dic
 async def place_strategy_entry(ib, state, strategy, candidate) -> dict:
     from order_manager import handle_place_order
     from account_manager import refresh_account_state
+    # PM-settle guard: never place a trade on an AM-settled (open) contract.
+    trading_class = getattr(state, "trading_class", "SPXW")
+    if not is_pm_settle(trading_class):
+        logger.error(f"{strategy.name}: refusing to trade AM-settled class '{trading_class}'")
+        resp = {"type": "order_status", "data": {"status": "Error", "message": "AM-settled option refused"}}
+        state.strategy_log.append({
+            "ts": time.monotonic(), "slug": "entry",
+            "strategy": strategy.name, "candidate": candidate.to_dict(), "resp": resp,
+            "status": "Error",
+        })
+        return resp
     payload = _build_entry_payload(strategy, candidate, state)
     resp = await handle_place_order(ib, state, payload, ws=None, refresh_fn=refresh_account_state)
     status = (resp.get("data") or {}).get("status", "")
@@ -360,18 +471,64 @@ async def place_strategy_entry(ib, state, strategy, candidate) -> dict:
     return resp
 
 
+def _strategy_should_run_today(strat: Strategy, state, today=None) -> bool:
+    """Schedule gate: is this strategy allowed to run on ``today``?
+
+    Enforced in order: day-of-week → holiday/no-0DTE → early-close half-day →
+    FOMC → NFP. The holiday check only applies once expiration data is loaded,
+    so an unpopulated test state isn't mistaken for a holiday.
+    """
+    today = today or now_et().date()
+    if today.weekday() not in strat.run_days:
+        return False
+    if (getattr(state, "expirations", None) or getattr(state, "monthly_expirations", None)):
+        if resolve_trading_expiration(state, ref=today) is None:
+            return False   # holiday / no 0DTE today
+    if is_short_trading_day(ref=today) and not strat.short_day_enabled:
+        return False
+    if is_fomc_day(ref=today) and not strat.run_on_fomc:
+        return False
+    if is_nfp_day(ref=today) and not strat.run_on_nfp:
+        return False
+    return True
+
+
 async def strategy_evaluation_loop(ib, state, broadcast_fn):
-    """On a cadence, evaluate armed strategies and act (scan or auto)."""
-    from market_hours import now_et
+    """On a cadence, evaluate armed strategies and act (scan or auto).
+
+    One-shot per strategy per day/cycle: a strategy is skipped once its cycle's
+    trade is used (entered/done) or a position is awaiting close. Children are
+    gated on the parent's close triggers via _child_is_eligible; a positioned
+    strategy's parent role is kept live via _update_parent_role.
+    """
     interval = 3.0
     while True:
         try:
             await asyncio.sleep(interval)
             if not getattr(state, "connected", False):
                 continue
+            today = now_et().date()
+            day_key = today.isoformat()
+            if getattr(state, "day_key", None) != day_key:
+                _daily_reset(state)
+                state.day_key = day_key
             for name, strat in list(state.strategies.items()):
                 if not strat.armed:
                     continue
+                if not _strategy_should_run_today(strat, state):
+                    state.strategy_candidates[name] = []
+                    continue
+                rt = get_runtime(state, name)
+                if rt.entered or rt.done or name in state.strategy_open_positions:
+                    # this cycle's one trade is used (or a position is awaiting
+                    # close); keep the parent role live and do not re-enter
+                    await _update_parent_role(name, state, broadcast_fn)
+                    state.strategy_candidates[name] = []
+                    continue
+                if strat.parent_name:
+                    if not _child_is_eligible(strat, state):
+                        state.strategy_candidates[name] = []
+                        continue
                 ev = evaluate_conditions(strat, state, now=now_et())
                 state.strategy_candidates[name] = [c.to_dict() for c in ev.candidates]
                 if ev.status != "ready":
@@ -380,18 +537,28 @@ async def strategy_evaluation_loop(ib, state, broadcast_fn):
                     continue
                 if strat.auto_execute and ev.candidates:
                     best = ev.candidates[0]
-                    if strat.name in state.strategy_open_positions:
-                        continue   # spec §11: one concurrent position per strategy
                     if not _has_margin(state, best, budget=strat.budget):
                         logger.info(f"{strat.name}: insufficient margin/budget, skipping auto entry")
                         continue
                     try:
-                        await place_strategy_entry(ib, state, strat, best)
-                        await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "auto_entry"}})
+                        resp = await place_strategy_entry(ib, state, strat, best)
+                        if (resp.get("data") or {}).get("status", "") not in ("Error", ""):
+                            rt.entered = True
+                            rt.trade = {
+                                "candidate": best.to_dict(),
+                                "credit": float(best.credit_mid),
+                                "open_ts": time.monotonic(),
+                                "close_ts": None,
+                                "close_reason": None,
+                                "high_water_mult": 0.0,
+                                "low_water_mult": 0.0,
+                            }
+                            await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "auto_entry"}})
                     except Exception as e:
                         logger.error(f"Auto entry failed for {name}: {e}")
                 elif not strat.auto_execute:
-                    await broadcast_fn({"type": "strategy_candidate", "data": {"name": name, "candidates": [c.to_dict() for c in ev.candidates]}})
+                    await broadcast_fn({"type": "strategy_candidate",
+                                        "data": {"name": name, "candidates": [c.to_dict() for c in ev.candidates]}})
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -409,6 +576,110 @@ def find_strategy_positions(candidate, state) -> list:
         if key in sig:
             out.append(pos)
     return out
+
+
+def classify_parent_close(strat: Strategy, cand: Candidate, state) -> str:
+    """Why did the parent's trade close? TP is set by take_profit_loop; here we
+    infer the fallback: the IB stop bracket if configured, else expire/manual."""
+    if strat.exit_rules.stop_loss is not None:
+        return "stop_loss"
+    exp = getattr(state, "expiration", "")
+    if exp and exp <= now_et().strftime("%Y%m%d"):
+        return "expire"
+    return "manual"
+
+
+def _refresh_trade_credit(state, trade: dict) -> None:
+    """Best-effort actual-credit update from fills (side SLD = short leg)."""
+    cand = trade.get("candidate") or {}
+    if not cand:
+        return
+    right = short_right_for(cand.get("direction", "bull_put"))
+    short_strike = cand.get("short_strike")
+    long_strike = cand.get("long_strike")
+    short_fill = long_fill = None
+    for ex in getattr(state, "executions", []) or []:
+        if ex.get("strike") == short_strike and ex.get("right") == right and ex.get("side") == "SLD":
+            short_fill = ex.get("price")
+        if ex.get("strike") == long_strike and ex.get("right") == right and ex.get("side") == "BOT":
+            long_fill = ex.get("price")
+    if short_fill is not None and long_fill is not None:
+        trade["credit"] = round(float(short_fill) - float(long_fill), 4)
+
+
+def _latch_time_triggers(strat: Strategy, state) -> None:
+    """While the parent is open, latch each child's time-of-day window."""
+    prt = get_runtime(state, strat.name)
+    hm = now_et().strftime("%H:%M")
+    for child in state.strategies.values():
+        if child.parent_name != strat.name:
+            continue
+        crt = get_runtime(state, child.name)
+        if crt.parent_cycle != prt.cycle:
+            crt.time_met = False
+            crt.parent_cycle = prt.cycle
+        for t in child.subsequent_triggers:
+            if t.kind == "time_of_day" and t.enabled:
+                start, end = t.params.get("start", "09:30"), t.params.get("end", "15:30")
+                if start <= hm <= end:
+                    crt.time_met = True
+
+
+async def fire_children(parent: Strategy, state, broadcast_fn=None) -> None:
+    """Evaluate children's triggers at the parent's close and announce eligible ones."""
+    for child in state.strategies.values():
+        if child.parent_name != parent.name:
+            continue
+        if _trigger_aggregate(child, state):
+            if broadcast_fn is not None:
+                await broadcast_fn({"type": "strategy_trigger",
+                                    "data": {"name": child.name, "event": "eligible"}})
+
+
+async def _update_parent_role(name: str, state, broadcast_fn=None) -> None:
+    """Maintain a strategy's parent role while positioned; on close, classify the
+    reason and fire children. Idempotent via done."""
+    strat = state.strategies.get(name)
+    rt = get_runtime(state, name)
+    if strat is None or rt.done or rt.trade is None:
+        return
+    trade = rt.trade
+    cand = Candidate(**trade["candidate"])
+    positions = find_strategy_positions(cand, state)
+    if len(positions) >= 2:
+        # still open: refresh actual credit + water marks + time latches
+        _refresh_trade_credit(state, trade)
+        net_pnl = sum(float(p.get("unrealizedPNL", 0) or 0) for p in positions)
+        credit = float(trade.get("credit") or 0.0)
+        if credit > 0:
+            mult = net_pnl / credit
+            trade["high_water_mult"] = max(float(trade.get("high_water_mult", 0.0)), mult)
+            trade["low_water_mult"] = min(float(trade.get("low_water_mult", 0.0)), mult)
+        _latch_time_triggers(strat, state)
+        return
+    # closed
+    trade["close_ts"] = time.monotonic()
+    trade["close_reason"] = classify_parent_close(strat, cand, state)
+    rt.done = True
+    await fire_children(strat, state, broadcast_fn)
+
+
+def _daily_reset(state) -> None:
+    """Start a fresh cycle each day, preserving any still-open position."""
+    for name, strat in state.strategies.items():
+        rt = get_runtime(state, name)
+        if rt.trade is None:
+            continue
+        cand = Candidate(**rt.trade["candidate"])
+        if len(find_strategy_positions(cand, state)) >= 2:
+            continue   # open -> preserve
+        rt.cycle += 1
+        rt.entered = False
+        rt.done = False
+        rt.trade = None
+        rt.time_met = False
+        rt.parent_cycle = 0
+        state.strategy_open_positions.pop(name, None)   # stale map entry (non-TP close) must not re-block
 
 
 def _tp_target(tp, max_credit: float) -> float:
@@ -449,11 +720,14 @@ async def maybe_flatten_at_take_profit(ib, state, candidate, positions, tp) -> b
         return False   # no quotes — cannot price a marketable LMT close
     net = round(float(short_ask) - float(long_bid), 2)
     tick = spx_tick_for_price(abs(net))
+    trading_class = getattr(state, "trading_class", "SPXW")
     legs = [
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.short_strike,
-         "right": right, "action": "BUY", "qty": 1, "lmtPrice": round(float(short_ask), 2), "secType": "OPT"},
+         "right": right, "action": "BUY", "qty": 1, "lmtPrice": round(float(short_ask), 2),
+         "secType": "OPT", "trading_class": trading_class},
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.long_strike,
-         "right": right, "action": "SELL", "qty": 1, "lmtPrice": round(float(long_bid), 2), "secType": "OPT"},
+         "right": right, "action": "SELL", "qty": 1, "lmtPrice": round(float(long_bid), 2),
+         "secType": "OPT", "trading_class": trading_class},
     ]
     payload = {"legs": legs, "orderType": "LMT", "tif": "DAY", "comboAction": "BUY",
                "comboLmtPrice": round_signed_to_tick(net, tick), "comboQuantity": 1, "outsideRth": False}
@@ -482,8 +756,14 @@ async def take_profit_loop(ib, state, broadcast_fn):
                     continue
                 closed = await maybe_flatten_at_take_profit(ib, state, cand, positions, tp)
                 if closed:
+                    rt = get_runtime(state, name)
+                    rt.done = True
+                    if rt.trade is not None:
+                        rt.trade["close_ts"] = time.monotonic()
+                        rt.trade["close_reason"] = "take_profit"
                     state.strategy_open_positions.pop(name, None)
                     await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "take_profit"}})
+                    await fire_children(strat, state, broadcast_fn)
         except asyncio.CancelledError:
             break
         except Exception as e:

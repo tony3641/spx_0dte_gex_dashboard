@@ -21,6 +21,7 @@ from chain_manager import monthly_gex_fetch
 from account_manager import refresh_account_state, build_account_payload
 from order_manager import handle_place_order, handle_cancel_order
 from ib_connection import update_vix
+from strategy_engine import reset_strategy_runtime
 from strategy_store import load_strategies, save_strategy, delete_strategy
 from strategy_models import Strategy
 
@@ -289,6 +290,7 @@ async def websocket_endpoint(ws: WebSocket, ib, state, broadcast_fn):
                     s = state.strategies.get(_unquote_name(msg.split(":", 1)[1]))
                     if s is not None:
                         s.armed = True
+                        reset_strategy_runtime(state, s.name)
 
                 elif msg.startswith("strategy_disarm:"):
                     s = state.strategies.get(_unquote_name(msg.split(":", 1)[1]))

@@ -114,7 +114,7 @@ Source: config.py
 
 ### risk_free.py
 - SGOV source URL: https://finance.yahoo.com/quote/SGOV?p=SGOV
-- DEFAULT_RISK_FREE_RATE: 0.043
+- DEFAULT_RISK_FREE_RATE: 0.038
 - fetch_sgov_7_day_yield timeout default: 5.0 s
 
 ### ws_handler.py
