@@ -534,7 +534,8 @@ def test_refresh_credit_from_executions():
     assert trade["credit"] == pytest.approx(0.30, abs=0.001)
 
 
-def test_update_parent_role_marks_done_and_fires_children():
+@pytest.mark.asyncio
+async def test_update_parent_role_marks_done_and_fires_children():
     from strategy_models import ExitRules, StopLoss
     state = type("S", (), {})()
     state.strategies = {
@@ -552,9 +553,9 @@ def test_update_parent_role_marks_done_and_fires_children():
                                      "high_water_mult": 0.0, "low_water_mult": 0.0}
     state.runtime["child"] = RuntimeState()
     fired = []
-    def bcast(m):   # sync: fire_children calls broadcast_fn() without await
+    async def bcast(m):
         fired.append(m)
-    _update_parent_role("master", state, bcast)
+    await _update_parent_role("master", state, bcast)
     assert state.runtime["master"].done is True
     assert state.runtime["master"].trade["close_reason"] == "stop_loss"
     assert state.runtime["child"].time_met is False   # no time trigger
@@ -562,7 +563,8 @@ def test_update_parent_role_marks_done_and_fires_children():
                for m in fired)
 
 
-def test_update_parent_role_updates_water_marks_while_open():
+@pytest.mark.asyncio
+async def test_update_parent_role_updates_water_marks_while_open():
     state = type("S", (), {})()
     state.strategies = {"master": Strategy(name="master", direction="bull_put", conditions=[]),
                         "child": Strategy(name="child", direction="bull_put", conditions=[],
@@ -576,7 +578,7 @@ def test_update_parent_role_updates_water_marks_while_open():
     state.runtime["master"].trade = {"candidate": cd, "credit": 0.30,
                                      "high_water_mult": 0.0, "low_water_mult": 0.0}
     state.runtime["child"] = RuntimeState()
-    _update_parent_role("master", state)   # still open -> no close
+    await _update_parent_role("master", state)   # still open -> no close
     assert state.runtime["master"].done is False
     mult = (0.45 + 0.15) / 0.30
     assert state.runtime["master"].trade["high_water_mult"] == pytest.approx(mult)

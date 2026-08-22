@@ -584,18 +584,18 @@ def _latch_time_triggers(strat: Strategy, state) -> None:
                     crt.time_met = True
 
 
-def fire_children(parent: Strategy, state, broadcast_fn=None) -> None:
+async def fire_children(parent: Strategy, state, broadcast_fn=None) -> None:
     """Evaluate children's triggers at the parent's close and announce eligible ones."""
     for child in state.strategies.values():
         if child.parent_name != parent.name:
             continue
         if _trigger_aggregate(child, state):
             if broadcast_fn is not None:
-                broadcast_fn({"type": "strategy_trigger",
-                              "data": {"name": child.name, "event": "eligible"}})
+                await broadcast_fn({"type": "strategy_trigger",
+                                    "data": {"name": child.name, "event": "eligible"}})
 
 
-def _update_parent_role(name: str, state, broadcast_fn=None) -> None:
+async def _update_parent_role(name: str, state, broadcast_fn=None) -> None:
     """Maintain a strategy's parent role while positioned; on close, classify the
     reason and fire children. Idempotent via done."""
     strat = state.strategies.get(name)
@@ -620,7 +620,7 @@ def _update_parent_role(name: str, state, broadcast_fn=None) -> None:
     trade["close_ts"] = time.monotonic()
     trade["close_reason"] = classify_parent_close(strat, cand, state)
     rt.done = True
-    fire_children(strat, state, broadcast_fn)
+    await fire_children(strat, state, broadcast_fn)
 
 
 def _daily_reset(state) -> None:
