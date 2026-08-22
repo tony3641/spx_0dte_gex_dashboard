@@ -1237,7 +1237,7 @@ git commit -m "feat: strategy entry placement (credit-signed payload) + eval loo
 
 **Interfaces:**
 - Consumes: `signature_for_candidate` (Task 8), `state.positions` (list of position dicts with `contract`/`unrealizedPNL`/`averageCost`), `handle_place_order` (closing order).
-- Produces: `find_strategy_positions(strategy, state) -> list`, `maybe_flatten_at_take_profit(ib, state, strategy, position, tp) -> bool`, `async take_profit_loop(ib, state, broadcast_fn)`. TP modes: `pct_credit` (close when PnL ≥ value% of max credit), `dollar` (PnL ≥ value), `credit_price` (position's current spread credit ≥ value).
+- Produces: `find_strategy_positions(candidate, state) -> list`, `maybe_flatten_at_take_profit(ib, state, candidate, positions, tp) -> bool` (the close is idempotent and returns True only when a close order was actually accepted), `async take_profit_loop(ib, state, broadcast_fn)`. TP modes: `pct_credit` (close when net PnL ≥ value% of max credit), `dollar` (net PnL ≥ value), `credit_price` (net PnL ≥ value; absolute).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1260,6 +1260,25 @@ def test_match_positions():
     found = find_strategy_positions(cand, state)
     # both legs present -> matched
     assert len(found) == 2
+
+
+import asyncio, pytest
+from strategy_engine import maybe_flatten_at_take_profit, Candidate
+from strategy_models import TakeProfit
+
+@pytest.mark.asyncio
+async def test_maybe_flatten_below_target_does_not_place(mock_ib, app_state):
+    app_state.chain_quotes_cache = {"strikes": []}   # no quotes -> cannot price a close
+    app_state.expiration = "20260821"
+    cand = Candidate(direction="bear_call", short_strike=5200.0, long_strike=5300.0, width_points=100.0,
+                     margin=10000.0, credit_bid=1.8, credit_ask=2.2, credit_mid=2.0,
+                     short_delta=0.3, long_delta=0.1, atm_iv=18.0)
+    pos = [{"contract": {"strike": 5200.0, "right": "C"}, "unrealizedPNL": 0.5},
+           {"contract": {"strike": 5300.0, "right": "C"}, "unrealizedPNL": 0.2}]
+    tp = TakeProfit(mode="pct_credit", value=0.5)   # target 1.0; net 0.7 below
+    closed = await maybe_flatten_at_take_profit(mock_ib, app_state, cand, pos, tp)
+    assert closed is False
+    assert len(mock_ib.get_placed_orders()) == 0
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -1293,27 +1312,44 @@ def _tp_target(tp, max_credit: float) -> float:
     return tp.value
 
 
-async def maybe_flatten_at_take_profit(ib, state, candidate, pos, tp) -> bool:
-    """Close the spread (reverse legs) if TP target is reached. Returns True if closed."""
-    pnl = float(pos.get("unrealizedPNL", 0) or 0)
+async def maybe_flatten_at_take_profit(ib, state, candidate, positions, tp) -> bool:
+    """Close the spread when net PnL across its legs reaches the TP target.
+
+    Returns True only when a close order was actually accepted (not on Error),
+    so the caller can broadcast an exit once and not re-attempt every cadence.
+    """
+    net_pnl = sum(float(p.get("unrealizedPNL", 0) or 0) for p in positions)
     max_credit = float(candidate.credit_mid or 0)
     target = _tp_target(tp, max_credit)
-    if pnl < target:
+    if net_pnl < target:
         return False
-    # Close: reverse each leg (BUY the short, SELL the long) at market.
+    # Marketable close: BUY back the short at ask, SELL the long at bid. The
+    # framework needs a real per-leg limit (LMT validation in handle_place_order);
+    # _place_multi_leg recomputes the signed BAG limit from per-leg prices.
     from order_manager import handle_place_order
     from account_manager import refresh_account_state
+    from config import spx_tick_for_price, round_signed_to_tick
     right = short_right_for(candidate.direction)
+    rows = chain_rows(state)
+    short_row = _find_row(rows, candidate.short_strike)
+    long_row = _find_row(rows, candidate.long_strike)
+    short_ask = _side_field(short_row, right, "ask") if short_row else None
+    long_bid = _side_field(long_row, right, "bid") if long_row else None
+    if short_ask is None or long_bid is None:
+        return False   # no quotes — cannot price a marketable LMT close
+    net = round(float(short_ask) - float(long_bid), 2)
+    tick = spx_tick_for_price(abs(net))
     legs = [
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.short_strike,
-         "right": right, "action": "BUY", "qty": 1, "lmtPrice": None, "secType": "OPT"},
+         "right": right, "action": "BUY", "qty": 1, "lmtPrice": round(float(short_ask), 2), "secType": "OPT"},
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.long_strike,
-         "right": right, "action": "SELL", "qty": 1, "lmtPrice": None, "secType": "OPT"},
+         "right": right, "action": "SELL", "qty": 1, "lmtPrice": round(float(long_bid), 2), "secType": "OPT"},
     ]
     payload = {"legs": legs, "orderType": "LMT", "tif": "DAY", "comboAction": "BUY",
-               "comboLmtPrice": 0.0, "comboQuantity": 1, "outsideRth": False}
-    await handle_place_order(ib, state, payload, ws=None, refresh_fn=refresh_account_state)
-    return True
+               "comboLmtPrice": round_signed_to_tick(net, tick), "comboQuantity": 1, "outsideRth": False}
+    resp = await handle_place_order(ib, state, payload, ws=None, refresh_fn=refresh_account_state)
+    status = (resp.get("data") or {}).get("status", "")
+    return status not in ("Error",)
 
 
 async def take_profit_loop(ib, state, broadcast_fn):
@@ -1333,7 +1369,7 @@ async def take_profit_loop(ib, state, broadcast_fn):
                     positions = find_strategy_positions(cand, state)
                     if len(positions) < 2:
                         continue
-                    closed = await maybe_flatten_at_take_profit(ib, state, cand, positions[0], tp)
+                    closed = await maybe_flatten_at_take_profit(ib, state, cand, positions, tp)
                     if closed:
                         await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "take_profit"}})
                         break
