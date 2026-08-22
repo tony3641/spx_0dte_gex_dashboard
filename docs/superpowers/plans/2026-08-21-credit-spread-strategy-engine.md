@@ -863,6 +863,7 @@ def _swe(d="bull_put"):
         Condition(kind="volatility", params={"vix_enabled": True, "vix_op": "above", "vix_value": 14.0,
                                              "atm_iv_enabled": False}),
         Condition(kind="short_delta", params={"min": 0.2, "max": 0.4}),
+        Condition(kind="spread_width", params={"min": 50, "max": 150}),
     ])
 
 
