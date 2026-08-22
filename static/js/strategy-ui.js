@@ -77,6 +77,36 @@
         },
     };
 
+    // Per-trigger-type field schema for subsequent strategies. A subsequent
+    // strategy fires its follow-up triggers after its parent closes.
+    const TRIGGER_DEFS = {
+        time_of_day: {
+            help: 'Time window (ET) in which the follow-up may fire after the parent closes.',
+            opDriven: false,
+            fields: [
+                { key: 'start', label: 'Start (HH:MM)', type: 'text', default: '09:30', required: false },
+                { key: 'end', label: 'End (HH:MM)', type: 'text', default: '15:30', required: false },
+            ],
+        },
+        parent_exit_reason: {
+            help: 'Fire when the parent closes for this reason.',
+            opDriven: false,
+            fields: [
+                { key: 'reason', label: 'Parent exit', type: 'enum', options: ['stop_loss', 'take_profit'], default: 'stop_loss', required: true },
+            ],
+        },
+        parent_unrealized_pnl: {
+            help: 'Fire when the parent trade is up gain_multiple× or down loss_multiple× the credit it actually collected.',
+            opDriven: false,
+            fields: [
+                { key: 'gain_multiple', label: 'Gain × credit', type: 'number', step: '0.1', optional: true },
+                { key: 'loss_multiple', label: 'Loss × credit', type: 'number', step: '0.1', optional: true },
+            ],
+        },
+    };
+
+    let _triggerEditing = null;   // {index} while a subsequent-trigger editor is open
+
     let _condEditing = null;   // {index, kind} while a condition editor is open
 
     function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
@@ -108,13 +138,16 @@
     function renderStrategyList() {
         const nav = document.getElementById('strategyNav');
         if (!nav) return;
-        nav.innerHTML = state.strategies.map(s => `
-            <div class="strat-item ${s.name === _selStrategy ? 'active' : ''}" onclick="selectStrategy('${s.name}')">
-                <span class="strat-name">${s.name}</span>
+        nav.innerHTML = state.strategies.map(s => {
+            const isChild = s.parent_name ? 'strat-child' : '';
+            const sub = s.parent_name
+                ? `<span class="strat-sub"> of ${esc(s.parent_name)}</span>` : '';
+            return `<div class="strat-item ${isChild} ${s.name === _selStrategy ? 'active' : ''}" onclick="selectStrategy('${s.name}')">
+                <span class="strat-name">${s.name}${sub}</span>
                 <span class="strat-status">${s.armed ? (s.auto_execute ? 'auto' : 'scan') : 'off'}</span>
                 <button onclick="event.stopPropagation(); armStrategy('${s.name}')">${s.armed ? 'Disarm' : 'Arm'}</button>
                 <button onclick="event.stopPropagation(); deleteStrategy('${s.name}')">Del</button>
-            </div>`).join('') || '<p>No strategies yet. Create one.</p>';
+            </div>`; }).join('') || '<p>No strategies yet. Create one.</p>';
     }
 
     function selectStrategy(name) {
@@ -144,6 +177,25 @@
                 <button onclick="editCondition(${i})">edit</button></li>`).join('')}</ol>
             <button onclick="addCondition()">+ Add Condition</button>
             <div id="conditionEditor"></div>
+            <hr/>
+            <label class="caps"><input type="checkbox" id="isSubsequent" ${s.parent_name ? 'checked' : ''} onchange="toggleSubsequent()"> This is a subsequent strategy</label>
+            <div id="subsequentPanel" style="${s.parent_name ? '' : 'display:none'}">
+              <label>Parent strategy</label>
+              <select id="subParent">${state.strategies.filter(x => x.name !== s.name && !isDescendant(s.name, x.name))
+                  .map(x => `<option value="${x.name}" ${s.parent_name === x.name ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
+              <label>Trigger logic</label>
+              <select id="subLogic">
+                <option value="any" ${s.trigger_logic === 'any' ? 'selected' : ''}>Any</option>
+                <option value="all" ${s.trigger_logic === 'all' ? 'selected' : ''}>All</option>
+              </select>
+              <label>Subsequent triggers</label>
+              <ol id="subTriggerList">${(s.subsequent_triggers || []).map((t, i) =>
+                  `<li>${esc(t.kind)} ${t.enabled ? '' : '(disabled)'}
+                     <button onclick="removeTrigger(${i})">x</button>
+                     <button onclick="editTrigger(${i})">edit</button></li>`).join('')}</ol>
+              <button onclick="addTrigger()">+ Add Trigger</button>
+              <div id="triggerEditor"></div>
+            </div>
             <label>Exit rules</label>
             <div>
               <label><input type="checkbox" id="tpEnabled" onchange="toggleTp(document.getElementById('tpEnabled'))"> Take Profit</label>
@@ -389,6 +441,98 @@
         renderStrategyEditor(s.name);
     }
 
+    function isDescendant(name, maybeChild) {
+        // True if maybeChild is a descendant of name (prevents parent=own child cycles in the dropdown).
+        if (!state.strategies) return false;
+        let cur = state.strategies.find(x => x.name === maybeChild);
+        while (cur && cur.parent_name) {
+            if (cur.parent_name === name) return true;
+            cur = state.strategies.find(x => x.name === cur.parent_name);
+        }
+        return false;
+    }
+
+    function toggleSubsequent() {
+        const on = document.getElementById('isSubsequent').checked;
+        const panel = document.getElementById('subsequentPanel');
+        if (panel) panel.style.display = on ? '' : 'none';
+    }
+
+    function addTrigger() {
+        const s = state.strategies.find(x => x.name === selectedStrategy());
+        if (!s) return;
+        s.subsequent_triggers = s.subsequent_triggers || [];
+        s.subsequent_triggers.push({ kind: 'time_of_day', enabled: true, params: { start: '09:30', end: '15:30' } });
+        renderStrategyEditor(s.name);
+    }
+
+    function removeTrigger(i) {
+        const s = state.strategies.find(x => x.name === selectedStrategy());
+        if (!s) return;
+        s.subsequent_triggers.splice(i, 1);
+        renderStrategyEditor(s.name);
+    }
+
+    function renderTriggerFields(i, kind, params) {
+        const container = document.getElementById('triggerEditor');
+        const def = TRIGGER_DEFS[kind];
+        if (!container || !def) return;
+        const p = params || {};
+        let html = def.help ? `<div class="cond-help">${esc(def.help)}</div>` : '';
+        html += def.fields.map(f => _condFieldHtml(f, p[f.key], f.default, 'trg_')).join('');
+        container.innerHTML = html;
+    }
+
+    function editTrigger(i) {
+        const s = state.strategies.find(x => x.name === selectedStrategy());
+        if (!s) return;
+        const t = s.subsequent_triggers[i];
+        const el = document.getElementById('triggerEditor');
+        if (!t || !el) return;
+        _triggerEditing = { index: i };
+        el.innerHTML = `
+            <label>Trigger type</label>
+            <select id="trgKind" onchange="triggerKindChanged(${i})">
+              ${Object.keys(TRIGGER_DEFS).map(k => `<option value="${k}" ${t.kind === k ? 'selected' : ''}>${esc(k)}</option>`).join('')}
+            </select>
+            <div><label>Enabled</label><input type="checkbox" id="trgEnabled" ${t.enabled ? 'checked' : ''} /></div>
+            <div id="triggerFields"></div>
+            <button onclick="applyTrigger(${i})">Apply</button>`;
+        renderTriggerFields(i, t.kind, t.params);
+    }
+
+    function triggerKindChanged(i) {
+        const kind = document.getElementById('trgKind').value;
+        const s = state.strategies.find(x => x.name === selectedStrategy());
+        if (!s) return;
+        _triggerEditing = { index: i };
+        renderTriggerFields(i, kind, s.subsequent_triggers[i].params);
+    }
+
+    function applyTrigger(i) {
+        const s = state.strategies.find(x => x.name === selectedStrategy());
+        if (!s) return;
+        const t = s.subsequent_triggers[i];
+        if (!t) return;
+        const kind = document.getElementById('trgKind').value;
+        const def = TRIGGER_DEFS[kind];
+        if (!def) return;
+        const params = {};
+        for (const f of def.fields) {
+            const el = document.getElementById('cf_trg_' + f.key);
+            if (el) {
+                const raw = String(el.value || '').trim();
+                if (raw === '' || /^n\/?a$/i.test(raw)) continue;
+                params[f.key] = (f.type === 'number') ? Number(raw) : raw;
+            }
+        }
+        t.kind = kind;
+        t.enabled = document.getElementById('trgEnabled').checked;
+        t.params = params;
+        _triggerEditing = null;
+        renderStrategyEditor(s.name);
+    }
+
     function toggleTp(cb) {
         const inp = document.getElementById('tpValue');
         if (!inp) return;
@@ -442,6 +586,10 @@
             short_day_enabled: document.getElementById('shortDayEnabled').checked,
             run_on_fomc: document.getElementById('runOnFomc').checked,
             run_on_nfp: document.getElementById('runOnNfp').checked,
+            parent_name: document.getElementById('isSubsequent') && document.getElementById('isSubsequent').checked
+                ? (document.getElementById('subParent').value || '') : '',
+            subsequent_triggers: (s.subsequent_triggers || []).map(t => Object.assign({}, t)),
+            trigger_logic: document.getElementById('subLogic') ? document.getElementById('subLogic').value : 'any',
         });
         return { strategy, errors };
     }
@@ -590,6 +738,9 @@
                 if (msg.data.name === _selStrategy) renderScanner(msg.data.name);
                 break;
             case 'strategy_exit':
+                showOrderToast('strategy ' + msg.data.name + ': ' + msg.data.event, 'info');
+                break;
+            case 'strategy_trigger':
                 showOrderToast('strategy ' + msg.data.name + ': ' + msg.data.event, 'info');
                 break;
             case 'strategy_error':
