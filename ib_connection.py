@@ -145,6 +145,29 @@ async def update_spx_es_prices(state):
             state.es_derived = True
 
 
+async def setup_vix_subscription(ib, state):
+    """Subscribe to spot VIX (CBOE index) for the strategy's volatility condition."""
+    try:
+        vix = _index_contract("VIX", "CBOE", "USD")
+        details = await ib.req_contract_details(vix)
+        if details:
+            vix.conId = details[0].contract.conId
+        state.vix_stream = ib.subscribe_tick(vix, "")
+        logger.info(f"Subscribed to VIX (reqId={state.vix_stream.req_id})")
+    except Exception as e:
+        logger.warning(f"VIX subscription failed: {e}")
+
+
+def update_vix(state):
+    """Read the VIX TickStream into state.vix."""
+    stream = getattr(state, "vix_stream", None)
+    if stream is None:
+        return
+    price = stream.last if stream.last and stream.last > 0 else stream.bid
+    if price and price > 0:
+        state.vix = float(price)
+
+
 async def setup_es_subscription(ib, state):
     """Find front-month ES futures and subscribe for off-hours SPX derivation."""
     try:
