@@ -255,10 +255,14 @@ async def websocket_endpoint(ws: WebSocket, ib, state, broadcast_fn):
                     delete_strategy(None, name)
 
                 elif msg.startswith("strategy_arm:"):
-                    state.strategies[msg.split(":", 1)[1]].armed = True
+                    s = state.strategies.get(msg.split(":", 1)[1])
+                    if s is not None:
+                        s.armed = True
 
                 elif msg.startswith("strategy_disarm:"):
-                    state.strategies[msg.split(":", 1)[1]].armed = False
+                    s = state.strategies.get(msg.split(":", 1)[1])
+                    if s is not None:
+                        s.armed = False
 
                 elif msg.startswith("strategy_kill_switch:"):
                     state.auto_trade_kill_switch = msg.split(":", 1)[1] == "true"
