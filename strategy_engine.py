@@ -226,3 +226,88 @@ def evaluate_conditions(strategy: Strategy, state, now=None, candidates=None) ->
     if not passing:
         return StrategyEval(status="blocked", blocker="no_candidate_pass", values=values)
     return StrategyEval(status="ready", candidates=passing, values=values)
+
+
+def signature_for_candidate(candidate: Candidate, state) -> set:
+    """Contract signature (set of (strike, right)) to match a strategy to positions."""
+    return {(candidate.short_strike, short_right_for(candidate.direction)),
+            (candidate.long_strike, short_right_for(candidate.direction))}
+
+
+def short_right_for(direction: str) -> str:
+    return "P" if direction == "bull_put" else "C"
+
+
+def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dict:
+    from config import spx_tick_for_price, round_signed_to_tick
+    rows = chain_rows(state)
+    short_row = _find_row(rows, candidate.short_strike)
+    long_row = _find_row(rows, candidate.long_strike)
+    right = short_right_for(candidate.direction)
+    tick = spx_tick_for_price(abs(candidate.credit_mid))
+    # Per-leg limit: SELL leg uses bid (receive), BUY leg uses ask (pay) — mirror order-entry.js.
+    short_lmt = _side_field(short_row, right, "bid") if short_row else candidate.credit_mid
+    long_lmt = _side_field(long_row, right, "ask") if long_row else candidate.credit_mid
+    legs = [
+        {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.short_strike,
+         "right": right, "action": "SELL", "qty": 1, "lmtPrice": float(short_lmt or 0.01), "secType": "OPT"},
+        {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.long_strike,
+         "right": right, "action": "BUY", "qty": 1, "lmtPrice": float(long_lmt or 0.01), "secType": "OPT"},
+    ]
+    return {
+        "legs": legs,
+        "orderType": "LMT", "tif": "DAY",
+        "comboAction": "BUY",
+        "comboLmtPrice": round_signed_to_tick(-abs(candidate.credit_mid), tick),
+        "comboQuantity": 1,
+        "outsideRth": False,
+        "stopLoss": (strategy.exit_rules.stop_loss.to_dict()
+                     if strategy.exit_rules.stop_loss else None),
+    }
+
+
+async def place_strategy_entry(ib, state, strategy, candidate) -> dict:
+    from order_manager import handle_place_order
+    from account_manager import refresh_account_state
+    payload = _build_entry_payload(strategy, candidate, state)
+    resp = await handle_place_order(ib, state, payload, ws=None, refresh_fn=refresh_account_state)
+    state.strategy_log.append({
+        "ts": time.monotonic(), "slug": "entry",
+        "strategy": strategy.name, "candidate": candidate.to_dict(), "resp": resp,
+        "status": getattr(resp, "status", None),
+    })
+    return resp
+
+
+async def strategy_evaluation_loop(ib, state, broadcast_fn):
+    """On a cadence, evaluate armed strategies and act (scan or auto)."""
+    from market_hours import now_et
+    interval = 3.0
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            if not getattr(state, "connected", False):
+                continue
+            for name, strat in list(state.strategies.items()):
+                if not strat.armed:
+                    continue
+                ev = evaluate_conditions(strat, state, now=now_et())
+                state.strategy_candidates[name] = [c.to_dict() for c in ev.candidates]
+                if ev.status != "ready":
+                    continue
+                if getattr(state, "auto_trade_kill_switch", False):
+                    continue
+                if strat.auto_execute and ev.candidates:
+                    best = ev.candidates[0]
+                    try:
+                        await place_strategy_entry(ib, state, strat, best)
+                        await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "auto_entry"}})
+                    except Exception as e:
+                        logger.error(f"Auto entry failed for {name}: {e}")
+                elif not strat.auto_execute:
+                    await broadcast_fn({"type": "strategy_candidate", "data": {"name": name, "candidates": [c.to_dict() for c in ev.candidates]}})
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"strategy_evaluation_loop error: {e}")
+            await asyncio.sleep(3)
