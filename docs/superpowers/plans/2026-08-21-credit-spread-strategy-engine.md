@@ -662,7 +662,7 @@ from strategy_engine import generate_candidates
 def _rows():
     return {"strikes": [
         {"strike": 5100, "put_bid": 1.0, "put_ask": 1.4, "put_delta": -0.70,
-         "call_bid": 9.0, "call_ask": 9.6, "call_delta": 0.30, "call_iv": 20.0, "put_iv": 21.0},
+         "call_bid": 9.0, "call_ask": 9.6, "call_delta": 0.60, "call_iv": 20.0, "put_iv": 21.0},
         {"strike": 5200, "put_bid": 3.0, "put_ask": 3.4, "put_delta": -0.30,
          "call_bid": 4.0, "call_ask": 4.6, "call_delta": 0.30, "call_iv": 18.0, "put_iv": 19.0},
         {"strike": 5300, "put_bid": 6.0, "put_ask": 6.6, "put_delta": -0.10,
@@ -756,6 +756,9 @@ def generate_candidates(strategy: Strategy, state, max_n: int = 20) -> List[Cand
     long_right = short_right
 
     cands: List[Candidate] = []
+    # Long leg sits on the opposite side of the short: for bull_put short_strike >
+    # long_strike (long_sign -1); for bear_call short_strike < long_strike (+1).
+    long_sign = -1 if strategy.direction == "bull_put" else 1
     for short_row in rows:
         s_strike = short_row.get("strike")
         if not s_strike:
@@ -763,24 +766,26 @@ def generate_candidates(strategy: Strategy, state, max_n: int = 20) -> List[Cand
         sd = _side_field(short_row, short_right, "delta")
         if sd is None or not (dmin <= abs(sd) <= dmax):
             continue
-        # long leg = short + (-width for bull_put, +width for bear_call)
-        sign = -1 if strategy.direction == "bull_put" else 1
-        long_strike = round(s_strike + sign * wmin, 2)
-        # iterate widths within range
-        for width in range(int(wmin), int(wmax) + 1, max(1, int((wmax - wmin) // 12) or 1)):
-            long_strike = round(s_strike + sign * width, 2)
-            long_row = _find_row(rows, long_strike)
-            if long_row is None:
+        for long_row in rows:
+            l_strike = long_row.get("strike")
+            if not l_strike:
+                continue
+            width = spread_width(strategy.direction, s_strike, l_strike)
+            if not (wmin <= width <= wmax):
+                continue
+            if long_sign > 0 and l_strike <= s_strike:
+                continue
+            if long_sign < 0 and l_strike >= s_strike:
                 continue
             cr = combo_credit(short_row, long_row, short_right)
             if cr["mid"] is None or not (cmin <= cr["mid"] <= cmax):
                 continue
-            ld = _side_field(long_row, long_right, "delta")
+            ld = _side_field(long_row, short_right, "delta")
             cands.append(Candidate(
                 direction=strategy.direction,
                 short_strike=s_strike,
-                long_strike=long_strike,
-                width_points=spread_width(strategy.direction, s_strike, long_strike),
+                long_strike=l_strike,
+                width_points=width,
                 margin=spread_margin(width),
                 credit_bid=cr["bid"], credit_ask=cr["ask"], credit_mid=cr["mid"],
                 short_delta=sd, long_delta=ld if ld is not None else 0.0,
