@@ -475,3 +475,139 @@ def test_reset_strategy_runtime_increments_cycle():
     assert st.runtime["master"].cycle == 1
     assert st.runtime["master"].entered is False
     assert st.runtime["master"].trade is None
+
+
+import asyncio
+from strategy_engine import (classify_parent_close, _refresh_trade_credit,
+                             _update_parent_role, _daily_reset, fire_children)
+from strategy_models import ExitRules, StopLoss
+
+
+def _pos_state(positions=None, executions=None):
+    class S:
+        pass
+    s = S()
+    s.positions = positions or []
+    s.executions = executions or []
+    s.expiration = "20260821"
+    return s
+
+
+def _cand():
+    return Candidate(direction="bull_put", short_strike=5100.0, long_strike=5000.0, width_points=100.0,
+                     margin=10000.0, credit_bid=0.2, credit_ask=0.4, credit_mid=0.30,
+                     short_delta=0.3, long_delta=0.1, atm_iv=18.0)
+
+
+def test_classify_stop_loss_when_configured():
+    strat = Strategy(name="p", direction="bull_put", conditions=[],
+                     exit_rules=ExitRules(stop_loss=StopLoss(multiplier=5.0)))
+    assert classify_parent_close(strat, _cand(), _pos_state()) == "stop_loss"
+
+
+def test_classify_manual_when_no_stop_and_future_expiry():
+    from datetime import timedelta
+    from market_hours import now_et
+    strat = Strategy(name="p", direction="bull_put", conditions=[])
+    st = _pos_state()
+    st.expiration = (now_et().date() + timedelta(days=1)).strftime("%Y%m%d")  # future -> not expired
+    assert classify_parent_close(strat, _cand(), st) == "manual"
+
+
+def test_classify_expire_when_past_expiry():
+    from datetime import timedelta
+    from market_hours import now_et
+    strat = Strategy(name="p", direction="bull_put", conditions=[])
+    st = _pos_state()
+    st.expiration = (now_et().date() - timedelta(days=1)).strftime("%Y%m%d")  # past -> expired
+    assert classify_parent_close(strat, _cand(), st) == "expire"
+
+
+def test_refresh_credit_from_executions():
+    trade = {"candidate": {"direction": "bull_put", "short_strike": 5100.0, "long_strike": 5000.0,
+                           "credit_mid": 0.30}, "credit": 0.30}
+    execs = [
+        {"strike": 5100.0, "right": "P", "side": "SLD", "price": 0.35},
+        {"strike": 5000.0, "right": "P", "side": "BOT", "price": 0.05},
+    ]
+    _refresh_trade_credit(_pos_state(executions=execs), trade)
+    assert trade["credit"] == pytest.approx(0.30, abs=0.001)
+
+
+def test_update_parent_role_marks_done_and_fires_children():
+    from strategy_models import ExitRules, StopLoss
+    state = type("S", (), {})()
+    state.strategies = {
+        "master": Strategy(name="master", direction="bull_put", conditions=[],
+                           exit_rules=ExitRules(stop_loss=StopLoss(multiplier=5.0))),
+        "child": Strategy(name="child", direction="bull_put", conditions=[],
+                          parent_name="master",
+                          subsequent_triggers=[TriggerSpec(kind="parent_exit_reason", params={"reason": "stop_loss"})]),
+    }
+    state.positions = []   # no matching positions -> parent is closed
+    state.executions = []
+    state.expiration = "20260821"
+    state.runtime = {"master": RuntimeState(entered=True)}
+    state.runtime["master"].trade = {"candidate": _cand().to_dict(), "credit": 0.30,
+                                     "high_water_mult": 0.0, "low_water_mult": 0.0}
+    state.runtime["child"] = RuntimeState()
+    fired = []
+    def bcast(m):   # sync: fire_children calls broadcast_fn() without await
+        fired.append(m)
+    _update_parent_role("master", state, bcast)
+    assert state.runtime["master"].done is True
+    assert state.runtime["master"].trade["close_reason"] == "stop_loss"
+    assert state.runtime["child"].time_met is False   # no time trigger
+    assert any(m.get("type") == "strategy_trigger" and m["data"]["name"] == "child"
+               for m in fired)
+
+
+def test_update_parent_role_updates_water_marks_while_open():
+    state = type("S", (), {})()
+    state.strategies = {"master": Strategy(name="master", direction="bull_put", conditions=[]),
+                        "child": Strategy(name="child", direction="bull_put", conditions=[],
+                                          parent_name="master")}
+    state.positions = [{"contract": {"strike": 5100.0, "right": "P"}, "unrealizedPNL": 0.45},
+                       {"contract": {"strike": 5000.0, "right": "P"}, "unrealizedPNL": 0.15}]
+    state.executions = []
+    state.expiration = "20260821"
+    cd = _cand().to_dict()
+    state.runtime = {"master": RuntimeState(entered=True)}
+    state.runtime["master"].trade = {"candidate": cd, "credit": 0.30,
+                                     "high_water_mult": 0.0, "low_water_mult": 0.0}
+    state.runtime["child"] = RuntimeState()
+    _update_parent_role("master", state)   # still open -> no close
+    assert state.runtime["master"].done is False
+    mult = (0.45 + 0.15) / 0.30
+    assert state.runtime["master"].trade["high_water_mult"] == pytest.approx(mult)
+
+
+def test_daily_reset_preserves_open_position():
+    state = type("S", (), {})()
+    state.strategies = {"master": Strategy(name="master", direction="bull_put", conditions=[])}
+    state.positions = [{"contract": {"strike": 5100.0, "right": "P"}, "unrealizedPNL": 0.0},
+                       {"contract": {"strike": 5000.0, "right": "P"}, "unrealizedPNL": 0.0}]
+    state.executions = []
+    state.expiration = "20260821"
+    cd = _cand().to_dict()
+    state.runtime = {"master": RuntimeState(entered=True)}
+    state.runtime["master"].trade = {"candidate": cd, "credit": 0.30,
+                                     "high_water_mult": 0.0, "low_water_mult": 0.0}
+    _daily_reset(state)
+    assert state.runtime["master"].entered is True       # open -> preserved
+    assert state.runtime["master"].trade is not None
+
+
+def test_daily_reset_resets_closed() :
+    state = type("S", (), {})()
+    state.strategies = {"master": Strategy(name="master", direction="bull_put", conditions=[])}
+    state.positions = []   # closed
+    state.executions = []
+    state.expiration = "20260821"
+    cd = _cand().to_dict()
+    state.runtime = {"master": RuntimeState(entered=True, done=True)}
+    state.runtime["master"].trade = {"candidate": cd, "credit": 0.30,
+                                     "high_water_mult": 0.0, "low_water_mult": 0.0}
+    _daily_reset(state)
+    assert state.runtime["master"].entered is False
+    assert state.runtime["master"].trade is None

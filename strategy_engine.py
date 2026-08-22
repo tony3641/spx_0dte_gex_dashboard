@@ -10,7 +10,7 @@ from condition_helpers import (
     spread_width, spread_margin, combo_credit, nearest_row,
     wilder_rsi, percent_change, atm_iv,
 )
-from strategy_models import Strategy, Condition, TriggerSpec, RuntimeState
+from strategy_models import Strategy, Condition, TriggerSpec, RuntimeState, ExitRules, StopLoss
 from market_hours import (
     now_et, is_short_trading_day, is_nfp_day, is_fomc_day, is_pm_settle,
     resolve_trading_expiration,
@@ -535,6 +535,109 @@ def find_strategy_positions(candidate, state) -> list:
         if key in sig:
             out.append(pos)
     return out
+
+
+def classify_parent_close(strat: Strategy, cand: Candidate, state) -> str:
+    """Why did the parent's trade close? TP is set by take_profit_loop; here we
+    infer the fallback: the IB stop bracket if configured, else expire/manual."""
+    if strat.exit_rules.stop_loss is not None:
+        return "stop_loss"
+    exp = getattr(state, "expiration", "")
+    if exp and exp <= now_et().strftime("%Y%m%d"):
+        return "expire"
+    return "manual"
+
+
+def _refresh_trade_credit(state, trade: dict) -> None:
+    """Best-effort actual-credit update from fills (side SLD = short leg)."""
+    cand = trade.get("candidate") or {}
+    if not cand:
+        return
+    right = short_right_for(cand.get("direction", "bull_put"))
+    short_strike = cand.get("short_strike")
+    long_strike = cand.get("long_strike")
+    short_fill = long_fill = None
+    for ex in getattr(state, "executions", []) or []:
+        if ex.get("strike") == short_strike and ex.get("right") == right and ex.get("side") == "SLD":
+            short_fill = ex.get("price")
+        if ex.get("strike") == long_strike and ex.get("right") == right and ex.get("side") == "BOT":
+            long_fill = ex.get("price")
+    if short_fill is not None and long_fill is not None:
+        trade["credit"] = round(float(short_fill) - float(long_fill), 4)
+
+
+def _latch_time_triggers(strat: Strategy, state) -> None:
+    """While the parent is open, latch each child's time-of-day window."""
+    prt = get_runtime(state, strat.name)
+    hm = now_et().strftime("%H:%M")
+    for child in state.strategies.values():
+        if child.parent_name != strat.name:
+            continue
+        crt = get_runtime(state, child.name)
+        if crt.parent_cycle != prt.cycle:
+            crt.time_met = False
+            crt.parent_cycle = prt.cycle
+        for t in child.subsequent_triggers:
+            if t.kind == "time_of_day" and t.enabled:
+                start, end = t.params.get("start", "09:30"), t.params.get("end", "15:30")
+                if start <= hm <= end:
+                    crt.time_met = True
+
+
+def fire_children(parent: Strategy, state, broadcast_fn=None) -> None:
+    """Evaluate children's triggers at the parent's close and announce eligible ones."""
+    for child in state.strategies.values():
+        if child.parent_name != parent.name:
+            continue
+        if _trigger_aggregate(child, state):
+            if broadcast_fn is not None:
+                broadcast_fn({"type": "strategy_trigger",
+                              "data": {"name": child.name, "event": "eligible"}})
+
+
+def _update_parent_role(name: str, state, broadcast_fn=None) -> None:
+    """Maintain a strategy's parent role while positioned; on close, classify the
+    reason and fire children. Idempotent via done."""
+    strat = state.strategies.get(name)
+    rt = get_runtime(state, name)
+    if strat is None or rt.done or rt.trade is None:
+        return
+    trade = rt.trade
+    cand = Candidate(**trade["candidate"])
+    positions = find_strategy_positions(cand, state)
+    if len(positions) >= 2:
+        # still open: refresh actual credit + water marks + time latches
+        _refresh_trade_credit(state, trade)
+        net_pnl = sum(float(p.get("unrealizedPNL", 0) or 0) for p in positions)
+        credit = float(trade.get("credit") or 0.0)
+        if credit > 0:
+            mult = net_pnl / credit
+            trade["high_water_mult"] = max(float(trade.get("high_water_mult", 0.0)), mult)
+            trade["low_water_mult"] = min(float(trade.get("low_water_mult", 0.0)), mult)
+        _latch_time_triggers(strat, state)
+        return
+    # closed
+    trade["close_ts"] = time.monotonic()
+    trade["close_reason"] = classify_parent_close(strat, cand, state)
+    rt.done = True
+    fire_children(strat, state, broadcast_fn)
+
+
+def _daily_reset(state) -> None:
+    """Start a fresh cycle each day, preserving any still-open position."""
+    for name, strat in state.strategies.items():
+        rt = get_runtime(state, name)
+        if rt.trade is None:
+            continue
+        cand = Candidate(**rt.trade["candidate"])
+        if len(find_strategy_positions(cand, state)) >= 2:
+            continue   # open -> preserve
+        rt.cycle += 1
+        rt.entered = False
+        rt.done = False
+        rt.trade = None
+        rt.time_met = False
+        rt.parent_cycle = 0
 
 
 def _tp_target(tp, max_credit: float) -> float:
