@@ -143,3 +143,23 @@ def test_has_open_position():
     assert _has_open_position(type("S", (), {"positions": []})(), sig) is False
     other = type("S", (), {"positions": [{"contract": {"strike": 5000.0, "right": "P"}}]})()
     assert _has_open_position(other, sig) is False
+
+
+from strategy_engine import signature_for_candidate, find_strategy_positions
+from strategy_models import Strategy, Condition
+
+
+def test_match_positions():
+    state = type("S", (), {
+        "positions": [
+            {"contract": {"strike": 5200.0, "right": "C"}, "unrealizedPNL": 100.0},
+            {"contract": {"strike": 5300.0, "right": "C"}, "unrealizedPNL": 100.0},
+            {"contract": {"strike": 5000.0, "right": "P"}, "unrealizedPNL": 50.0},
+        ],
+        "expiration": "20260821",
+    })()
+    cand = type("C", (), {"direction": "bear_call", "short_strike": 5200.0, "long_strike": 5300.0})()
+    sig = signature_for_candidate(cand, state)
+    found = find_strategy_positions(cand, state)
+    # both legs present -> matched
+    assert len(found) == 2

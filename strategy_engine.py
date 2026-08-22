@@ -322,3 +322,77 @@ async def strategy_evaluation_loop(ib, state, broadcast_fn):
         except Exception as e:
             logger.error(f"strategy_evaluation_loop error: {e}")
             await asyncio.sleep(3)
+
+
+def find_strategy_positions(candidate, state) -> list:
+    """Positions matching the candidate's leg signature."""
+    sig = signature_for_candidate(candidate, state)
+    out = []
+    for pos in getattr(state, "positions", []) or []:
+        c = pos.get("contract") or {}
+        key = (float(c.get("strike", 0) or 0), c.get("right", ""))
+        if key in sig:
+            out.append(pos)
+    return out
+
+
+def _tp_target(tp, max_credit: float) -> float:
+    if tp is None:
+        return 0.0
+    if tp.mode == "pct_credit":
+        return tp.value * max_credit
+    if tp.mode == "dollar":
+        return tp.value
+    # credit_price mode: treat value as absolute & ignored here; handled by caller
+    return tp.value
+
+
+async def maybe_flatten_at_take_profit(ib, state, candidate, pos, tp) -> bool:
+    """Close the spread (reverse legs) if TP target is reached. Returns True if closed."""
+    pnl = float(pos.get("unrealizedPNL", 0) or 0)
+    max_credit = float(candidate.credit_mid or 0)
+    target = _tp_target(tp, max_credit)
+    if pnl < target:
+        return False
+    # Close: reverse each leg (BUY the short, SELL the long) at market.
+    from order_manager import handle_place_order
+    from account_manager import refresh_account_state
+    right = short_right_for(candidate.direction)
+    legs = [
+        {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.short_strike,
+         "right": right, "action": "BUY", "qty": 1, "lmtPrice": None, "secType": "OPT"},
+        {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.long_strike,
+         "right": right, "action": "SELL", "qty": 1, "lmtPrice": None, "secType": "OPT"},
+    ]
+    payload = {"legs": legs, "orderType": "LMT", "tif": "DAY", "comboAction": "BUY",
+               "comboLmtPrice": 0.0, "comboQuantity": 1, "outsideRth": False}
+    await handle_place_order(ib, state, payload, ws=None, refresh_fn=refresh_account_state)
+    return True
+
+
+async def take_profit_loop(ib, state, broadcast_fn):
+    """Watch strategy-tagged positions and flatten at take-profit target."""
+    from market_hours import now_et
+    while True:
+        try:
+            await asyncio.sleep(3.0)
+            if not getattr(state, "connected", False):
+                continue
+            for name, strat in list(state.strategies.items()):
+                tp = strat.exit_rules.take_profit
+                if tp is None:
+                    continue
+                cands = [Candidate(**c) for c in state.strategy_candidates.get(name, [])]
+                for cand in cands:
+                    positions = find_strategy_positions(cand, state)
+                    if len(positions) < 2:
+                        continue
+                    closed = await maybe_flatten_at_take_profit(ib, state, cand, positions[0], tp)
+                    if closed:
+                        await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "take_profit"}})
+                        break
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"take_profit_loop error: {e}")
+            await asyncio.sleep(3)
