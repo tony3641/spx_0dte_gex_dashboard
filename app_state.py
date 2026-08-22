@@ -86,6 +86,14 @@ class AppState:
         self.account_dirty: bool = False
         self.active_trades: dict = {}     # {orderId: OrderHandle}
 
+        # Strategy engine (Task: credit-spread strategies)
+        self.strategies: dict = {}               # {name: Strategy}
+        self.strategy_candidates: dict = {}      # {name: [Candidate.to_dict()]}
+        self.vix: float | None = None            # spot VIX (index)
+        self.vix_stream = None                   # Optional[TickStream] (native)
+        self.auto_trade_kill_switch: bool = False
+        self.strategy_log: list = []             # audit entries for auto trades
+
 
 def create_app_state() -> AppState:
     """Factory for clean AppState instances (useful in tests)."""
