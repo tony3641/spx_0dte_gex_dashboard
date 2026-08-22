@@ -39,17 +39,22 @@ class TakeProfit:
 
 @dataclass
 class StopLoss:
-    stop_price: float
-    limit_price: float
+    """Stop-loss as a single multiplier of the collected credit.
+
+    The IB stop-limit bracket's trigger price = |credit| * multiplier (signed
+    negative, e.g. credit -0.30 with multiplier 5.0 -> -1.50). The engine
+    derives the bracket stop/limit from this one input.
+    """
+    multiplier: float = 1.0
 
     def to_dict(self) -> dict:
-        return {"stop_price": self.stop_price, "limit_price": self.limit_price}
+        return {"multiplier": self.multiplier}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> Optional["StopLoss"]:
         if not d:
             return None
-        return cls(stop_price=float(d["stop_price"]), limit_price=float(d["limit_price"]))
+        return cls(multiplier=float(d.get("multiplier", 1.0)))
 
 
 @dataclass

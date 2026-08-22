@@ -263,6 +263,19 @@ def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dic
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.long_strike,
          "right": right, "action": "BUY", "qty": 1, "lmtPrice": float(long_lmt or 0.01), "secType": "OPT"},
     ]
+    # Stop-loss bracket: the trigger/limit price = |credit| * multiplier
+    # (signed negative, e.g. credit -0.30 with 5x -> -1.50). order_manager
+    # abs()s the stop/limit, so the sign is for clarity.
+    sl = strategy.exit_rules.stop_loss
+    payload_stop_loss = None
+    if sl is not None:
+        stop_mag = abs(candidate.credit_mid) * sl.multiplier
+        stop_tick = spx_tick_for_price(stop_mag)
+        payload_stop_loss = {
+            "stopPrice": round_signed_to_tick(-stop_mag, stop_tick),
+            "limitPrice": round_signed_to_tick(-stop_mag, stop_tick),
+        }
+
     return {
         "legs": legs,
         "orderType": "LMT", "tif": "DAY",
@@ -270,8 +283,7 @@ def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dic
         "comboLmtPrice": round_signed_to_tick(-abs(candidate.credit_mid), tick),
         "comboQuantity": 1,
         "outsideRth": False,
-        "stopLoss": (strategy.exit_rules.stop_loss.to_dict()
-                     if strategy.exit_rules.stop_loss else None),
+        "stopLoss": payload_stop_loss,
     }
 
 

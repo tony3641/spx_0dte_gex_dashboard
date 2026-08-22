@@ -120,6 +120,24 @@ def test_build_entry_payload_credit_negative():
     assert p["legs"][1]["action"] == "BUY"
 
 
+def test_build_entry_payload_stop_loss_multiplier():
+    import pytest
+    from strategy_models import StopLoss, ExitRules
+    from strategy_engine import Candidate, _build_entry_payload
+    strat = Strategy(
+        name="t", direction="bear_call",
+        conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})],
+        exit_rules=ExitRules(stop_loss=StopLoss(multiplier=5.0)),
+    )
+    cand = Candidate(direction="bear_call", short_strike=5200.0, long_strike=5300.0, width_points=100.0,
+                     margin=10000.0, credit_bid=1.8, credit_ask=2.2, credit_mid=0.30,
+                     short_delta=0.3, long_delta=0.1, atm_iv=18.0)
+    p = _build_entry_payload(strat, cand, _state_t8())
+    assert p["stopLoss"] is not None
+    assert p["stopLoss"]["stopPrice"] == pytest.approx(-1.5, abs=0.01)
+    assert p["stopLoss"]["limitPrice"] == pytest.approx(-1.5, abs=0.01)
+
+
 @pytest.mark.asyncio
 async def test_place_strategy_entry_via_mock(mock_ib, app_state):
     from strategy_engine import _build_entry_payload, place_strategy_entry, Candidate
