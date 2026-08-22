@@ -32,3 +32,25 @@ def test_invalid_direction_rejected():
 def test_condition_passthrough():
     c = Condition(kind="trend", params={"indicator": "rsi", "period": 14, "op": "range", "low": 30, "high": 55})
     assert Condition.from_dict(c.to_dict()).params["op"] == "range"
+
+
+def test_budget_roundtrips_as_number():
+    s = Strategy(name="x", direction="bull_put", conditions=[], budget=25000.0)
+    d = s.to_dict()
+    assert d["budget"] == 25000.0
+    s2 = Strategy.from_dict(d)
+    assert s2.budget == 25000.0
+
+
+def test_budget_defaults_to_none():
+    s = Strategy(name="x", direction="bull_put", conditions=[])
+    assert s.budget is None
+    assert "budget" in s.to_dict() and s.to_dict()["budget"] is None
+    assert Strategy.from_dict(s.to_dict()).budget is None
+
+
+def test_budget_negative_rejected():
+    with pytest.raises(ValueError):
+        Strategy.from_dict({"name": "x", "direction": "bull_put", "conditions": [],
+                            "exit_rules": {"take_profit": None, "stop_loss": None, "hold_to_expire": False},
+                            "budget": -100})

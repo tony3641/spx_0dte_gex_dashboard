@@ -88,6 +88,7 @@ class Strategy:
     auto_execute: bool = False
     armed: bool = False
     target_expiry: str = ""
+    budget: Optional[float] = None    # max per-trade margin this strategy may risk (None = no cap)
 
     def to_dict(self) -> dict:
         return {
@@ -98,6 +99,7 @@ class Strategy:
             "auto_execute": self.auto_execute,
             "armed": self.armed,
             "target_expiry": self.target_expiry,
+            "budget": self.budget,
         }
 
     @classmethod
@@ -105,6 +107,11 @@ class Strategy:
         direction = d["direction"]
         if direction not in DIRECTIONS:
             raise ValueError(f"Invalid direction: {direction}")
+        budget = d.get("budget")
+        if budget is not None:
+            budget = float(budget)
+            if budget < 0:
+                raise ValueError(f"Invalid budget: {budget} (must be >= 0)")
         return cls(
             name=d["name"],
             direction=direction,
@@ -113,4 +120,5 @@ class Strategy:
             auto_execute=bool(d.get("auto_execute", False)),
             armed=bool(d.get("armed", False)),
             target_expiry=d.get("target_expiry", ""),
+            budget=budget,
         )
