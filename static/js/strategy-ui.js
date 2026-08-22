@@ -3,6 +3,7 @@
     let _selStrategy = null;
 
     const COND_OPS = ['below', 'above', 'range'];
+    const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
     // Per-condition-type field schema. `optional` fields are blank or "n/a" =>
     // the bound is dropped (i.e. unbounded on that side); `required` fields must
@@ -93,6 +94,10 @@
             conditions: [],
             exit_rules: { take_profit: null, stop_loss: null, hold_to_expire: false },
             auto_execute: false, armed: false,
+            run_days: [0, 1, 2, 3, 4],
+            short_day_enabled: false,
+            run_on_fomc: true,
+            run_on_nfp: true,
         };
         state.strategies.push(s);
         _selStrategy = s.name;
@@ -149,12 +154,36 @@
             <label>Budget (per-trade margin cap)</label>
             <input id="stratBudget" type="number" step="0.01" placeholder="n/a" value="${s.budget != null ? s.budget : ''}" />
             <div class="budget-liquidity">Excess liquidity: <span id="excessLiquidity">${formatExcess()}</span></div>
+            <label>Run days</label>
+            <div class="run-days" id="runDayRow">${[0,1,2,3,4].map(d => `<button class="day-btn ${(s.run_days || []).includes(d) ? 'active' : ''}" onclick="toggleRunDay(${d})">${DAY_LABELS[d]}</button>`).join('')}</div>
+            <label class="caps"><input type="checkbox" id="shortDayEnabled" ${s.short_day_enabled ? 'checked' : ''}> Short/half trading day</label>
+            <label class="caps"><input type="checkbox" id="runOnFomc" ${s.run_on_fomc ? 'checked' : ''}> Execute on FOMC</label>
+            <label class="caps"><input type="checkbox" id="runOnNfp" ${s.run_on_nfp ? 'checked' : ''}> Execute on NFP</label>
             <label class="caps"><input type="checkbox" id="autoExec" ${s.auto_execute ? 'checked' : ''}> Auto-execute</label>
             <button onclick="validateStrategyFromForm()">Validate</button>
             <button onclick="saveStrategyFromForm()">Save</button>`;
         if (s.exit_rules.take_profit) { document.getElementById('tpEnabled').checked = true; document.getElementById('tpValue').value = s.exit_rules.take_profit.value; }
         if (s.exit_rules.stop_loss) { document.getElementById('slEnabled').checked = true; document.getElementById('slMultiplier').value = s.exit_rules.stop_loss.multiplier; }
         toggleTp(document.getElementById('tpEnabled'));
+    }
+
+    function toggleRunDay(day) {
+        // Mutate the selected strategy's run_days in place and repaint only the
+        // day row — re-rendering the whole editor would wipe in-progress fields.
+        const s = state.strategies.find(x => x.name === selectedStrategy());
+        if (!s) return;
+        if (!s.run_days) s.run_days = [0, 1, 2, 3, 4];
+        const i = s.run_days.indexOf(day);
+        if (i >= 0) s.run_days.splice(i, 1); else s.run_days.push(day);
+        s.run_days.sort((a, b) => a - b);
+        renderRunDayRow(s);
+    }
+
+    function renderRunDayRow(s) {
+        const row = document.getElementById('runDayRow');
+        if (!row) return;
+        row.innerHTML = [0, 1, 2, 3, 4].map(d =>
+            `<button class="day-btn ${s.run_days.includes(d) ? 'active' : ''}" onclick="toggleRunDay(${d})">${DAY_LABELS[d]}</button>`).join('');
     }
 
     function addCondition() {
@@ -401,12 +430,18 @@
                 }
             }
         }
+        const run_days = (s.run_days || []).slice().sort((a, b) => a - b);
+        if (run_days.length === 0) errors.push('Select at least one run day');
         const strategy = Object.assign({}, s, {
             name, direction,
             conditions: s.conditions,
             exit_rules: { take_profit: tp, stop_loss: sl, hold_to_expire: false },
             auto_execute: document.getElementById('autoExec').checked,
             budget,
+            run_days,
+            short_day_enabled: document.getElementById('shortDayEnabled').checked,
+            run_on_fomc: document.getElementById('runOnFomc').checked,
+            run_on_nfp: document.getElementById('runOnNfp').checked,
         });
         return { strategy, errors };
     }
@@ -443,6 +478,10 @@
         html += '<div class="modal-row"><span>Direction</span><span>' + esc(strategy.direction) + '</span></div>';
         html += '<div class="modal-row"><span>Auto-execute</span><span>' + (strategy.auto_execute ? 'Yes' : 'No') + '</span></div>';
         html += '<div class="modal-row"><span>Budget</span><span>' + (strategy.budget != null ? '$' + Number(strategy.budget).toLocaleString() : 'n/a') + '</span></div>';
+        html += '<div class="modal-row"><span>Run days</span><span>' + esc((strategy.run_days || []).map(d => DAY_LABELS[d]).join(', ')) + '</span></div>';
+        html += '<div class="modal-row"><span>Short/half day</span><span>' + (strategy.short_day_enabled ? 'Allowed' : 'Skipped') + '</span></div>';
+        html += '<div class="modal-row"><span>FOMC</span><span>' + (strategy.run_on_fomc ? 'Allowed' : 'Skipped') + '</span></div>';
+        html += '<div class="modal-row"><span>NFP</span><span>' + (strategy.run_on_nfp ? 'Allowed' : 'Skipped') + '</span></div>';
 
         html += '<h4 class="strat-validate-h">Conditions (priority order)</h4><ol class="strat-validate-list">';
         html += (strategy.conditions || []).map((c) => {
@@ -510,12 +549,13 @@
         const c = cands[0];
         const right = (s && s.direction === 'bull_put') ? 'P' : 'C';
         const expiry = state.chainMeta ? (state.chainMeta.expiration_raw || '') : '';
+        const tradingClass = (state.chainMeta && (state.chainMeta.trading_class || 'SPXW')) || 'SPXW';
         const sq = state.chainData[c.short_strike], lq = state.chainData[c.long_strike];
         const shortLmt = sq ? ((right === 'C' ? sq.call_bid : sq.put_bid) || c.credit_mid) : c.credit_mid;
         const longLmt = lq ? ((right === 'C' ? lq.call_ask : lq.put_ask) || c.credit_mid) : c.credit_mid;
         const legs = [
-            { symbol: 'SPX', expiry, strike: c.short_strike, right, action: 'SELL', qty: 1, lmtPrice: shortLmt, secType: 'OPT' },
-            { symbol: 'SPX', expiry, strike: c.long_strike, right, action: 'BUY', qty: 1, lmtPrice: longLmt, secType: 'OPT' },
+            { symbol: 'SPX', expiry, strike: c.short_strike, right, action: 'SELL', qty: 1, lmtPrice: shortLmt, secType: 'OPT', trading_class: tradingClass },
+            { symbol: 'SPX', expiry, strike: c.long_strike, right, action: 'BUY', qty: 1, lmtPrice: longLmt, secType: 'OPT', trading_class: tradingClass },
         ];
         let stopLoss = null;
         if (s && s.exit_rules && s.exit_rules.stop_loss) {

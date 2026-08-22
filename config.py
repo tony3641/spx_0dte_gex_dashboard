@@ -125,6 +125,10 @@ SPXW_CEASE = _get_time_setting("SPXW_CEASE", "16:00")
 SPX_OPT_GAP_START = _get_time_setting("SPX_OPT_GAP_START", "17:00")
 SPX_OPT_GAP_END = _get_time_setting("SPX_OPT_GAP_END", "20:15")
 
+# FOMC meeting dates (YYYY-MM-DD). Each two-day meeting lists both days; the
+# policy statement is released on day 2. Update annually from the Fed calendar.
+FOMC_DATES = [str(x) for x in (_YAML_PARAMS.get("FOMC_DATES", []) or [])]
+
 # ---------------------------------------------------------------------------
 # SPX tick-rounding helpers (pure functions)
 # ---------------------------------------------------------------------------

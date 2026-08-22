@@ -541,6 +541,7 @@ async def _place_multi_leg(ib, state, payload, legs,
             strike=strike_val,
             right=leg["right"],
             exchange="CBOE" if use_direct_cboe_combo else "SMART",
+            trading_class=leg.get("trading_class", "SPXW"),
         )
         individual_contracts.append(c)
 

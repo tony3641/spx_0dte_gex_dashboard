@@ -7,6 +7,8 @@ DIRECTIONS = ("bull_put", "bear_call")
 TREND_INDICATORS = ("rsi", "pmove")
 BUCKET_OPS = ("above", "below", "range")
 
+DEFAULT_RUN_DAYS = [0, 1, 2, 3, 4]   # Mon=0 .. Fri=4 (all weekdays)
+
 
 @dataclass
 class Condition:
@@ -89,6 +91,10 @@ class Strategy:
     armed: bool = False
     target_expiry: str = ""
     budget: Optional[float] = None    # max per-trade margin this strategy may risk (None = no cap)
+    run_days: List[int] = field(default_factory=lambda: list(DEFAULT_RUN_DAYS))  # Mon=0..Fri=4
+    short_day_enabled: bool = False   # if True, allowed to execute on early-close (half) days
+    run_on_fomc: bool = True          # if True, allowed to execute on FOMC days
+    run_on_nfp: bool = True           # if True, allowed to execute on NFP (jobs) days
 
     def to_dict(self) -> dict:
         return {
@@ -100,6 +106,10 @@ class Strategy:
             "armed": self.armed,
             "target_expiry": self.target_expiry,
             "budget": self.budget,
+            "run_days": list(self.run_days),
+            "short_day_enabled": self.short_day_enabled,
+            "run_on_fomc": self.run_on_fomc,
+            "run_on_nfp": self.run_on_nfp,
         }
 
     @classmethod
@@ -112,6 +122,13 @@ class Strategy:
             budget = float(budget)
             if budget < 0:
                 raise ValueError(f"Invalid budget: {budget} (must be >= 0)")
+        run_days = d.get("run_days")
+        if run_days is None:
+            run_days = list(DEFAULT_RUN_DAYS)
+        else:
+            run_days = [int(x) for x in run_days]
+            if not run_days or any(x < 0 or x > 4 for x in run_days):
+                raise ValueError(f"Invalid run_days: {run_days} (each day must be 0-4)")
         return cls(
             name=d["name"],
             direction=direction,
@@ -121,4 +138,8 @@ class Strategy:
             armed=bool(d.get("armed", False)),
             target_expiry=d.get("target_expiry", ""),
             budget=budget,
+            run_days=run_days,
+            short_day_enabled=bool(d.get("short_day_enabled", False)),
+            run_on_fomc=bool(d.get("run_on_fomc", True)),
+            run_on_nfp=bool(d.get("run_on_nfp", True)),
         )

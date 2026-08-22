@@ -233,3 +233,28 @@
     margin-bottom: 10px;
 }
 #stratValidateBody .strat-validate-errors ul { margin: 4px 0 0; padding-left: 18px; }
+
+/* ---------------------------------------------------------------------------
+   Strategy run-days toggle (Mon..Fri pill buttons)
+   --------------------------------------------------------------------------- */
+.run-days { display: flex; gap: 6px; margin: 4px 0 10px; }
+.day-btn {
+    flex: 1;
+    padding: 6px 8px;
+    font-size: 12px;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    background: #0f172a;
+    color: #94a3b8;
+    cursor: pointer;
+    text-align: center;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.day-btn:hover { border-color: #475569; color: #e2e8f0; }
+.day-btn.active {
+    background: #1e3a8a;
+    color: #dbeafe;
+    border-color: #3b82f6;
+    font-weight: 600;
+}
+#strategyEditor label.caps + label.caps { margin-top: 4px; }

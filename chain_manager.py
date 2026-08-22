@@ -20,6 +20,7 @@ from config import (
 from market_hours import (
     now_et, is_within_rth, is_cboe_options_open, ET,
     find_next_expiration, get_expiration_display,
+    resolve_trading_expiration,
 )
 from chain_fetcher import fetch_option_chain, clear_qualification_cache
 from gex_calculator import compute_gex, gex_result_to_dict, GEXResult, OptionData
@@ -98,7 +99,8 @@ def _extract_stream_greeks(stream):
 def build_chain_quotes(options: List[OptionData], spot_price: float,
                        gex_result: Optional[GEXResult] = None,
                        annual_vol: float = 0.20,
-                       expiration: str = "") -> dict:
+                       expiration: str = "",
+                       trading_class: str = "SPXW") -> dict:
     """Serialize a list of OptionData into the chain_quotes payload."""
     sigma_tte_years = 0.0
     if expiration:
@@ -175,6 +177,7 @@ def build_chain_quotes(options: List[OptionData], spot_price: float,
         "spot_price": round(spot_price, 2),
         "annual_vol": annual_vol,
         "expiration_raw": expiration,
+        "trading_class": trading_class,
         "tte_years": round(sigma_tte_years, 8),
         "sigma_move": round(sigma_move, 4) if sigma_move is not None else None,
         "call_wall": call_wall,
@@ -209,10 +212,18 @@ async def chain_fetch_loop(ib, state, broadcast_fn):
                     await asyncio.sleep(30)
                     continue
 
-            new_exp = find_next_expiration(state.expirations)
-            if new_exp and new_exp != state.expiration:
-                state.expiration = new_exp
-                logger.info(f"Expiration updated to: {get_expiration_display(new_exp)}")
+            # Prefer today's PM SPXW (0DTE); fall back to today's PM SPX monthly;
+            # otherwise roll to the next available SPXW day for display/scanning.
+            resolved = resolve_trading_expiration(state)
+            if resolved:
+                state.expiration, state.trading_class = resolved
+            else:
+                new_exp = find_next_expiration(state.expirations)
+                state.trading_class = "SPXW"
+                if new_exp and new_exp != state.expiration:
+                    state.expiration = new_exp
+                    state.trading_class = "SPXW"
+            logger.info(f"Expiration updated to: {get_expiration_display(state.expiration)}" if state.expiration else "No expiration available")
 
             if not is_cboe_options_open():
                 logger.info("SPX options in daily gap (5:00–8:15 PM ET) — skipping chain fetch")
@@ -258,6 +269,7 @@ async def chain_fetch_loop(ib, state, broadcast_fn):
                 progress_callback=_on_progress,
                 force_requalify=force_manual_refresh,
                 allow_unknown_retry=force_manual_refresh,
+                trading_class=state.trading_class,
             )
 
             if options:
@@ -305,7 +317,8 @@ async def chain_fetch_loop(ib, state, broadcast_fn):
 
                 state.chain_data = options
                 state.chain_quotes_cache = build_chain_quotes(
-                    options, state.spx_price, gex_result, state.annual_vol, state.expiration)
+                    options, state.spx_price, gex_result, state.annual_vol, state.expiration,
+                    trading_class=state.trading_class)
                 state.chain_quotes_cache["scope"] = "full"
                 logger.info(
                     f"Broadcasting full chain_quotes: rows={len(state.chain_quotes_cache.get('strikes', []))}, "

@@ -32,3 +32,15 @@ RTH_CLOSE: "16:15"
 SPXW_CEASE: "16:00"
 SPX_OPT_GAP_START: "17:00"
 SPX_OPT_GAP_END: "20:15"
+
+# FOMC meeting dates (YYYY-MM-DD). Each two-day meeting lists both days; the
+# policy statement is released on day 2. Update annually from the Fed calendar.
+FOMC_DATES:
+  - "2026-01-28"
+  - "2026-03-18"
+  - "2026-04-29"
+  - "2026-06-17"
+  - "2026-07-29"
+  - "2026-09-16"
+  - "2026-10-28"
+  - "2026-12-09"

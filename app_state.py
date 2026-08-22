@@ -29,6 +29,7 @@ class AppState:
 
         # Chain parameters
         self.expiration: str = ""
+        self.trading_class: str = "SPXW"   # PM-settled class the strategy trades: SPXW (weekly) or SPX (monthly fallback)
         self.expirations: List[str] = []
         self.strikes: List[float] = []
 

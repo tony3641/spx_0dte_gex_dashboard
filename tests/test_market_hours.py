@@ -20,6 +20,11 @@ from market_hours import (
     is_cboe_options_open,
     last_trading_date,
     is_weekday,
+    is_short_trading_day,
+    is_nfp_day,
+    is_fomc_day,
+    is_pm_settle,
+    resolve_trading_expiration,
 )
 
 
@@ -208,3 +213,99 @@ class TestIsWeekday:
     def test_weekend(self):
         assert is_weekday(date(2026, 4, 11)) is False  # Saturday
         assert is_weekday(date(2026, 4, 12)) is False  # Sunday
+
+
+# ---------------------------------------------------------------------------
+# is_short_trading_day (early-close / half sessions)
+# ---------------------------------------------------------------------------
+
+class TestIsShortTradingDay:
+
+    def test_normal_session(self):
+        # 2026-04-13 is a full session closing at 4:00 PM ET -> not a half day
+        assert is_short_trading_day(date(2026, 4, 13)) is False
+
+    def test_early_close_session(self):
+        # Christmas Eve 2026 is a session that closes early (1:00 PM ET)
+        assert is_short_trading_day(date(2026, 12, 24)) is True
+
+    def test_holiday_is_not_a_short_day(self):
+        # Christmas day is closed entirely -> not a *trading* day, so False
+        assert is_short_trading_day(date(2026, 12, 25)) is False
+
+
+# ---------------------------------------------------------------------------
+# is_nfp_day (first Friday)
+# ---------------------------------------------------------------------------
+
+class TestIsNfpDay:
+
+    def test_first_friday(self):
+        # First Friday of Jan 2026 is 2026-01-02
+        assert is_nfp_day(date(2026, 1, 2)) is True
+
+    def test_second_friday_is_not(self):
+        assert is_nfp_day(date(2026, 1, 9)) is False
+
+    def test_first_tuesday_is_not(self):
+        assert is_nfp_day(date(2026, 1, 6)) is False
+
+
+# ---------------------------------------------------------------------------
+# is_fomc_day (FOMC_DATES from params.yaml)
+# ---------------------------------------------------------------------------
+
+class TestIsFomcDay:
+
+    def test_known_fomc_date(self):
+        # Both days of the Jan 2026 meeting are listed in params.yaml
+        assert is_fomc_day(date(2026, 1, 27)) is True
+        assert is_fomc_day(date(2026, 1, 28)) is True
+
+    def test_non_fomc_date(self):
+        assert is_fomc_day(date(2026, 2, 1)) is False
+
+
+# ---------------------------------------------------------------------------
+# is_pm_settle (close-settled classes only)
+# ---------------------------------------------------------------------------
+
+class TestIsPmSettle:
+
+    def test_pm_classes(self):
+        assert is_pm_settle("SPXW") is True
+        assert is_pm_settle("SPX") is True
+
+    def test_am_unknown_class_rejected(self):
+        assert is_pm_settle("SPXWAM") is False
+        assert is_pm_settle("") is False
+        assert is_pm_settle("SPXPM") is False
+
+
+# ---------------------------------------------------------------------------
+# resolve_trading_expiration (prefer SPXW, fall back to SPX monthly)
+# ---------------------------------------------------------------------------
+
+class _FakeState:
+    def __init__(self, exps=(), monthly=()):
+        self.expirations = list(exps)
+        self.monthly_expirations = list(monthly)
+
+
+class TestResolveTradingExpiration:
+
+    def test_prefers_spxw_today(self):
+        st = _FakeState(exps=["20260410"], monthly=["20260417"])
+        assert resolve_trading_expiration(st, ref=date(2026, 4, 10)) == ("20260410", "SPXW")
+
+    def test_falls_back_to_spx_monthly(self):
+        st = _FakeState(exps=[], monthly=["20260417"])
+        assert resolve_trading_expiration(st, ref=date(2026, 4, 17)) == ("20260417", "SPX")
+
+    def test_prefers_spxw_over_spx_when_both(self):
+        st = _FakeState(exps=["20260417"], monthly=["20260417"])
+        assert resolve_trading_expiration(st, ref=date(2026, 4, 17)) == ("20260417", "SPXW")
+
+    def test_none_on_holiday_or_no_0dte(self):
+        st = _FakeState(exps=[], monthly=[])
+        assert resolve_trading_expiration(st, ref=date(2026, 4, 10)) is None

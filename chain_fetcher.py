@@ -392,7 +392,9 @@ async def get_chain_params(ib, underlying: Contract) -> Tuple[List[str], List[fl
         underlying.symbol, '', underlying.secType, underlying.conId
     )
 
-    # Filter for SPXW (0DTE capable) on SMART exchange
+    # Filter for SPXW (0DTE capable) on SMART exchange. 'SPXW' is the PM-settled
+    # (close) class; AM-settled series carry a different tradingClass and are
+    # excluded here so this chain is always close-expiring.
     spxw_chain = next((ch for ch in chains
                        if ch.tradingClass == 'SPXW' and ch.exchange == 'SMART'), None)
 

@@ -163,6 +163,33 @@ def test_build_entry_payload_stop_loss_multiplier():
     assert p["stopLoss"]["limitPrice"] == pytest.approx(-1.5, abs=0.01)
 
 
+def test_build_entry_payload_includes_trading_class():
+    """Legs must carry the strategy's trading_class so monthly SPX fallback
+    resolves correctly; default is SPXW."""
+    from strategy_engine import _build_entry_payload
+    strat = Strategy(name="t", direction="bear_call",
+                     conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
+    cand = type("C", (), {"direction": "bear_call", "short_strike": 5200.0, "long_strike": 5300.0,
+                          "credit_mid": 2.0})()
+    # No trading_class attr -> default SPXW
+    p = _build_entry_payload(strat, cand, _state_t8())
+    assert p["legs"][0]["trading_class"] == "SPXW"
+    assert p["legs"][1]["trading_class"] == "SPXW"
+    # state.trading_class -> threads through
+    st = _state_t8()
+    st.trading_class = "SPX"
+    p2 = _build_entry_payload(strat, cand, st)
+    assert p2["legs"][0]["trading_class"] == "SPX"
+    assert p2["legs"][1]["trading_class"] == "SPX"
+
+
+def test_option_contract_trading_class_default_and_override():
+    """order_manager._option_contract defaults to SPXW but honors an override."""
+    from order_manager import _option_contract
+    assert _option_contract("SPX", "20260821", 5200.0, "C", "CBOE").tradingClass == "SPXW"
+    assert _option_contract("SPX", "20260821", 5200.0, "C", "CBOE", trading_class="SPX").tradingClass == "SPX"
+
+
 @pytest.mark.asyncio
 async def test_place_strategy_entry_via_mock(mock_ib, app_state):
     from strategy_engine import _build_entry_payload, place_strategy_entry, Candidate
@@ -197,14 +224,19 @@ async def test_eval_loop_skips_strategy_with_open_position(monkeypatch, mock_ib,
     loop, while an open strategy still does (positive control).
     """
     import asyncio
+    from market_hours import now_et
     from strategy_engine import strategy_evaluation_loop, StrategyEval, Candidate
 
     app_state.connected = True
     app_state.account_summary = {"ExcessLiquidity": 100000.0}   # margin check passes
+    app_state.expirations = [now_et().date().strftime("%Y%m%d")]  # today is tradeable (holiday gate passes)
 
     def _strat(name):
+        # Make the schedule gate deterministic regardless of the real run date.
         return Strategy(name=name, direction="bear_call", auto_execute=True, armed=True,
-                        conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
+                        conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})],
+                        run_days=[now_et().weekday()], short_day_enabled=True,
+                        run_on_fomc=True, run_on_nfp=True)
 
     s_open = _strat("open_strat")
     s_guard = _strat("guard_strat")
@@ -264,6 +296,85 @@ def test_match_positions():
 import asyncio, pytest
 from strategy_engine import maybe_flatten_at_take_profit, Candidate
 from strategy_models import TakeProfit
+
+# ---------------------------------------------------------------------------
+# Schedule gates: _strategy_should_run_today (day-of-week / holiday / half-day / FOMC / NFP)
+# ---------------------------------------------------------------------------
+
+def _gate_state(exps=(), monthly=()):
+    class S:
+        pass
+    s = S()
+    s.expirations = list(exps)
+    s.monthly_expirations = list(monthly)
+    return s
+
+
+def test_gate_skips_non_run_day():
+    from datetime import date
+    from strategy_engine import _strategy_should_run_today
+    s = Strategy(name="t", direction="bull_put", conditions=[], run_days=[0, 1, 2])  # Mon-Wed
+    st = _gate_state(["20260821"])   # Friday 0DTE present
+    assert _strategy_should_run_today(s, st, today=date(2026, 8, 21)) is False
+
+
+def test_gate_runs_on_run_day():
+    from datetime import date
+    from strategy_engine import _strategy_should_run_today
+    s = Strategy(name="t", direction="bull_put", conditions=[], run_days=[4])
+    st = _gate_state(["20260821"])
+    assert _strategy_should_run_today(s, st, today=date(2026, 8, 21)) is True
+
+
+def test_gate_skips_holiday_no_0dte():
+    """Today has no expiring option -> holiday, no trade."""
+    from datetime import date
+    from strategy_engine import _strategy_should_run_today
+    s = Strategy(name="t", direction="bull_put", conditions=[], run_days=[4])
+    st = _gate_state(["20260828"])   # today (8/21) not in list
+    assert _strategy_should_run_today(s, st, today=date(2026, 8, 21)) is False
+
+
+def test_gate_skips_half_day_when_disabled():
+    from datetime import date
+    from strategy_engine import _strategy_should_run_today
+    s = Strategy(name="t", direction="bull_put", conditions=[], run_days=[3], short_day_enabled=False)
+    st = _gate_state(["20261224"])   # 2026-12-24 is an early-close (half) session
+    assert _strategy_should_run_today(s, st, today=date(2026, 12, 24)) is False
+
+
+def test_gate_runs_half_day_when_enabled():
+    from datetime import date
+    from strategy_engine import _strategy_should_run_today
+    s = Strategy(name="t", direction="bull_put", conditions=[], run_days=[3], short_day_enabled=True)
+    st = _gate_state(["20261224"])
+    assert _strategy_should_run_today(s, st, today=date(2026, 12, 24)) is True
+
+
+def test_gate_skips_fomc_when_disabled():
+    from datetime import date
+    from strategy_engine import _strategy_should_run_today
+    s = Strategy(name="t", direction="bull_put", conditions=[], run_days=[2], run_on_fomc=False)
+    st = _gate_state(["20260128"])   # 2026-01-28 is a scheduled FOMC meeting day
+    assert _strategy_should_run_today(s, st, today=date(2026, 1, 28)) is False
+
+
+def test_gate_skips_nfp_when_disabled():
+    from datetime import date
+    from strategy_engine import _strategy_should_run_today
+    s = Strategy(name="t", direction="bull_put", conditions=[], run_days=[4], run_on_nfp=False)
+    st = _gate_state(["20260102"])   # 2026-01-02 is the first Friday (NFP)
+    assert _strategy_should_run_today(s, st, today=date(2026, 1, 2)) is False
+
+
+def test_gate_permissive_when_expiration_data_unloaded():
+    """No expiration data yet is not a holiday — the engine should not over-skip."""
+    from datetime import date
+    from strategy_engine import _strategy_should_run_today
+    s = Strategy(name="t", direction="bull_put", conditions=[], run_days=[4])
+    st = _gate_state([], [])
+    assert _strategy_should_run_today(s, st, today=date(2026, 8, 21)) is True
+
 
 @pytest.mark.asyncio
 async def test_maybe_flatten_below_target_does_not_place(mock_ib, app_state):

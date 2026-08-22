@@ -6,9 +6,23 @@ Handles trading-hour vs off-hour logic and finds the next available 0DTE expirat
 from datetime import datetime, date, timedelta, time
 from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo
-from config import RTH_OPEN, RTH_CLOSE, SPXW_CEASE, SPX_OPT_GAP_START, SPX_OPT_GAP_END
+from config import RTH_OPEN, RTH_CLOSE, SPXW_CEASE, SPX_OPT_GAP_START, SPX_OPT_GAP_END, FOMC_DATES
 
 ET = ZoneInfo("US/Eastern")
+
+# Close-settled (PM) SPX trading classes. AM-settled series are excluded.
+PM_SETTLE_CLASSES = {"SPX", "SPXW"}
+
+# Cache the NYSE calendar handle (building it is expensive).
+_NYSE_CAL = None
+
+
+def _get_nyse_calendar():
+    global _NYSE_CAL
+    if _NYSE_CAL is None:
+        import exchange_calendars as xcals
+        _NYSE_CAL = xcals.get_calendar("XNYS")
+    return _NYSE_CAL
 
 
 def now_et() -> datetime:
@@ -18,6 +32,59 @@ def now_et() -> datetime:
 
 def is_weekday(dt: date) -> bool:
     return dt.weekday() < 5  # Mon=0 .. Fri=4
+
+
+def is_short_trading_day(ref: Optional[date] = None) -> bool:
+    """True when ``ref`` (or today) is an early-close (half) session.
+
+    Detected via the NYSE exchange calendar: a session whose market close is
+    earlier than the normal 4:00 PM SPX close. Non-sessions (weekends/holidays)
+    return False.
+    """
+    d = ref or now_et().date()
+    cal = _get_nyse_calendar()
+    try:
+        if not cal.is_session(d):
+            return False
+        close_et = cal.session_close(d).astimezone(ET)
+        return close_et.time() < SPXW_CEASE
+    except Exception:
+        return False
+
+
+def is_nfp_day(ref: Optional[date] = None) -> bool:
+    """True when ``ref`` (or today) is the first Friday of its month (NFP / jobs report)."""
+    d = ref or now_et().date()
+    first = date(d.year, d.month, 1)
+    offset = (4 - first.weekday()) % 7  # 4 = Friday
+    first_friday = first + timedelta(days=offset)
+    return d == first_friday
+
+
+def is_fomc_day(ref: Optional[date] = None) -> bool:
+    """True when ``ref`` (or today) is a scheduled FOMC meeting date."""
+    d = ref or now_et().date()
+    return d.isoformat() in FOMC_DATES
+
+
+def is_pm_settle(trading_class: str) -> bool:
+    """True only for close-settled (PM) SPX classes; AM-settled series return False."""
+    return trading_class in PM_SETTLE_CLASSES
+
+
+def resolve_trading_expiration(state, ref: Optional[date] = None) -> Optional[Tuple[str, str]]:
+    """Pick today's tradeable PM expiration, preferring SPXW then SPX (monthly).
+
+    Returns (expiration, trading_class) or None when today has no expiring option
+    (i.e. a market holiday / no 0DTE), so callers can skip the day entirely.
+    """
+    d = ref or now_et().date()
+    today_str = d.strftime("%Y%m%d")
+    if today_str in (getattr(state, "expirations", None) or []):
+        return (today_str, "SPXW")
+    if today_str in (getattr(state, "monthly_expirations", None) or []):
+        return (today_str, "SPX")
+    return None
 
 
 def is_within_rth(dt: Optional[datetime] = None) -> bool:

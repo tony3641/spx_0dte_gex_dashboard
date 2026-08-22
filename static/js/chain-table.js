@@ -13,6 +13,7 @@
             spot_price: data.spot_price,
             annual_vol: data.annual_vol,
             expiration_raw: data.expiration_raw,
+            trading_class: data.trading_class || 'SPXW',
             tte_years: data.tte_years,
             sigma_move: data.sigma_move,
             call_wall: data.call_wall,

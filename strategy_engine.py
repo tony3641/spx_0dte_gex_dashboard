@@ -11,6 +11,10 @@ from condition_helpers import (
     wilder_rsi, percent_change, atm_iv,
 )
 from strategy_models import Strategy, Condition
+from market_hours import (
+    now_et, is_short_trading_day, is_nfp_day, is_fomc_day, is_pm_settle,
+    resolve_trading_expiration,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -314,11 +318,14 @@ def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dic
     # Per-leg limit: SELL leg uses bid (receive), BUY leg uses ask (pay) — mirror order-entry.js.
     short_lmt = _side_field(short_row, right, "bid") if short_row else candidate.credit_mid
     long_lmt = _side_field(long_row, right, "ask") if long_row else candidate.credit_mid
+    trading_class = getattr(state, "trading_class", "SPXW")
     legs = [
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.short_strike,
-         "right": right, "action": "SELL", "qty": 1, "lmtPrice": float(short_lmt or 0.01), "secType": "OPT"},
+         "right": right, "action": "SELL", "qty": 1, "lmtPrice": float(short_lmt or 0.01),
+         "secType": "OPT", "trading_class": trading_class},
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.long_strike,
-         "right": right, "action": "BUY", "qty": 1, "lmtPrice": float(long_lmt or 0.01), "secType": "OPT"},
+         "right": right, "action": "BUY", "qty": 1, "lmtPrice": float(long_lmt or 0.01),
+         "secType": "OPT", "trading_class": trading_class},
     ]
     # Stop-loss bracket: the trigger/limit price = |credit| * multiplier
     # (signed negative, e.g. credit -0.30 with 5x -> -1.50). order_manager
@@ -347,6 +354,17 @@ def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dic
 async def place_strategy_entry(ib, state, strategy, candidate) -> dict:
     from order_manager import handle_place_order
     from account_manager import refresh_account_state
+    # PM-settle guard: never place a trade on an AM-settled (open) contract.
+    trading_class = getattr(state, "trading_class", "SPXW")
+    if not is_pm_settle(trading_class):
+        logger.error(f"{strategy.name}: refusing to trade AM-settled class '{trading_class}'")
+        resp = {"type": "order_status", "data": {"status": "Error", "message": "AM-settled option refused"}}
+        state.strategy_log.append({
+            "ts": time.monotonic(), "slug": "entry",
+            "strategy": strategy.name, "candidate": candidate.to_dict(), "resp": resp,
+            "status": "Error",
+        })
+        return resp
     payload = _build_entry_payload(strategy, candidate, state)
     resp = await handle_place_order(ib, state, payload, ws=None, refresh_fn=refresh_account_state)
     status = (resp.get("data") or {}).get("status", "")
@@ -360,9 +378,30 @@ async def place_strategy_entry(ib, state, strategy, candidate) -> dict:
     return resp
 
 
+def _strategy_should_run_today(strat: Strategy, state, today=None) -> bool:
+    """Schedule gate: is this strategy allowed to run on ``today``?
+
+    Enforced in order: day-of-week → holiday/no-0DTE → early-close half-day →
+    FOMC → NFP. The holiday check only applies once expiration data is loaded,
+    so an unpopulated test state isn't mistaken for a holiday.
+    """
+    today = today or now_et().date()
+    if today.weekday() not in strat.run_days:
+        return False
+    if (getattr(state, "expirations", None) or getattr(state, "monthly_expirations", None)):
+        if resolve_trading_expiration(state, ref=today) is None:
+            return False   # holiday / no 0DTE today
+    if is_short_trading_day(ref=today) and not strat.short_day_enabled:
+        return False
+    if is_fomc_day(ref=today) and not strat.run_on_fomc:
+        return False
+    if is_nfp_day(ref=today) and not strat.run_on_nfp:
+        return False
+    return True
+
+
 async def strategy_evaluation_loop(ib, state, broadcast_fn):
     """On a cadence, evaluate armed strategies and act (scan or auto)."""
-    from market_hours import now_et
     interval = 3.0
     while True:
         try:
@@ -371,6 +410,9 @@ async def strategy_evaluation_loop(ib, state, broadcast_fn):
                 continue
             for name, strat in list(state.strategies.items()):
                 if not strat.armed:
+                    continue
+                if not _strategy_should_run_today(strat, state):
+                    state.strategy_candidates[name] = []
                     continue
                 ev = evaluate_conditions(strat, state, now=now_et())
                 state.strategy_candidates[name] = [c.to_dict() for c in ev.candidates]
@@ -449,11 +491,14 @@ async def maybe_flatten_at_take_profit(ib, state, candidate, positions, tp) -> b
         return False   # no quotes — cannot price a marketable LMT close
     net = round(float(short_ask) - float(long_bid), 2)
     tick = spx_tick_for_price(abs(net))
+    trading_class = getattr(state, "trading_class", "SPXW")
     legs = [
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.short_strike,
-         "right": right, "action": "BUY", "qty": 1, "lmtPrice": round(float(short_ask), 2), "secType": "OPT"},
+         "right": right, "action": "BUY", "qty": 1, "lmtPrice": round(float(short_ask), 2),
+         "secType": "OPT", "trading_class": trading_class},
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.long_strike,
-         "right": right, "action": "SELL", "qty": 1, "lmtPrice": round(float(long_bid), 2), "secType": "OPT"},
+         "right": right, "action": "SELL", "qty": 1, "lmtPrice": round(float(long_bid), 2),
+         "secType": "OPT", "trading_class": trading_class},
     ]
     payload = {"legs": legs, "orderType": "LMT", "tif": "DAY", "comboAction": "BUY",
                "comboLmtPrice": round_signed_to_tick(net, tick), "comboQuantity": 1, "outsideRth": False}
