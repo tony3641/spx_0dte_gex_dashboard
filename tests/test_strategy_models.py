@@ -11,7 +11,7 @@ def test_strategy_roundtrips():
             Condition(kind="short_delta", enabled=True, params={"min": 0.05, "max": 0.35}),
         ],
         exit_rules=ExitRules(take_profit=TakeProfit(mode="pct_credit", value=0.5),
-                             stop_loss=StopLoss(stop_price=1.0, limit_price=0.95),
+                             stop_loss=StopLoss(multiplier=5.0),
                              hold_to_expire=False),
         auto_execute=False,
     )
@@ -20,7 +20,7 @@ def test_strategy_roundtrips():
     assert s2.to_dict() == d
     assert s2.direction == "bull_put"
     assert isinstance(s2.exit_rules.take_profit, TakeProfit)
-    assert s2.exit_rules.stop_loss.limit_price == 0.95
+    assert s2.exit_rules.stop_loss.multiplier == 5.0
 
 
 def test_invalid_direction_rejected():
