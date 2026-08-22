@@ -485,19 +485,41 @@ def _strategy_should_run_today(strat: Strategy, state, today=None) -> bool:
 
 
 async def strategy_evaluation_loop(ib, state, broadcast_fn):
-    """On a cadence, evaluate armed strategies and act (scan or auto)."""
+    """On a cadence, evaluate armed strategies and act (scan or auto).
+
+    One-shot per strategy per day/cycle: a strategy is skipped once its cycle's
+    trade is used (entered/done) or a position is awaiting close. Children are
+    gated on the parent's close triggers via _child_is_eligible; a positioned
+    strategy's parent role is kept live via _update_parent_role.
+    """
     interval = 3.0
     while True:
         try:
             await asyncio.sleep(interval)
             if not getattr(state, "connected", False):
                 continue
+            today = now_et().date()
+            day_key = today.isoformat()
+            if getattr(state, "day_key", None) != day_key:
+                _daily_reset(state)
+                state.day_key = day_key
             for name, strat in list(state.strategies.items()):
                 if not strat.armed:
                     continue
                 if not _strategy_should_run_today(strat, state):
                     state.strategy_candidates[name] = []
                     continue
+                rt = get_runtime(state, name)
+                if rt.entered or rt.done or name in state.strategy_open_positions:
+                    # this cycle's one trade is used (or a position is awaiting
+                    # close); keep the parent role live and do not re-enter
+                    await _update_parent_role(name, state, broadcast_fn)
+                    state.strategy_candidates[name] = []
+                    continue
+                if strat.parent_name:
+                    if not _child_is_eligible(strat, state):
+                        state.strategy_candidates[name] = []
+                        continue
                 ev = evaluate_conditions(strat, state, now=now_et())
                 state.strategy_candidates[name] = [c.to_dict() for c in ev.candidates]
                 if ev.status != "ready":
@@ -506,18 +528,28 @@ async def strategy_evaluation_loop(ib, state, broadcast_fn):
                     continue
                 if strat.auto_execute and ev.candidates:
                     best = ev.candidates[0]
-                    if strat.name in state.strategy_open_positions:
-                        continue   # spec §11: one concurrent position per strategy
                     if not _has_margin(state, best, budget=strat.budget):
                         logger.info(f"{strat.name}: insufficient margin/budget, skipping auto entry")
                         continue
                     try:
-                        await place_strategy_entry(ib, state, strat, best)
-                        await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "auto_entry"}})
+                        resp = await place_strategy_entry(ib, state, strat, best)
+                        if (resp.get("data") or {}).get("status", "") not in ("Error", ""):
+                            rt.entered = True
+                            rt.trade = {
+                                "candidate": best.to_dict(),
+                                "credit": float(best.credit_mid),
+                                "open_ts": time.monotonic(),
+                                "close_ts": None,
+                                "close_reason": None,
+                                "high_water_mult": 0.0,
+                                "low_water_mult": 0.0,
+                            }
+                            await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "auto_entry"}})
                     except Exception as e:
                         logger.error(f"Auto entry failed for {name}: {e}")
                 elif not strat.auto_execute:
-                    await broadcast_fn({"type": "strategy_candidate", "data": {"name": name, "candidates": [c.to_dict() for c in ev.candidates]}})
+                    await broadcast_fn({"type": "strategy_candidate",
+                                        "data": {"name": name, "candidates": [c.to_dict() for c in ev.candidates]}})
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -714,8 +746,14 @@ async def take_profit_loop(ib, state, broadcast_fn):
                     continue
                 closed = await maybe_flatten_at_take_profit(ib, state, cand, positions, tp)
                 if closed:
+                    rt = get_runtime(state, name)
+                    rt.done = True
+                    if rt.trade is not None:
+                        rt.trade["close_ts"] = time.monotonic()
+                        rt.trade["close_reason"] = "take_profit"
                     state.strategy_open_positions.pop(name, None)
                     await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "take_profit"}})
+                    await fire_children(strat, state, broadcast_fn)
         except asyncio.CancelledError:
             break
         except Exception as e:

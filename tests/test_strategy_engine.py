@@ -613,3 +613,75 @@ def test_daily_reset_resets_closed() :
     _daily_reset(state)
     assert state.runtime["master"].entered is False
     assert state.runtime["master"].trade is None
+
+
+@pytest.mark.asyncio
+async def test_eval_loop_child_enters_once_eligible(monkeypatch):
+    import asyncio
+    from datetime import date
+    from strategy_engine import strategy_evaluation_loop, StrategyEval, Candidate
+    from strategy_models import TriggerSpec, RuntimeState
+
+    state = type("S", (), {})()
+    state.connected = True
+    state.account_summary = {"ExcessLiquidity": 100000.0}
+    state.expirations = [date.today().strftime("%Y%m%d")]
+    state.strategy_open_positions = {}
+    state.strategy_candidates = {}   # the loop writes candidates here each cadence
+    state.strategy_log = []
+    state.auto_trade_kill_switch = False
+    state.runtime = {}
+    state.vix = 20.0
+    state.spx_price = 5200.0
+    state.chain_quotes_cache = {"strikes": []}
+
+    parent = Strategy(name="master", direction="bull_put", conditions=[], armed=True, auto_execute=True,
+                      run_days=[date.today().weekday()], short_day_enabled=True, run_on_fomc=True, run_on_nfp=True)
+    child = Strategy(name="child", direction="bull_put", conditions=[], armed=True, auto_execute=True,
+                     parent_name="master",
+                     subsequent_triggers=[TriggerSpec(kind="parent_exit_reason", params={"reason": "stop_loss"})],
+                     run_days=[date.today().weekday()], short_day_enabled=True, run_on_fomc=True, run_on_nfp=True)
+    state.strategies = {"master": parent, "child": child}
+
+    # Parent has traded and CLOSED (flat) this cycle; the stop-loss trigger fired.
+    state.runtime["master"] = RuntimeState(entered=True, done=True)
+    state.runtime["master"].trade = {"candidate": {"direction": "bull_put", "short_strike": 5100.0,
+                                                   "long_strike": 5000.0, "credit_mid": 0.30},
+                                     "credit": 0.30, "high_water_mult": 0.0, "low_water_mult": 0.0,
+                                     "close_reason": "stop_loss"}
+    state.runtime["child"] = RuntimeState()
+
+    placed = []
+    cand = Candidate(direction="bull_put", short_strike=5100.0, long_strike=5000.0, width_points=100.0,
+                     margin=10000.0, credit_bid=0.2, credit_ask=0.4, credit_mid=0.30,
+                     short_delta=0.3, long_delta=0.1, atm_iv=18.0)
+    async def fake_place(ib, s, strat, candidate):
+        placed.append(strat.name)
+        return {"type": "order_status", "data": {"status": "Filled"}}
+    def fake_eval(strategy, s, now=None, candidates=None):
+        return StrategyEval(status="ready", candidates=[cand])
+    async def fake_bcast(message):
+        pass
+    monkeypatch.setattr("strategy_engine.place_strategy_entry", fake_place)
+    monkeypatch.setattr("strategy_engine.evaluate_conditions", fake_eval)
+
+    # The master must NOT enter (already done/entered); the child must NOT be
+    # double-entered after entry (one-shot). Each arm/child gate enforced in-loop.
+    # We run two cadences: first builds candidates, only the child places.
+    # To prove one-shot, we manually mark the child entered after the first run
+    # is prevented by the loop guard itself — assert only one placement.
+
+    # First, suppress _strategy_should_run_today so gate is a no-op:
+    monkeypatch.setattr("strategy_engine._strategy_should_run_today", lambda strat, s, today=None: True)
+    monkeypatch.setattr("strategy_engine._daily_reset", lambda s: None)
+
+    task = asyncio.create_task(strategy_evaluation_loop(None, state, fake_bcast))
+    await asyncio.sleep(3.5)
+    await asyncio.sleep(3.5)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert placed == ["child"]   # only the eligible child placed; parent skipped; child once
