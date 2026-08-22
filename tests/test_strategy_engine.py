@@ -86,3 +86,50 @@ def test_vix_blocks_before_candidates():
     ev = evaluate_conditions(_swe(), _state(vix=10.0), now=now)
     assert ev.blocker == "volatility"
     assert ev.candidates == []
+
+
+import pytest, asyncio
+from strategy_engine import place_strategy_entry, _build_entry_payload
+
+
+def _state_t8(spot=5200.0):
+    rows = {"strikes": [
+        {"strike": 5100, "put_bid": 1.0, "put_ask": 1.4, "put_delta": -0.70, "put_iv": 21.0,
+         "call_bid": 9.0, "call_ask": 9.6, "call_delta": 0.30, "call_iv": 20.0},
+        {"strike": 5200, "put_bid": 3.0, "put_ask": 3.4, "put_delta": -0.30, "put_iv": 19.0,
+         "call_bid": 4.0, "call_ask": 4.6, "call_delta": 0.30, "call_iv": 18.0},
+        {"strike": 5300, "put_bid": 6.0, "put_ask": 6.6, "put_delta": -0.10, "put_iv": 23.0,
+         "call_bid": 2.0, "call_ask": 2.6, "call_delta": 0.10, "call_iv": 22.0},
+    ], "spot_price": spot}
+    class S: pass
+    s = S()
+    s.chain_quotes_cache = rows
+    s.spx_price = spot
+    s.expiration = "20260821"
+    s.positions = []
+    return s
+
+
+def test_build_entry_payload_credit_negative():
+    strat = Strategy(name="t", direction="bear_call", conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
+    cand = type("C", (), {"direction": "bear_call", "short_strike": 5200.0, "long_strike": 5300.0,
+                          "credit_mid": 2.0})()
+    p = _build_entry_payload(strat, cand, _state_t8())
+    assert p["comboLmtPrice"] < 0
+    assert p["legs"][0]["action"] == "SELL"
+    assert p["legs"][1]["action"] == "BUY"
+
+
+@pytest.mark.asyncio
+async def test_place_strategy_entry_via_mock(mock_ib, app_state):
+    from strategy_engine import _build_entry_payload, place_strategy_entry, Candidate
+    app_state.expiration = "20260821"
+    strat = Strategy(name="t", direction="bear_call", conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
+    cand = Candidate(direction="bear_call", short_strike=5200.0, long_strike=5300.0, width_points=100.0,
+                     margin=10000.0, credit_bid=1.8, credit_ask=2.2, credit_mid=2.0,
+                     short_delta=0.3, long_delta=0.1, atm_iv=18.0)
+    payload = _build_entry_payload(strat, cand, app_state)
+    resp = await place_strategy_entry(mock_ib, app_state, strat, cand)
+    assert resp is not None
+    assert len(app_state.strategy_log) == 1
+    assert len(mock_ib.get_placed_orders()) == 1
