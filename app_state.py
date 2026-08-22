@@ -10,6 +10,7 @@ from collections import deque
 from typing import Dict, List, Optional, Set
 
 from gex_calculator import GEXResult, OptionData
+from strategy_models import RuntimeState
 
 
 class AppState:
@@ -95,6 +96,10 @@ class AppState:
         self.auto_trade_kill_switch: bool = False
         self.strategy_log: list = []             # audit entries for auto trades
         self.strategy_open_positions: dict = {}   # {strategy_name: entered Candidate dict}
+
+        # Subsequent-strategy runtime (per-strategy lifecycle + parent trades)
+        self.runtime: dict = {}      # {strategy_name: RuntimeState}
+        self.day_key: str = ""       # "YYYY-MM-DD" (drives daily cycle reset)
 
 
 def create_app_state() -> AppState:

@@ -9,3 +9,9 @@ def test_strategy_state_defaults():
     assert s.auto_trade_kill_switch is False
     assert s.strategy_log == []
     assert s.strategy_open_positions == {}
+
+
+def test_subsequent_runtime_state_defaults():
+    s = create_app_state()
+    assert s.runtime == {}
+    assert s.day_key == ""
