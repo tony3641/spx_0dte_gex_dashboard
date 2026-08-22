@@ -100,6 +100,21 @@ async def test_strategy_arm_sets_armed(app_state):
 
 
 @pytest.mark.asyncio
+async def test_strategy_arm_unknown_name_keeps_connection_open(app_state):
+    # An unknown strategy name must not raise (and so must not cause the outer
+    # handler to discard the client): the connection stays open and a
+    # subsequent valid message is still processed.
+    app_state.strategies["a"] = Strategy(name="a", direction="bull_put", conditions=[])
+    ws = FakeWS(["strategy_arm:nonexistent", "strategy_arm:a"])
+
+    await websocket_endpoint(ws, None, app_state, _noop_broadcast)
+
+    # The later message only reached the handler if the client survived the
+    # unknown-name arm message (guarded branch) instead of dropping on KeyError.
+    assert app_state.strategies["a"].armed is True
+
+
+@pytest.mark.asyncio
 async def test_strategy_disarm_clears_armed(app_state):
     app_state.strategies["a"] = Strategy(name="a", direction="bull_put", conditions=[],
                                          armed=True)
