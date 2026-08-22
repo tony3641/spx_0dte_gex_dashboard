@@ -90,6 +90,50 @@ async def test_strategy_save_persists_and_sends_strategy_list(app_state, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_strategy_save_persists_budget(app_state, tmp_path, monkeypatch):
+    p = tmp_path / "strategies.json"
+    monkeypatch.setattr(store, "STRATEGIES_PATH", p)
+    body = _body("b")
+    body["budget"] = 8000.0
+    ws = FakeWS([f"strategy_save:{json.dumps(body)}"])
+
+    await websocket_endpoint(ws, None, app_state, _noop_broadcast)
+
+    assert app_state.strategies["b"].budget == 8000.0
+    assert store.load_strategies()["b"].budget == 8000.0
+
+
+@pytest.mark.asyncio
+async def test_strategy_save_rejects_budget_above_excess(app_state, monkeypatch):
+    app_state.account_summary = {"ExcessLiquidity": 5000.0}
+    body = _body("over")
+    body["budget"] = 20000.0
+    ws = FakeWS([f"strategy_save:{json.dumps(body)}"])
+
+    await websocket_endpoint(ws, None, app_state, _noop_broadcast)
+
+    errs = ws.sent_by_type("strategy_error")
+    assert len(errs) == 1
+    assert "excess" in errs[0]["data"]["message"].lower()
+    # Nothing persisted and no strategy entered state.
+    assert "over" not in app_state.strategies
+
+
+@pytest.mark.asyncio
+async def test_strategy_save_allows_budget_when_excess_unknown(app_state, monkeypatch):
+    # When liquidity is unknown (e.g. disconnected), a budget is not rejected.
+    app_state.account_summary = {}
+    body = _body("unknown")
+    body["budget"] = 20000.0
+    ws = FakeWS([f"strategy_save:{json.dumps(body)}"])
+
+    await websocket_endpoint(ws, None, app_state, _noop_broadcast)
+
+    assert app_state.strategies["unknown"].budget == 20000.0
+    assert ws.sent_by_type("strategy_error") == []
+
+
+@pytest.mark.asyncio
 async def test_strategy_arm_sets_armed(app_state):
     app_state.strategies["a"] = Strategy(name="a", direction="bull_put", conditions=[])
     ws = FakeWS(["strategy_arm:a"])
@@ -156,6 +200,32 @@ async def test_strategy_delete_removes_from_state_and_store(app_state, tmp_path,
 
     assert "a" not in app_state.strategies
     assert "a" not in store.load_strategies()
+
+
+@pytest.mark.asyncio
+async def test_strategy_delete_handles_quoted_name(app_state, tmp_path, monkeypatch):
+    """Regression: a JSON-stringifying client sends strategy_delete:\"a\"; the
+    quoted name must still delete the strategy so it does NOT return on refresh."""
+    p = tmp_path / "strategies.json"
+    monkeypatch.setattr(store, "STRATEGIES_PATH", p)
+    app_state.strategies["a"] = Strategy(name="a", direction="bull_put", conditions=[])
+    store.save_strategy(None, app_state.strategies["a"])
+    ws = FakeWS(['strategy_delete:"a"'])   # quoted name, as the old client sent
+
+    await websocket_endpoint(ws, None, app_state, _noop_broadcast)
+
+    assert "a" not in app_state.strategies
+    assert "a" not in store.load_strategies()
+
+
+@pytest.mark.asyncio
+async def test_strategy_arm_handles_quoted_name(app_state):
+    app_state.strategies["a"] = Strategy(name="a", direction="bull_put", conditions=[])
+    ws = FakeWS(['strategy_arm:"a"'])   # quoted name, as the old client sent
+
+    await websocket_endpoint(ws, None, app_state, _noop_broadcast)
+
+    assert app_state.strategies["a"].armed is True
 
 
 @pytest.mark.asyncio

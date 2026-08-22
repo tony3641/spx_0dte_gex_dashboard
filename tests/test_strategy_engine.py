@@ -30,6 +30,31 @@ def test_bear_call_candidates():
     assert c.credit_mid == pytest.approx((4.3 - 2.3), abs=0.01)
 
 
+def test_unbounded_max_when_min_only():
+    # A present condition with only `min` means the max side is unlimited (n/a),
+    # not the old hardcoded 0.35 cap: a 0.70-abs-delta short must be allowed.
+    rows = {"strikes": [
+        {"strike": 5000, "put_bid": 1.0, "put_ask": 1.4, "put_delta": -0.80},
+        {"strike": 5100, "put_bid": 3.0, "put_ask": 3.4, "put_delta": -0.70},
+        {"strike": 5200, "put_bid": 6.0, "put_ask": 6.6, "put_delta": -0.30},
+    ], "spot_price": 5200.0}
+    strat = Strategy(name="t", direction="bull_put", conditions=[
+        Condition(kind="spread_width", params={"min": 1, "max": 10000}),  # open the width filter
+        Condition(kind="short_delta", params={"min": 0.2}),               # no max -> unbounded upper
+    ])
+    state = type("S", (), {"chain_quotes_cache": rows, "account_summary": {}})()
+    strikes = {c.short_strike for c in generate_candidates(strat, state)}
+    assert 5100.0 in strikes   # short put delta -0.70
+
+
+def test_has_margin_budget_caps():
+    from strategy_engine import _has_margin
+    state = type("S", (), {"account_summary": {"ExcessLiquidity": 100000.0}})()
+    cand = type("C", (), {"margin": 5000.0})()
+    assert _has_margin(state, cand, budget=10000.0) is True
+    assert _has_margin(state, cand, budget=3000.0) is False   # budget is the binding cap
+
+
 def _closes():
     return [100.0 + 0.2 * i for i in range(20)]  # gently rising
 

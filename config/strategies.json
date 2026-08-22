@@ -1,0 +1,51 @@
+{
+  "Default1": {
+    "name": "Default1",
+    "direction": "bull_put",
+    "conditions": [
+      {
+        "kind": "short_delta",
+        "enabled": true,
+        "params": {
+          "min": 0.035,
+          "max": 0.05
+        }
+      },
+      {
+        "kind": "spread_width",
+        "enabled": true,
+        "params": {
+          "min": 35,
+          "max": 65
+        }
+      },
+      {
+        "kind": "credit",
+        "enabled": true,
+        "params": {
+          "min": 0.3,
+          "max": 0.6
+        }
+      },
+      {
+        "kind": "entry_window",
+        "enabled": true,
+        "params": {
+          "start": "11:30",
+          "end": "13:00"
+        }
+      }
+    ],
+    "exit_rules": {
+      "take_profit": null,
+      "stop_loss": {
+        "multiplier": 6.0
+      },
+      "hold_to_expire": false
+    },
+    "auto_execute": true,
+    "armed": false,
+    "target_expiry": "",
+    "budget": 20000.0
+  }
+}

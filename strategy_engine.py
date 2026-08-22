@@ -44,6 +44,26 @@ def _side_field(row: dict, right: str, field: str):
     return row.get(f"{prefix}_{field}")
 
 
+def _num(params: dict, key: str) -> Optional[float]:
+    """Float value of a param, or None when absent/"" (i.e. the bound is 'n/a')."""
+    v = params.get(key)
+    if v is None or v == "":
+        return None
+    return float(v)
+
+
+def _lo(params: dict, key: str) -> float:
+    """Lower bound. A present-but-unset bound means unbounded (-inf)."""
+    v = _num(params, key)
+    return float("-inf") if v is None else v
+
+
+def _hi(params: dict, key: str) -> float:
+    """Upper bound. A present-but-unset bound means unbounded (+inf)."""
+    v = _num(params, key)
+    return float("inf") if v is None else v
+
+
 def generate_candidates(strategy: Strategy, state, max_n: int = 20) -> List[Candidate]:
     rows = chain_rows(state)
     spot = float(getattr(state, "spx_price", 0) or 0.0)
@@ -52,9 +72,9 @@ def generate_candidates(strategy: Strategy, state, max_n: int = 20) -> List[Cand
     width_c = cond.get("spread_width")
     credit_c = cond.get("credit")
 
-    dmin, dmax = (delta_c.params.get("min", 0.05), delta_c.params.get("max", 0.35)) if delta_c else (0.05, 0.35)
-    wmin, wmax = (width_c.params.get("min", 5), width_c.params.get("max", 50)) if width_c else (5, 50)
-    cmin, cmax = (credit_c.params.get("min", 0.0), credit_c.params.get("max", 1e6)) if credit_c else (0.0, 1e6)
+    dmin, dmax = (_lo(delta_c.params, "min"), _hi(delta_c.params, "max")) if delta_c else (0.05, 0.35)
+    wmin, wmax = (_lo(width_c.params, "min"), _hi(width_c.params, "max")) if width_c else (5, 50)
+    cmin, cmax = (_lo(credit_c.params, "min"), _hi(credit_c.params, "max")) if credit_c else (0.0, 1e6)
 
     short_right = "P" if strategy.direction == "bull_put" else "C"
     long_right = short_right
@@ -114,22 +134,26 @@ class StrategyEval:
     values: dict = field(default_factory=dict)
 
 
-def _passes_bucket(value: Optional[float], op: str, lo: float, hi: float) -> bool:
+def _passes_bucket(value: Optional[float], op: str, lo: Optional[float], hi: Optional[float]) -> bool:
     if value is None:
         return False
     if op == "above":
-        return value > hi
+        return hi is None or value > hi
     if op == "below":
-        return value < lo
+        return lo is None or value < lo
     if op == "range":
-        return lo <= value <= hi
+        return (lo is None or value >= lo) and (hi is None or value <= hi)
     return False
 
 
 def _bucket_params(p: dict, base: str) -> tuple:
     op = p.get(f"{base}_op", "range")
-    lo = float(p.get(f"{base}_low", p.get(f"{base}_value", 0)))
-    hi = float(p.get(f"{base}_high", p.get(f"{base}_value", 0)))
+    lo = _num(p, f"{base}_low")
+    if lo is None:
+        lo = _num(p, f"{base}_value")
+    hi = _num(p, f"{base}_high")
+    if hi is None and _num(p, f"{base}_value") is not None:
+        hi = _num(p, f"{base}_value")
     return op, lo, hi
 
 
@@ -168,8 +192,12 @@ def _eval_condition(cond: Condition, state, now) -> tuple:
         else:
             val = percent_change(closes, int(p.get("minutes", 5)))
         op = p.get("op", "range")
-        lo = float(p.get("low", p.get("value", 0)))
-        hi = float(p.get("high", p.get("value", lo)))
+        lo = _num(p, "low")
+        if lo is None:
+            lo = _num(p, "value")
+        hi = _num(p, "high")
+        if hi is None:
+            hi = _num(p, "value") if _num(p, "value") is not None else lo
         return _passes_bucket(val, op, lo, hi), val
     # per-candidate conditions short-circuit in evaluate_conditions
     return True, None
@@ -211,15 +239,15 @@ def evaluate_conditions(strategy: Strategy, state, now=None, candidates=None) ->
         ok = True
         if "short_delta" in per:
             p = per["short_delta"].params
-            if not (float(p.get("min", 0.05)) <= abs(c.short_delta) <= float(p.get("max", 0.35))):
+            if not (_lo(p, "min") <= abs(c.short_delta) <= _hi(p, "max")):
                 ok = False
         if "spread_width" in per:
             p = per["spread_width"].params
-            if not (float(p.get("min", 5)) <= c.width_points <= float(p.get("max", 50))):
+            if not (_lo(p, "min") <= c.width_points <= _hi(p, "max")):
                 ok = False
         if "credit" in per:
             p = per["credit"].params
-            if not (float(p.get("min", 0.0)) <= c.credit_mid <= float(p.get("max", 1e6))):
+            if not (_lo(p, "min") <= c.credit_mid <= _hi(p, "max")):
                 ok = False
         if ok:
             passing.append(c)
@@ -247,20 +275,33 @@ def _has_open_position(state, sig) -> bool:
     return False
 
 
-def _has_margin(state, candidate) -> bool:
-    """Conservative buying-power check against account ExcessLiquidity.
+def _has_margin(state, candidate, budget=None) -> bool:
+    """Conservative buying-power check against account ExcessLiquidity and the
+    strategy's per-trade budget cap.
 
     Allows placement when account data is unavailable (excess unknown) or when
-    the candidate's margin requirement is within excess liquidity.
+    the candidate's margin requirement is within excess liquidity. When a
+    per-strategy budget is set, the candidate's margin must also fit within it
+    (a malformed budget refuses to auto-trade rather than slipping through).
     """
     summary = getattr(state, "account_summary", {}) or {}
     excess = summary.get("ExcessLiquidity")
-    if excess is None:
-        return True
-    try:
-        return candidate.margin <= float(excess)
-    except (TypeError, ValueError):
-        return True
+
+    # Per-strategy budget cap on a single entry's margin requirement.
+    if budget is not None:
+        try:
+            if candidate.margin > float(budget):
+                return False
+        except (TypeError, ValueError):
+            return False   # malformed budget -> refuse to auto-trade
+
+    # Account ExcessLiquidity (conservatively allow when unknown).
+    if excess is not None:
+        try:
+            return candidate.margin <= float(excess)
+        except (TypeError, ValueError):
+            return True
+    return True
 
 
 def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dict:
@@ -341,8 +382,8 @@ async def strategy_evaluation_loop(ib, state, broadcast_fn):
                     best = ev.candidates[0]
                     if strat.name in state.strategy_open_positions:
                         continue   # spec §11: one concurrent position per strategy
-                    if not _has_margin(state, best):
-                        logger.info(f"{strat.name}: insufficient margin, skipping auto entry")
+                    if not _has_margin(state, best, budget=strat.budget):
+                        logger.info(f"{strat.name}: insufficient margin/budget, skipping auto entry")
                         continue
                     try:
                         await place_strategy_entry(ib, state, strat, best)
