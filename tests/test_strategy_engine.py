@@ -163,6 +163,59 @@ def test_has_open_position():
     assert _has_open_position(other, sig) is False
 
 
+@pytest.mark.asyncio
+async def test_eval_loop_skips_strategy_with_open_position(monkeypatch, mock_ib, app_state):
+    """spec §11: one concurrent position per strategy.
+
+    An armed + auto_execute strategy whose name is already in
+    state.strategy_open_positions must NOT place an order through the eval
+    loop, while an open strategy still does (positive control).
+    """
+    import asyncio
+    from strategy_engine import strategy_evaluation_loop, StrategyEval, Candidate
+
+    app_state.connected = True
+    app_state.account_summary = {"ExcessLiquidity": 100000.0}   # margin check passes
+
+    def _strat(name):
+        return Strategy(name=name, direction="bear_call", auto_execute=True, armed=True,
+                        conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
+
+    s_open = _strat("open_strat")
+    s_guard = _strat("guard_strat")
+    app_state.strategies = {"open_strat": s_open, "guard_strat": s_guard}
+
+    cand = Candidate(direction="bear_call", short_strike=5200.0, long_strike=5300.0, width_points=100.0,
+                     margin=10000.0, credit_bid=1.8, credit_ask=2.2, credit_mid=2.0,
+                     short_delta=0.3, long_delta=0.1, atm_iv=18.0)
+    # Seed an already-open position for guard_strat.
+    app_state.strategy_open_positions = {"guard_strat": cand.to_dict()}
+
+    placed = []
+    async def fake_place_entry(ib, state, strategy, candidate):
+        placed.append(strategy.name)
+        return {"type": "order_status", "data": {"status": "Filled"}}
+    def fake_eval(strategy, state, now=None, candidates=None):
+        return StrategyEval(status="ready", candidates=[cand])
+    async def fake_broadcast(message):
+        pass
+
+    monkeypatch.setattr("strategy_engine.place_strategy_entry", fake_place_entry)
+    monkeypatch.setattr("strategy_engine.evaluate_conditions", fake_eval)
+
+    task = asyncio.create_task(strategy_evaluation_loop(mock_ib, app_state, fake_broadcast))
+    await asyncio.sleep(3.5)   # one full 3s cadence
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    # Only the unguarded strategy placed; the seeded one was skipped.
+    assert placed == ["open_strat"]
+    assert "guard_strat" not in placed
+
+
 from strategy_engine import signature_for_candidate, find_strategy_positions
 from strategy_models import Strategy, Condition
 
