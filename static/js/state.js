@@ -46,7 +46,7 @@
     };
 
     const TAB_KEY = 'spx0dte.activeTab';
-    const VALID_TABS = new Set(['dashboard', 'chain', 'account', 'strategies']);
+    const VALID_TABS = new Set(['dashboard', 'chain', 'account', 'strategies', 'log']);
 
     function getValidTab(tab) {
         return VALID_TABS.has(tab) ? tab : 'dashboard';

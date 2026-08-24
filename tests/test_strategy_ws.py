@@ -269,3 +269,34 @@ async def test_strategy_arm_resets_runtime(app_state):
     assert app_state.strategies["a"].armed is True
     assert rt.entered is False      # re-arm resets the one-shot latch
     assert rt.trade is None
+
+
+@pytest.mark.asyncio
+async def test_strategy_arm_sends_strategy_list(app_state, tmp_path, monkeypatch):
+    """Ack the arm back to the client so the button/status repaint (the missing
+    feedback loop that made clicking Arm look like a no-op)."""
+    monkeypatch.setattr(store, "STRATEGIES_PATH", tmp_path / "strategies.json")
+    app_state.strategies["a"] = Strategy(name="a", direction="bull_put", conditions=[])
+    ws = FakeWS(["strategy_arm:a"])
+
+    await websocket_endpoint(ws, None, app_state, _noop_broadcast)
+
+    assert app_state.strategies["a"].armed is True
+    lists = ws.sent_by_type("strategy_list")
+    assert len(lists) == 1
+    assert lists[0]["data"]["strategies"][0]["armed"] is True
+
+
+@pytest.mark.asyncio
+async def test_strategy_disarm_sends_strategy_list(app_state, tmp_path, monkeypatch):
+    """Ack the disarm back so the button returns to "Arm"."""
+    monkeypatch.setattr(store, "STRATEGIES_PATH", tmp_path / "strategies.json")
+    app_state.strategies["a"] = Strategy(name="a", direction="bull_put", conditions=[], armed=True)
+    ws = FakeWS(["strategy_disarm:a"])
+
+    await websocket_endpoint(ws, None, app_state, _noop_broadcast)
+
+    assert app_state.strategies["a"].armed is False
+    lists = ws.sent_by_type("strategy_list")
+    assert len(lists) == 1
+    assert lists[0]["data"]["strategies"][0]["armed"] is False

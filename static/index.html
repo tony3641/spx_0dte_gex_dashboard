@@ -13,6 +13,7 @@
     <link rel="stylesheet" href="/static/css/account.css">
     <link rel="stylesheet" href="/static/css/order-entry.css">
     <link rel="stylesheet" href="/static/css/strategies.css">
+    <link rel="stylesheet" href="/static/css/logs.css">
     <link rel="stylesheet" href="/static/css/mobile.css">
 </head>
 <body>
@@ -79,6 +80,7 @@
         <button class="tab-btn" data-tab="chain" onclick="switchTab('chain')">Option Chain</button>
         <button class="tab-btn" data-tab="account" onclick="switchTab('account')">Account</button>
         <button class="tab-btn" data-tab="strategies" onclick="switchTab('strategies')">Strategies</button>
+        <button class="tab-btn" data-tab="log" onclick="switchTab('log')">Log</button>
     </div>
 
     <!-- Charts (Tab 1) -->
@@ -364,6 +366,18 @@
         </div>
     </div>
 
+    <!-- Log Tab (Tab 5) -->
+    <div class="tab-panel" id="logTab" style="display:none;">
+        <div class="log-toolbar">
+            <span class="log-title">Framework Log</span>
+            <span class="log-count" id="logCount">0 lines</span>
+            <button class="log-clear-btn" onclick="clearLogConsole()">Clear</button>
+        </div>
+        <div class="log-console" id="logConsole">
+            <div class="log-empty" id="logEmpty">No framework logs yet.</div>
+        </div>
+    </div>
+
     <!-- Order Confirmation Modal -->
     <div class="order-modal-backdrop hidden" id="orderModalBackdrop">
         <div class="order-modal">
@@ -406,6 +420,7 @@
     <script src="/static/js/chain-table.js"></script>
     <script src="/static/js/strategy-builder.js"></script>
     <script src="/static/js/strategy-ui.js"></script>
+    <script src="/static/js/log-console.js"></script>
     <script src="/static/js/main.js"></script>
 </body>
 </html>

@@ -13,6 +13,7 @@
         const chain = document.getElementById('chainTab');
         const account = document.getElementById('accountTab');
         const strategies = document.getElementById('strategiesTab');
+        const log = document.getElementById('logTab');
         // Hide all first
         dashboard.style.display = 'none';
         dashboard.classList.remove('active');
@@ -20,6 +21,7 @@
         account.classList.remove('active');
         strategies.style.display = 'none';
         strategies.classList.remove('active');
+        if (log) { log.style.display = 'none'; log.classList.remove('active'); }
 
         if (tab === 'dashboard') {
             dashboard.style.display = '';
@@ -40,6 +42,10 @@
         } else if (tab === 'strategies') {
             strategies.classList.add('active');
             if (ws && ws.readyState === WebSocket.OPEN) ws.send('set_tab:strategies');
+        } else if (tab === 'log') {
+            // set_tab:log is already sent above on every switch; the server
+            // replies with log_history (the current backlog).
+            if (log) log.classList.add('active');
         }
     }
 

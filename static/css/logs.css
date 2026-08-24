@@ -1,0 +1,63 @@
+        /* Log console tab */
+        #logTab {
+            padding: 12px;
+            height: 100%;
+            flex-direction: column;
+        }
+
+        .log-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .log-title { font-weight: 600; font-size: 14px; }
+
+        .log-count {
+            font-size: 11px;
+            color: #64748b;
+            margin-left: auto;
+        }
+
+        .log-clear-btn {
+            background: #1e293b;
+            color: #cbd5e1;
+            border: 1px solid #334155;
+            border-radius: 4px;
+            padding: 4px 12px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .log-clear-btn:hover { background: #273449; }
+
+        .log-console {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            background: #0b0f1a;
+            border: 1px solid #1e293b;
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-family: 'Cascadia Mono', 'Consolas', 'Menlo', monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .log-line { color: #cbd5e1; }
+
+        .log-empty {
+            color: #475569;
+            font-style: italic;
+            padding: 6px 2px;
+        }
+
+        /* level tinting — subtle right-hand marker so level reads at a glance */
+        .log-line { padding-left: 2px; border-left: 3px solid transparent; }
+        .log-debug   { border-left-color: #475569; color: #94a3b8; }
+        .log-info    { border-left-color: #38bdf8; color: #cbd5e1; }
+        .log-warning { border-left-color: #facc15; color: #fde68a; }
+        .log-error,
+        .log-critical { border-left-color: #f87171; color: #fca5a5; }
