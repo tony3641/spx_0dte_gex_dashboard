@@ -440,12 +440,16 @@ def _build_entry_payload(strategy: Strategy, candidate: Candidate, state, qty=1)
     short_lmt = _side_field(short_row, right, "bid") if short_row else candidate.credit_mid
     long_lmt = _side_field(long_row, right, "ask") if long_row else candidate.credit_mid
     trading_class = getattr(state, "trading_class", "SPXW")
+    # Each leg's qty is the PER-COMBO ratio (1 for a 1:1 vertical), NOT the sized
+    # count; the number of spreads lives in comboQuantity below. order_manager
+    # maps leg qty -> ComboLeg.ratio and comboQuantity -> order.totalQuantity, so
+    # putting the sized count in both would double-count (IB error 321).
     legs = [
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.short_strike,
-         "right": right, "action": "SELL", "qty": qty, "lmtPrice": float(short_lmt or 0.01),
+         "right": right, "action": "SELL", "qty": 1, "lmtPrice": float(short_lmt or 0.01),
          "secType": "OPT", "trading_class": trading_class},
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.long_strike,
-         "right": right, "action": "BUY", "qty": qty, "lmtPrice": float(long_lmt or 0.01),
+         "right": right, "action": "BUY", "qty": 1, "lmtPrice": float(long_lmt or 0.01),
          "secType": "OPT", "trading_class": trading_class},
     ]
     # Stop-loss bracket: the trigger/limit price = |credit| * multiplier

@@ -716,8 +716,8 @@
         const shortLmt = sq ? ((right === 'C' ? sq.call_bid : sq.put_bid) || c.credit_mid) : c.credit_mid;
         const longLmt = lq ? ((right === 'C' ? lq.call_ask : lq.put_ask) || c.credit_mid) : c.credit_mid;
         const legs = [
-            { symbol: 'SPX', expiry, strike: c.short_strike, right, action: 'SELL', qty: size, lmtPrice: shortLmt, secType: 'OPT', trading_class: tradingClass },
-            { symbol: 'SPX', expiry, strike: c.long_strike, right, action: 'BUY', qty: size, lmtPrice: longLmt, secType: 'OPT', trading_class: tradingClass },
+            { symbol: 'SPX', expiry, strike: c.short_strike, right, action: 'SELL', qty: 1, lmtPrice: shortLmt, secType: 'OPT', trading_class: tradingClass },
+            { symbol: 'SPX', expiry, strike: c.long_strike, right, action: 'BUY', qty: 1, lmtPrice: longLmt, secType: 'OPT', trading_class: tradingClass },
         ];
         let stopLoss = null;
         if (s && s.exit_rules && s.exit_rules.stop_loss) {

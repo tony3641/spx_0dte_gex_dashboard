@@ -226,9 +226,22 @@ def test_build_entry_payload_sizes_qty():
     cand = type("C", (), {"direction": "bear_call", "short_strike": 5200.0, "long_strike": 5300.0,
                           "credit_mid": 2.0})()
     p = _build_entry_payload(strat, cand, _state_t8(), qty=3)
-    assert p["legs"][0]["qty"] == 3
-    assert p["legs"][1]["qty"] == 3
-    assert p["comboQuantity"] == 3
+    assert p["legs"][0]["qty"] == 1   # per-combo leg ratio stays 1
+    assert p["legs"][1]["qty"] == 1
+    assert p["comboQuantity"] == 3    # sized count lives on the combo
+
+
+def test_build_entry_payload_combo_ratio_is_one():
+    from strategy_engine import _build_entry_payload
+    strat = Strategy(name="t", direction="bear_call", conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
+    cand = type("C", (), {"direction": "bear_call", "short_strike": 5200.0, "long_strike": 5300.0,
+                          "credit_mid": 2.0})()
+    ref = _build_entry_payload(strat, cand, _state_t8(), qty=1)   # per-combo net reference
+    p = _build_entry_payload(strat, cand, _state_t8(), qty=4)
+    assert p["legs"][0]["qty"] == 1   # per-combo leg ratio, NOT the sized count
+    assert p["legs"][1]["qty"] == 1
+    assert p["comboQuantity"] == 4    # number of spreads
+    assert p["comboLmtPrice"] == ref["comboLmtPrice"]   # unchanged, still the per-combo net
 
 
 def test_option_contract_trading_class_default_and_override():
