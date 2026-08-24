@@ -686,7 +686,7 @@
         if (!el) return;
         const cands = state.strategyCandidates[name] || [];
         const s = state.strategies.find(x => x.name === name);
-        const rows = cands.map(c => {
+        const rows = cands.map((c, i) => {
             const size = (c.size != null) ? c.size : 1;
             const sizing = size > 0
                 ? `· credit $${(c.credit_mid || 0).toFixed(2)} · d=${(c.short_delta || 0).toFixed(2)} · w=${c.width_points} · ×${size} · total credit $${(c.total_credit || 0).toFixed(2)} · margin $${(c.total_margin || 0).toLocaleString()}`
@@ -695,19 +695,19 @@
             if (s && s.auto_execute) {
                 action = '<span>(auto)</span>';
             } else if (size > 0) {
-                action = `<button onclick="placeStrategyCandidate('${name}')">Place</button>`;
+                action = `<button onclick="event.stopPropagation(); placeStrategyCandidate('${name}', ${i})">Place</button>`;
             }
             return `<div class="cand-row">SELL ${c.short_strike} ${c.direction === 'bull_put' ? 'P' : 'C'} / BUY ${c.long_strike} ${sizing} ${action}</div>`;
         }).join('');
         el.innerHTML = `<h3>Live candidates</h3>` + (cands.length ? rows : '<p>No matches</p>');
     }
 
-    function placeStrategyCandidate(name) {
+    function placeStrategyCandidate(name, index) {
         const s = state.strategies.find(x => x.name === name);
         const cands = state.strategyCandidates[name] || [];
         if (!cands.length) { showOrderToast('No candidate to place', 'info'); return; }
         if (s && s.auto_execute) { showOrderToast('Auto-execute on; strategy places automatically', 'info'); return; }
-        const c = cands[0];
+        const c = (cands[index] || cands[0]);
         const size = (c.size > 0) ? c.size : 1;
         const right = (s && s.direction === 'bull_put') ? 'P' : 'C';
         const expiry = state.chainMeta ? (state.chainMeta.expiration_raw || '') : '';

@@ -429,6 +429,14 @@ def _candidate_view(candidate: Candidate, strategy: Strategy, state) -> dict:
     return d
 
 
+def _sort_candidate_views(views: list) -> list:
+    """Best-first: highest total_credit, then fewer spreads (size asc),
+    then lower total_margin (more efficient margin use for equal credit)."""
+    return sorted(views, key=lambda d: (-(d.get("total_credit") or 0.0),
+                                        d.get("size", 1),
+                                        d.get("total_margin", 0.0)))
+
+
 def _build_entry_payload(strategy: Strategy, candidate: Candidate, state, qty=1) -> dict:
     from config import spx_tick_for_price, round_signed_to_tick
     rows = chain_rows(state)
@@ -562,7 +570,7 @@ async def strategy_evaluation_loop(ib, state, broadcast_fn):
                         state.strategy_candidates[name] = []
                         continue
                 ev = evaluate_conditions(strat, state, now=now_et())
-                state.strategy_candidates[name] = [_candidate_view(c, strat, state) for c in ev.candidates]
+                state.strategy_candidates[name] = _sort_candidate_views([_candidate_view(c, strat, state) for c in ev.candidates])
                 if ev.status != "ready":
                     continue
                 if getattr(state, "auto_trade_kill_switch", False):
@@ -573,7 +581,7 @@ async def strategy_evaluation_loop(ib, state, broadcast_fn):
                 # non-auto strategies broadcast candidates, so an auto-execute
                 # strategy's scanner stayed empty even while the engine scanned.
                 await broadcast_fn({"type": "strategy_candidate",
-                                    "data": {"name": name, "candidates": [_candidate_view(c, strat, state) for c in ev.candidates]}})
+                                    "data": {"name": name, "candidates": _sort_candidate_views([_candidate_view(c, strat, state) for c in ev.candidates])}})
                 if strat.auto_execute and ev.candidates:
                     best = ev.candidates[0]
                     if not _has_margin(state, best, budget=strat.budget):

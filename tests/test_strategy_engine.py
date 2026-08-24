@@ -857,3 +857,46 @@ async def test_eval_loop_child_enters_once_eligible(monkeypatch):
         pass
 
     assert placed == ["child"]   # only the eligible child placed; parent skipped; child once
+
+
+# ---------------------------------------------------------------------------
+# _sort_candidate_views — best-first ranking of candidate-view dicts.
+# Order: highest total_credit, then fewer spreads (size asc), then lower
+# total_margin (more efficient margin use for equal credit + size).
+# ---------------------------------------------------------------------------
+
+def _cand_view(**kw):
+    base = {"direction": "bull_put", "short_strike": 5100.0, "long_strike": 5000.0,
+            "width_points": 100.0, "margin": 10000.0, "credit_bid": 0.2,
+            "credit_ask": 0.4, "credit_mid": 0.30, "short_delta": 0.3,
+            "long_delta": 0.1, "atm_iv": 18.0, "size": 1,
+            "total_margin": 10000.0, "total_credit": 0.30}
+    base.update(kw)
+    return base
+
+
+def test_sort_candidate_views_prefers_highest_total_credit():
+    from strategy_engine import _sort_candidate_views
+    worse = _cand_view(total_credit=1.2, size=1)
+    best = _cand_view(total_credit=2.0, size=1)
+    out = _sort_candidate_views([worse, best])
+    assert out[0]["total_credit"] == 2.0
+    assert out[1]["total_credit"] == 1.2
+
+
+def test_sort_candidate_views_tie_fewer_spreads_first():
+    from strategy_engine import _sort_candidate_views
+    big = _cand_view(total_credit=2.0, size=3, total_margin=30000.0)
+    small = _cand_view(total_credit=2.0, size=1, total_margin=10000.0)
+    out = _sort_candidate_views([big, small])
+    assert out[0]["size"] == 1
+    assert out[1]["size"] == 3
+
+
+def test_sort_candidate_views_tie_lower_margin_first():
+    from strategy_engine import _sort_candidate_views
+    high = _cand_view(total_credit=2.0, size=2, total_margin=24000.0)
+    low = _cand_view(total_credit=2.0, size=2, total_margin=16000.0)
+    out = _sort_candidate_views([high, low])
+    assert out[0]["total_margin"] == 16000.0
+    assert out[1]["total_margin"] == 24000.0
