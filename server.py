@@ -87,6 +87,7 @@ async def lifespan(_app):
     nest_asyncio.apply(loop)
     ib = IBClient()
     broadcast_fn = make_broadcast_fn(state)
+    discord_bot_ref = None
 
     try:
         await connect_ib(ib, state)
@@ -153,7 +154,6 @@ async def lifespan(_app):
         logger.info("All background tasks started")
 
         # Discord bot (in-process, on the same loop). Only when a token is set.
-        discord_bot_ref = None
         if config.DISCORD_ENABLED:
             try:
                 discord_bot_ref = make_discord_bot(ib, state)
