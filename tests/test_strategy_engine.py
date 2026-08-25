@@ -231,6 +231,28 @@ def test_build_entry_payload_sizes_qty():
     assert p["comboQuantity"] == 3    # sized count lives on the combo
 
 
+def test_build_entry_payload_gth_sets_gct_and_outside_rth():
+    from strategy_engine import _build_entry_payload
+    strat = Strategy(name="t", direction="bear_call", gth=True,
+                     conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
+    cand = type("C", (), {"direction": "bear_call", "short_strike": 5200.0, "long_strike": 5300.0,
+                          "credit_mid": 2.0})()
+    p = _build_entry_payload(strat, cand, _state_t8())
+    assert p["tif"] == "GTC"
+    assert p["outsideRth"] is True
+
+
+def test_build_entry_payload_default_day_rth():
+    from strategy_engine import _build_entry_payload
+    strat = Strategy(name="t", direction="bear_call",
+                     conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
+    cand = type("C", (), {"direction": "bear_call", "short_strike": 5200.0, "long_strike": 5300.0,
+                          "credit_mid": 2.0})()
+    p = _build_entry_payload(strat, cand, _state_t8())
+    assert p["tif"] == "DAY"
+    assert p["outsideRth"] is False
+
+
 def test_build_entry_payload_combo_ratio_is_one():
     from strategy_engine import _build_entry_payload
     strat = Strategy(name="t", direction="bear_call", conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
@@ -510,6 +532,30 @@ async def test_maybe_flatten_below_target_does_not_place(mock_ib, app_state):
     closed = await maybe_flatten_at_take_profit(mock_ib, app_state, cand, pos, tp)
     assert closed is False
     assert len(mock_ib.get_placed_orders()) == 0
+
+
+@pytest.mark.asyncio
+async def test_maybe_flatten_take_profit_gth_sets_gct_and_outside_rth(monkeypatch, mock_ib, app_state):
+    from strategy_engine import maybe_flatten_at_take_profit, Candidate
+    from strategy_models import TakeProfit
+    app_state.expiration = "20260821"
+    cand = Candidate(direction="bear_call", short_strike=5200.0, long_strike=5300.0, width_points=100.0,
+                     margin=10000.0, credit_bid=1.8, credit_ask=2.2, credit_mid=2.0,
+                     short_delta=0.3, long_delta=0.1, atm_iv=18.0)
+    pos = [{"contract": {"strike": 5200.0, "right": "C"}, "unrealizedPNL": 0.6},
+           {"contract": {"strike": 5300.0, "right": "C"}, "unrealizedPNL": 0.6}]
+    tp = TakeProfit(mode="pct_credit", value=0.5)   # target 1.0; net 1.2 >= target
+    monkeypatch.setattr("strategy_engine._find_row", lambda rows, strike: {"bid": 1.9, "ask": 2.1})
+    monkeypatch.setattr("strategy_engine._side_field", lambda row, right, side: row.get(side))
+    captured = {}
+    async def fake_place(ib, state, payload, ws=None, refresh_fn=None):
+        captured.update(payload)
+        return {"data": {"status": "Submitted"}}
+    monkeypatch.setattr("order_manager.handle_place_order", fake_place)
+    closed = await maybe_flatten_at_take_profit(mock_ib, app_state, cand, pos, tp, gth=True)
+    assert closed is True
+    assert captured["tif"] == "GTC"
+    assert captured["outsideRth"] is True
 
 
 import datetime as dt

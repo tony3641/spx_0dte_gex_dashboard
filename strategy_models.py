@@ -123,6 +123,7 @@ class Strategy:
     short_day_enabled: bool = False   # if True, allowed to execute on early-close (half) days
     run_on_fomc: bool = True          # if True, allowed to execute on FOMC days
     run_on_nfp: bool = True           # if True, allowed to execute on NFP (jobs) days
+    gth: bool = False                 # if True, orders submit with outsideRth=True + tif GTC
     parent_name: str = ""                                # "" = master (standalone)
     subsequent_triggers: List[TriggerSpec] = field(default_factory=list)
     trigger_logic: str = "any"                           # "any" | "all"
@@ -141,6 +142,7 @@ class Strategy:
             "short_day_enabled": self.short_day_enabled,
             "run_on_fomc": self.run_on_fomc,
             "run_on_nfp": self.run_on_nfp,
+            "gth": self.gth,
             "parent_name": self.parent_name,
             "subsequent_triggers": [t.to_dict() for t in self.subsequent_triggers],
             "trigger_logic": self.trigger_logic,
@@ -183,6 +185,7 @@ class Strategy:
             short_day_enabled=bool(d.get("short_day_enabled", False)),
             run_on_fomc=bool(d.get("run_on_fomc", True)),
             run_on_nfp=bool(d.get("run_on_nfp", True)),
+            gth=bool(d.get("gth", False)),
             parent_name=d.get("parent_name", ""),
             subsequent_triggers=triggers,
             trigger_logic=trigger_logic,

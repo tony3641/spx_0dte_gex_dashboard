@@ -90,6 +90,19 @@ def test_schedule_fields_default_when_absent():
     assert s.run_on_nfp is True
 
 
+# ---------------------------------------------------------------------------
+# GTH (Global Trading Hours) flag
+# ---------------------------------------------------------------------------
+
+def test_gth_roundtrips_and_defaults_false():
+    s = Strategy.from_dict(_base_dict())
+    assert s.gth is False
+    s2 = Strategy(name="x", direction="bull_put", conditions=[], gth=True)
+    d = s2.to_dict()
+    assert d["gth"] is True
+    assert Strategy.from_dict(d).gth is True
+
+
 def test_run_days_list_not_mutated():
     """Default run_days must be a fresh list, not a shared constant."""
     a = Strategy(name="a", direction="bull_put", conditions=[])
