@@ -264,6 +264,7 @@ class DiscordBot:
         self._channel_id = channel_id if channel_id is not None else config.DISCORD_CHANNEL_ID
         self.alert_bridge = AlertBridge(self._channel_id, poster=poster if poster is not None else self._default_poster)
         self._command_names = []
+        self._alert_tasks = set()
         self._register_commands()
 
     @property
@@ -272,15 +273,21 @@ class DiscordBot:
             if self._channel_id:
                 # Always called from within the running loop (broadcast), so
                 # schedule the send without blocking the broadcast path.
-                asyncio.create_task(self._send_alert(etype, data))
+                task = asyncio.create_task(self._send_alert(etype, data))
+                self._alert_tasks.add(task)
+                task.add_done_callback(self._alert_tasks.discard)
         return poster
 
     async def _send_alert(self, etype, data):
         try:
-            channel = self.bot.get_channel(int(self._channel_id))
-            if channel is None:
-                logger.warning(f"Discord alert channel {self._channel_id} not found")
-                return
+            channel = await self.bot.fetch_channel(int(self._channel_id))
+        except Exception as e:
+            logger.warning(f"Discord alert channel {self._channel_id} fetch failed: {e}")
+            return
+        if channel is None:
+            logger.warning(f"Discord alert channel {self._channel_id} not found")
+            return
+        try:
             await channel.send(embed=_embed(etype, data))
         except Exception as e:
             logger.error(f"Discord alert send failed: {e}")
@@ -365,7 +372,7 @@ class DiscordBot:
             logger.error(f"command {interaction.command.name} failed: {e}")
             await interaction.response.send_message("Command failed. Check server logs.", ephemeral=True)
             return
-        await interaction.response.send_message(embed=_embed(fn.__name__, result))
+        await interaction.response.send_message(embed=_embed(interaction.command.name, result))
 
     @property
     def command_names(self):
@@ -376,6 +383,8 @@ class DiscordBot:
         await self.bot.start(self.token)
 
     async def close(self):
+        for t in self._alert_tasks:
+            t.cancel()
         await self.bot.close()
 
 
