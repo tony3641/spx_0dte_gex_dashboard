@@ -117,6 +117,42 @@ SGOV_TICKER = _get_setting("SGOV_TICKER", "SGOV", str)
 DEFAULT_RISK_FREE_RATE = _get_setting("DEFAULT_RISK_FREE_RATE", 0.043, float)
 
 # ---------------------------------------------------------------------------
+# Discord bot
+# ---------------------------------------------------------------------------
+DISCORD_TOKEN = _get_setting("DISCORD_TOKEN", "", str)
+
+
+def _parse_guild_id(val):
+    try:
+        return int(str(val).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+DISCORD_GUILD_ID = _get_setting("DISCORD_GUILD_ID", "", str)
+DISCORD_CHANNEL_ID = _get_setting("DISCORD_CHANNEL_ID", "", str)
+
+
+def _parse_user_ids(val):
+    if val is None:
+        return []
+    if isinstance(val, (list, tuple)):
+        return [int(x) for x in val if str(x).isdigit()]
+    out = []
+    for tok in str(val).replace(";", ",").split(","):
+        tok = tok.strip().strip("[] ")
+        if tok.isdigit():
+            out.append(int(tok))
+    return out
+
+
+DISCORD_ALLOWED_USER_IDS = _get_setting("DISCORD_ALLOWED_USER_IDS", [], _parse_user_ids)
+DISCORD_ALLOWED_ROLE = _get_setting("DISCORD_ALLOWED_ROLE", "", str)
+
+# Enabled only when a token is configured. Never hardcode a real token default.
+DISCORD_ENABLED = bool(DISCORD_TOKEN)
+
+# ---------------------------------------------------------------------------
 # Market-hours session windows (ET)
 # ---------------------------------------------------------------------------
 RTH_OPEN = _get_time_setting("RTH_OPEN", "09:30")

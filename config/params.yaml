@@ -44,3 +44,10 @@ FOMC_DATES:
   - "2026-09-16"
   - "2026-10-28"
   - "2026-12-09"
+
+# Discord bot (token provided via env var / untracked .env, never committed)
+DISCORD_TOKEN: ""
+DISCORD_GUILD_ID: ""
+DISCORD_CHANNEL_ID: ""
+DISCORD_ALLOWED_USER_IDS: []
+DISCORD_ALLOWED_ROLE: ""
