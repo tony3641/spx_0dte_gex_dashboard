@@ -11,6 +11,20 @@ A real-time Gamma Exposure (GEX) dashboard for SPX 0DTE options, powered by Inte
 | Real-time push | WebSocket broadcast |
 | Frontend | Vanilla JS + Plotly 2.32 |
 
+## Features
+
+- **GEX dashboard with 0DTE / Monthly toggle** — switch the GEX calculation between the current 0DTE SPXW expiry and the monthly SPX expiry.
+- **Real-time option chain streaming** — live 0DTE chain with greeks, wall/flip markers, and a strike filter.
+- **Account / Order Management tab** — account summary, portfolio positions, and order placement with **Stop Limit** support (also accessible as an order-entry widget on the dashboard).
+- **Strategies tab** — define automated multi-leg strategies and let the server watch the market for you:
+  - Conditions (entry window, short delta, spread width, credit, trend, volatility), triggers, and a candidate scanner.
+  - **Budget-based position sizing** with total-credit preview per candidate.
+  - Live candidates ranked best-first, each with a one-click **Place** button.
+  - **Take-profit** (idempotent close loop, per-leg limit prices) and **stop-loss** as a single credit multiplier.
+  - One-shot eval loop with re-entry guards, margin checks, and a kill switch.
+  - **Subsequent strategies** — trigger children off a parent trade's state (parent close / time window), with acyclic tree validation.
+- **Logging tab** — server-side framework log streamed to the browser.
+
 ## Quick Start
 
 1. Open IB TWS / Gateway and enable API access on port 7497.
@@ -29,6 +43,13 @@ A real-time Gamma Exposure (GEX) dashboard for SPX 0DTE options, powered by Inte
    ```
 4. Open `http://localhost:8000` in a browser.
 
+### Tests
+
+```
+python tests/run_tests.py --pretty     # structured JSON results
+pytest tests/ -v --tb=long             # standard pytest flow
+```
+
 ## Network Access
 
 The server binds to all network interfaces (`0.0.0.0`), so it's accessible from both localhost and your local IP address:
@@ -38,18 +59,21 @@ The server binds to all network interfaces (`0.0.0.0`), so it's accessible from 
 
 The exact URLs are printed to the console when the server starts. You can override the listening address with the `SERVER_HOST` environment variable if needed.
 
-##NEW
-- **Choice of 0DTE and Monthly SPX option** on **GEX** dashboard
-- **Support on Stop Limit order placement**
-- **Account/Order Management page**
-
 ## Screenshot
 
 ![Dashboard Screenshot](docs/screenshot.png)
 ![Option Chain w/ Strategy Builder](docs/screenshot2.png)
 ![Account Management](docs/screenshot3.png)
 
-The dashboard displays three interactive charts:
+## Dashboard Tabs
+
+- **Dashboard** — intraday chart, GEX bars, IV smile, level badges, status bar.
+- **Option Chain** — full streaming chain table with greeks and order entry.
+- **Account** — account summary, positions, executions, order placement.
+- **Strategies** — strategy list/editor, live candidates, triggers, and arm/disarm controls.
+- **Log** — real-time framework log.
+
+## Charts
 
 ### 1. SPX Intraday (top)
 Candlestick chart with key GEX levels overlaid:
@@ -72,17 +96,19 @@ Two-row subplot showing:
 **Real-time zoom sync:** Pan/zoom either the GEX or Smile chart → both charts update their x-axis range simultaneously.
 
 ### 4. Real-time Option Chain Streaming
-- Livsestreaming 0 DTE option chain with greeks
+- Live streaming 0DTE option chain with greeks
 - Markers on Put Wall, Call Wall, and Gamma Flip location
 
-### Status Bar
+## Status Bar
+
 Real-time status indicators:
 - **IB Connection** — green dot when connected
 - **Market Status** — RTH (green) / GTH (yellow) / closed (gray)
 - **Expiration** — target SPXW expiration date
 - **Last GEX Update** — timestamp of most recent chain fetch
 
-### Level Badges
+## Level Badges
+
 Key strike prices and conditions:
 - **SPX** — current spot price
 - **Call Wall / Put Wall** — highest gamma-OI strikes
@@ -95,22 +121,48 @@ Key strike prices and conditions:
 
 | File | Purpose |
 |---|---|
-| `server.py` | FastAPI app, IB connection, state management, WebSocket broadcast loops |
+| `server.py` | FastAPI app, IB connection, state management, WebSocket endpoint |
+| `ws_handler.py` | WebSocket message routing (tabs, GEX mode, strategies, orders, viewport sync) |
+| `ib_client.py` / `ib_connection.py` | Native `ibapi` wrapper: contract resolution, streaming quotes, connection lifecycle |
 | `chain_fetcher.py` | Batched SPXW option chain fetcher (streaming mode, ±8σ strike filter) |
+| `chain_manager.py` | Chain caching, qualification, streaming state, monthly/0DTE coordination |
 | `gex_calculator.py` | GEX computation: Call/Put Wall, Gamma Flip, Max Pain, Net GEX, MM regime |
-| `market_hours.py` | Market-hours helpers, ET timezone, expiration utilities |
-| `static/index.html` | Single-page dashboard (price chart + GEX bar chart, level badges) |
+| `market_hours.py` | Market-hours helpers, ET timezone, expiration, FOMC/NFP day utilities |
+| `price_bars.py` / `risk_free.py` | Historical bars and risk-free-rate (SGOV) helpers |
+| `order_manager.py` | Order placement, take-profit close loop, stop-loss handling |
+| `account_manager.py` | Account values, portfolio positions, executions serialization |
+| `strategy_models.py` | Strategy/Condition/Trigger/TakeProfit/StopLoss/RuntimeState dataclasses |
+| `strategy_engine.py` | Candidate generation, condition eval, sizing, entry payloads, triggers, parent/child logic |
+| `strategy_store.py` | Strategy persistence to `config/strategies.json` |
+| `app_state.py` | Shared AppState runtime, day key, kill switch |
+| `log_buffer.py` | Ring-buffer framework log for the Log tab |
+| `config.py` | Centralized settings: env var → `config/params.yaml` → defaults |
+| `static/` | Browser app: `index.html`, `css/`, `js/` (charts, chain table, order entry, strategy UI, tabs, WS) |
+| `tests/` | Pytest suite + `run_tests.py` structured runner |
 
-## Configuration (environment variables)
+## Configuration
+
+Settings are resolved in order: **environment variable → `config/params.yaml` → hardcoded default**.
 
 | Variable | Default | Description |
 |---|---|---|
 | `IB_HOST` | `127.0.0.1` | TWS host |
 | `IB_PORT` | `7497` | TWS API port |
 | `IB_CLIENT_ID` | `1` | IB client ID |
-| `CHAIN_REFRESH_SECONDS` | `60` | How often to re-fetch the option chain |
+| `CHAIN_REFRESH_SECONDS` | `10` | How often to re-fetch the option chain |
+| `DASHBOARD_CHAIN_REFRESH_SECONDS` | `300` | Dashboard GEX chain refresh cadence |
+| `CHAIN_TAB_FULL_REFRESH_SECONDS` | `300` | Chain tab full refresh cadence |
+| `SNAPSHOT_REFRESH_SECONDS` | `300` | Snapshot refresh cadence |
 | `SERVER_HOST` | `0.0.0.0` | Server listen address (all interfaces) |
 | `SERVER_PORT` | `8000` | Server listen port |
+| `DEFAULT_ANNUAL_VOL` | `0.20` | Assumed annualized volatility for unlisted IV |
+| `MONTHLY_CACHE_TTL` | `600` | Monthly chain cache TTL (seconds) |
+| `SGOV_TICKER` | `SGOV` | Ticker used for risk-free rate |
+| `DEFAULT_RISK_FREE_RATE` | `0.043` | Fallback risk-free rate |
+| `RTH_OPEN` / `RTH_CLOSE` | `09:30` / `16:15` | Regular trading hours window (ET) |
+| `FOMC_DATES` | `[]` | FOMC meeting dates (via `params.yaml`) |
+
+Additional tunables (chain streaming, batch sizes, viewport sync, SPXW cease/gap windows) live in `config.py` and `config/params.yaml`.
 
 ## Data Modes
 
