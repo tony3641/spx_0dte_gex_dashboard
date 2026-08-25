@@ -51,6 +51,7 @@ from strategy_store import load_strategies
 from strategy_engine import strategy_evaluation_loop, take_profit_loop
 from ib_connection import setup_vix_subscription
 from log_buffer import LogStoreHandler, log_push_loop
+from discord_bot import make_discord_bot
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -151,6 +152,18 @@ async def lifespan(_app):
         state.background_tasks.append(asyncio.create_task(chain_stream_loop(ib, state, broadcast_fn)))
         logger.info("All background tasks started")
 
+        # Discord bot (in-process, on the same loop). Only when a token is set.
+        discord_bot_ref = None
+        if config.DISCORD_ENABLED:
+            try:
+                discord_bot_ref = make_discord_bot(ib, state)
+                state.alert_bridge = discord_bot_ref.alert_bridge
+                state.background_tasks.append(asyncio.create_task(discord_bot_ref.start()))
+                logger.info("Discord bot started")
+            except Exception as e:
+                logger.error(f"Failed to start Discord bot: {e}", exc_info=True)
+                discord_bot_ref = None
+
     except Exception as e:
         logger.error(f"Startup failed: {e}", exc_info=True)
 
@@ -160,6 +173,11 @@ async def lifespan(_app):
     logger.info("Shutting down...")
     for task in state.background_tasks:
         task.cancel()
+    if discord_bot_ref is not None:
+        try:
+            await discord_bot_ref.close()
+        except Exception as e:
+            logger.warning(f"Error closing Discord bot: {e}")
     if getattr(ib, "connected", False):
         ib.disconnect()
         logger.info("Disconnected from IB")

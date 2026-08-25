@@ -237,3 +237,174 @@ class AlertBridge:
             return
         etype, _key, data = item
         self.poster(etype, data)
+
+
+import asyncio
+import discord
+from discord.ext import commands
+
+
+class DiscordBot:
+    """Thin discord.py wrapper around the command logic in this module.
+
+    ``ib`` is held for future order paths and is currently unused by the
+    read-only/arm commands (they read ``state`` directly, so a reconnected IB
+    client never leaves the bot reading stale data).
+    """
+
+    def __init__(self, ib, state, token=None, guild_id=None, channel_id=None, poster=None):
+        self.ib = ib
+        self.state = state
+        self.token = token or config.DISCORD_TOKEN
+        self.guild_id = (int(guild_id) if guild_id is not None
+                         else (int(config.DISCORD_GUILD_ID) if str(config.DISCORD_GUILD_ID).isdigit() else None))
+        intents = discord.Intents.default()
+        self.bot = commands.Bot(command_prefix="!", intents=intents)
+        self.guild_ids = [discord.Object(id=self.guild_id)] if self.guild_id else []
+        self._channel_id = channel_id if channel_id is not None else config.DISCORD_CHANNEL_ID
+        self.alert_bridge = AlertBridge(self._channel_id, poster=poster if poster is not None else self._default_poster)
+        self._command_names = []
+        self._register_commands()
+
+    @property
+    def _default_poster(self):
+        def poster(etype, data):
+            if self._channel_id:
+                # Always called from within the running loop (broadcast), so
+                # schedule the send without blocking the broadcast path.
+                asyncio.create_task(self._send_alert(etype, data))
+        return poster
+
+    async def _send_alert(self, etype, data):
+        try:
+            channel = self.bot.get_channel(int(self._channel_id))
+            if channel is None:
+                logger.warning(f"Discord alert channel {self._channel_id} not found")
+                return
+            await channel.send(embed=_embed(etype, data))
+        except Exception as e:
+            logger.error(f"Discord alert send failed: {e}")
+
+    # -- registration --------------------------------------------------------
+    def _register_commands(self):
+        tb = self.bot.tree
+        g = self.guild_ids
+        names = []
+
+        @tb.command(name="status", description="SPX 0DTE dashboard status", guilds=g)
+        async def status_cmd(interaction: discord.Interaction):
+            await self._respond(interaction, status_view, {})
+        names.append("status")
+
+        @tb.command(name="account", description="Account summary", guilds=g)
+        async def account_cmd(interaction: discord.Interaction):
+            await self._respond(interaction, account_view, {})
+        names.append("account")
+
+        @tb.command(name="positions", description="Portfolio positions", guilds=g)
+        async def positions_cmd(interaction: discord.Interaction, filter: str = None):
+            await self._respond(interaction, positions_view, {"filter": filter})
+        names.append("positions")
+
+        @tb.command(name="orders", description="Open orders", guilds=g)
+        async def orders_cmd(interaction: discord.Interaction):
+            await self._respond(interaction, orders_view, {})
+        names.append("orders")
+
+        @tb.command(name="strategy", description="Strategy list/detail", guilds=g)
+        async def strategy_cmd(interaction: discord.Interaction, name: str = None):
+            await self._respond(interaction, strategies_view, {"name": name})
+        names.append("strategy")
+
+        @tb.command(name="candidates", description="Live candidates for a strategy", guilds=g)
+        async def candidates_cmd(interaction: discord.Interaction, name: str):
+            await self._respond(interaction, candidates_view, {"name": name})
+        names.append("candidates")
+
+        @tb.command(name="arm", description="Arm a strategy", guilds=g)
+        async def arm_cmd(interaction: discord.Interaction, name: str):
+            await self._respond(interaction, arm_strategy, {"name": name})
+        names.append("arm")
+
+        @tb.command(name="disarm", description="Disarm a strategy", guilds=g)
+        async def disarm_cmd(interaction: discord.Interaction, name: str):
+            await self._respond(interaction, disarm_strategy, {"name": name})
+        names.append("disarm")
+
+        @tb.command(name="killswitch", description="Toggle the auto-trade kill switch", guilds=g)
+        async def killswitch_cmd(interaction: discord.Interaction, on: bool):
+            await self._respond(interaction, lambda st: {"ok": True, "kill_switch": set_kill_switch(st, on)}, {})
+        names.append("killswitch")
+
+        @tb.command(name="place", description="Refuse: place orders only via the web UI", guilds=g)
+        async def place_cmd(interaction: discord.Interaction, name: str, index: int = 0):
+            await self._respond(interaction, place_refusal, {"name": name, "index": index})
+        names.append("place")
+
+        @self.bot.event
+        async def on_ready():
+            if self.guild_id:
+                await tb.sync(guild=discord.Object(id=self.guild_id))
+            else:
+                await tb.sync()
+
+        self._command_names = names
+
+    # -- response helper -----------------------------------------------------
+    async def _respond(self, interaction, fn, kwargs):
+        roles = getattr(interaction.user, "roles", None) or []
+        if not is_authorized(interaction.user.id,
+                             config.DISCORD_ALLOWED_USER_IDS,
+                             config.DISCORD_ALLOWED_ROLE,
+                             [r.name for r in roles], [r.id for r in roles]):
+            await interaction.response.send_message("Not authorized for this command.", ephemeral=True)
+            return
+        try:
+            result = fn(self.state, **kwargs)
+        except Exception as e:
+            logger.error(f"command {interaction.command.name} failed: {e}")
+            await interaction.response.send_message("Command failed. Check server logs.", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=_embed(fn.__name__, result))
+
+    @property
+    def command_names(self):
+        return list(self._command_names)
+
+    # -- lifecycle -----------------------------------------------------------
+    async def start(self):
+        await self.bot.start(self.token)
+
+    async def close(self):
+        await self.bot.close()
+
+
+def make_discord_bot(ib, state, token=None, guild_id=None, channel_id=None, poster=None) -> DiscordBot:
+    return DiscordBot(ib, state, token=token, guild_id=guild_id, channel_id=channel_id, poster=poster)
+
+
+def _embed(title, result) -> discord.Embed:
+    """Minimal embed builder: title + a text dump of the result dict."""
+    embed = discord.Embed(title=title, color=0x00FF88)
+    if isinstance(result, dict):
+        text = _fmt(result)
+    else:
+        text = str(result)
+    embed.description = text[:4000]
+    return embed
+
+
+def _fmt(d, indent=0):
+    lines = []
+    pad = "  " * indent
+    for k, v in d.items():
+        if isinstance(v, dict):
+            lines.append(f"{pad}{k}:")
+            lines.append(_fmt(v, indent + 1))
+        elif isinstance(v, list):
+            lines.append(f"{pad}{k}:")
+            for item in v:
+                lines.append(f"{pad}  - {item}")
+        else:
+            lines.append(f"{pad}{k}: {v}")
+    return "\n".join(lines)

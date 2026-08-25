@@ -69,7 +69,13 @@ def _strategy_list_payload(state) -> dict:
 
 
 async def broadcast(state, message: dict):
-    """Send a message to all connected WebSocket clients."""
+    # Feed the Discord alert observer (no-op when None / not configured).
+    bridge = getattr(state, "alert_bridge", None)
+    if bridge is not None:
+        try:
+            bridge.forward(message)
+        except Exception as e:
+            logger.error(f"AlertBridge forward error: {e}")
     if not state.ws_clients:
         return
     try:

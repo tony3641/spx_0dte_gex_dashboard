@@ -39,6 +39,7 @@ class AppState:
         self.chain_fetching: bool = False
         self.last_chain_update: str = ""
         self.ws_clients: set = set()     # Set[WebSocket]
+        self.alert_bridge = None       # Optional[AlertBridge] — Discord event observer
         self.background_tasks: List[asyncio.Task] = []
 
         # Mode tracking
