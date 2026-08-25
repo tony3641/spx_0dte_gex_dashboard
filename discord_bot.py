@@ -150,3 +150,90 @@ def place_refusal(state, name, index: int) -> dict:
            f"SELL {c.get('short_strike')}{right} / BUY {c.get('long_strike')}{right} "
            f"credit ~${c.get('credit_mid'):.2f} x{c.get('size', 1)}")
     return {"ok": False, "message": msg}
+
+
+import collections
+import time
+
+
+class AlertBridge:
+    """Observes WebSocket broadcasts and forwards a curated subset to Discord.
+
+    ``classify``/``forward`` are deterministic and testable without a live bot:
+    in tests, set ``poster`` to a callable that records ``(etype, data)``. In
+    production, ``poster`` schedules an embed send on the bot's async loop.
+    """
+
+    def __init__(self, channel_id=None, poster=None, dedup_ttl=60.0, max_dedup=64):
+        self.channel_id = channel_id
+        self.poster = poster
+        self.dedup_ttl = dedup_ttl
+        self._seen = collections.OrderedDict()
+        self._max_dedup = max_dedup
+        self._last_connected = None
+        self._last_kill_switch = None
+
+    # -- dedup ---------------------------------------------------------------
+    def _dedup_ok(self, key: str) -> bool:
+        now = time.monotonic()
+        while self._seen and now - self._seen[next(iter(self._seen))] > self.dedup_ttl:
+            self._seen.popitem(last=False)
+        if key in self._seen:
+            return False
+        self._seen[key] = now
+        if len(self._seen) > self._max_dedup:
+            self._seen.popitem(last=False)
+        return True
+
+    # -- classifier ----------------------------------------------------------
+    def classify(self, message: dict):
+        mtype = message.get("type")
+        data = message.get("data") or {}
+        if mtype == "order_status":
+            key = f"order:{data.get('orderId')}:{data.get('status')}"
+            return ("order_status", key, data) if self._dedup_ok(key) else None
+        if mtype == "strategy_exit":
+            key = f"exit:{data.get('name')}:{data.get('event')}"
+            return ("strategy_exit", key, data) if self._dedup_ok(key) else None
+        if mtype == "strategy_trigger":
+            key = f"trigger:{data.get('name')}:{data.get('event')}"
+            return ("strategy_trigger", key, data) if self._dedup_ok(key) else None
+        if mtype == "ib_error":
+            key = f"ib_error:{data.get('errorCode')}:{data.get('message')}"
+            return ("ib_error", key, data) if self._dedup_ok(key) else None
+        if mtype == "status":
+            connected = data.get("connected")
+            if connected is None:
+                return None
+            if self._last_connected is None:
+                self._last_connected = connected   # seed; don't alert initial state
+                return None
+            if connected != self._last_connected:
+                self._last_connected = connected
+                key = f"conn:{connected}"
+                return ("connection", key, data) if self._dedup_ok(key) else None
+            return None
+        if mtype == "strategy_list":
+            ks = data.get("kill_switch")
+            if ks is None:
+                return None
+            if self._last_kill_switch is None:
+                self._last_kill_switch = ks         # seed
+                return None
+            if ks != self._last_kill_switch:
+                self._last_kill_switch = ks
+                key = f"killswitch:{ks}"
+                return ("kill_switch", key, data) if self._dedup_ok(key) else None
+            return None
+        # high-frequency / non-actionable types are suppressed
+        return None
+
+    # -- dispatch ------------------------------------------------------------
+    def forward(self, message: dict) -> None:
+        if self.poster is None:
+            return
+        item = self.classify(message)
+        if item is None:
+            return
+        etype, _key, data = item
+        self.poster(etype, data)
