@@ -36,3 +36,6 @@ Thumbs.db
 *todo*
 config/strategies.json
 docs/superpowers/
+
+# Superpowers SDD workspace (scratch)
+.superpowers/
