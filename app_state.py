@@ -101,6 +101,12 @@ class AppState:
         self.runtime: dict = {}      # {strategy_name: RuntimeState}
         self.day_key: str = ""       # "YYYY-MM-DD" (drives daily cycle reset)
 
+        # Log console (Tab 5): in-memory ring buffer of framework log records.
+        # A root-logger handler (see log_buffer.py) appends here; a background
+        # log_push_loop drains and broadcasts new entries to WebSocket clients.
+        self.log_buffer: deque = deque(maxlen=500)
+        self.log_seq: int = 0        # monotonically increasing record id
+
 
 def create_app_state() -> AppState:
     """Factory for clean AppState instances (useful in tests)."""

@@ -445,6 +445,10 @@
                 break;
             case 'ping':
                 break;
+            case 'log':
+            case 'log_history':
+                handleLogMessage(msg);   // Log console tab (log-console.js)
+                break;
             default:
                 handleStrategyMessage(msg);   // route strategy_* / vix_update from strategy-ui.js
                 break;

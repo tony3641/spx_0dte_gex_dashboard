@@ -401,7 +401,43 @@ def _has_margin(state, candidate, budget=None) -> bool:
     return True
 
 
-def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dict:
+def _position_size(state, budget, margin) -> int:
+    """Contracts to trade: floor(budget/margin), capped by account ExcessLiquidity.
+
+    No budget -> 1 contract (legacy behavior). 0 when a single spread doesn't fit.
+    """
+    if budget is None:
+        return 1
+    if margin is None or margin <= 0:
+        return 0
+    cap = float(budget)
+    excess = (getattr(state, "account_summary", {}) or {}).get("ExcessLiquidity")
+    if excess is not None:
+        cap = min(cap, float(excess))
+    if cap <= 0:
+        return 0
+    return int(cap // margin)   # 0 when a single spread exceeds capacity
+
+
+def _candidate_view(candidate: Candidate, strategy: Strategy, state) -> dict:
+    """Candidate dict enriched with budget-based sizing and totals."""
+    size = _position_size(state, strategy.budget, candidate.margin)
+    d = candidate.to_dict()
+    d["size"] = size
+    d["total_margin"] = round(candidate.margin * size, 2)
+    d["total_credit"] = round((candidate.credit_mid or 0) * size, 4)
+    return d
+
+
+def _sort_candidate_views(views: list) -> list:
+    """Best-first: highest total_credit, then fewer spreads (size asc),
+    then lower total_margin (more efficient margin use for equal credit)."""
+    return sorted(views, key=lambda d: (-(d.get("total_credit") or 0.0),
+                                        d.get("size", 1),
+                                        d.get("total_margin", 0.0)))
+
+
+def _build_entry_payload(strategy: Strategy, candidate: Candidate, state, qty=1) -> dict:
     from config import spx_tick_for_price, round_signed_to_tick
     rows = chain_rows(state)
     short_row = _find_row(rows, candidate.short_strike)
@@ -412,6 +448,10 @@ def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dic
     short_lmt = _side_field(short_row, right, "bid") if short_row else candidate.credit_mid
     long_lmt = _side_field(long_row, right, "ask") if long_row else candidate.credit_mid
     trading_class = getattr(state, "trading_class", "SPXW")
+    # Each leg's qty is the PER-COMBO ratio (1 for a 1:1 vertical), NOT the sized
+    # count; the number of spreads lives in comboQuantity below. order_manager
+    # maps leg qty -> ComboLeg.ratio and comboQuantity -> order.totalQuantity, so
+    # putting the sized count in both would double-count (IB error 321).
     legs = [
         {"symbol": "SPX", "expiry": getattr(state, "expiration", ""), "strike": candidate.short_strike,
          "right": right, "action": "SELL", "qty": 1, "lmtPrice": float(short_lmt or 0.01),
@@ -438,13 +478,13 @@ def _build_entry_payload(strategy: Strategy, candidate: Candidate, state) -> dic
         "orderType": "LMT", "tif": "DAY",
         "comboAction": "BUY",
         "comboLmtPrice": round_signed_to_tick(-abs(candidate.credit_mid), tick),
-        "comboQuantity": 1,
+        "comboQuantity": qty,
         "outsideRth": False,
         "stopLoss": payload_stop_loss,
     }
 
 
-async def place_strategy_entry(ib, state, strategy, candidate) -> dict:
+async def place_strategy_entry(ib, state, strategy, candidate, qty=1) -> dict:
     from order_manager import handle_place_order
     from account_manager import refresh_account_state
     # PM-settle guard: never place a trade on an AM-settled (open) contract.
@@ -458,7 +498,7 @@ async def place_strategy_entry(ib, state, strategy, candidate) -> dict:
             "status": "Error",
         })
         return resp
-    payload = _build_entry_payload(strategy, candidate, state)
+    payload = _build_entry_payload(strategy, candidate, state, qty=qty)
     resp = await handle_place_order(ib, state, payload, ws=None, refresh_fn=refresh_account_state)
     status = (resp.get("data") or {}).get("status", "")
     if status not in ("Error", ""):
@@ -530,18 +570,28 @@ async def strategy_evaluation_loop(ib, state, broadcast_fn):
                         state.strategy_candidates[name] = []
                         continue
                 ev = evaluate_conditions(strat, state, now=now_et())
-                state.strategy_candidates[name] = [c.to_dict() for c in ev.candidates]
+                state.strategy_candidates[name] = _sort_candidate_views([_candidate_view(c, strat, state) for c in ev.candidates])
                 if ev.status != "ready":
                     continue
                 if getattr(state, "auto_trade_kill_switch", False):
                     continue
+                # Always publish the live scan so the "Live candidates" pane
+                # reflects it — even for auto-execute strategies, which show an
+                # "(auto)" tag there instead of a Place button. Previously only
+                # non-auto strategies broadcast candidates, so an auto-execute
+                # strategy's scanner stayed empty even while the engine scanned.
+                await broadcast_fn({"type": "strategy_candidate",
+                                    "data": {"name": name, "candidates": _sort_candidate_views([_candidate_view(c, strat, state) for c in ev.candidates])}})
                 if strat.auto_execute and ev.candidates:
                     best = ev.candidates[0]
                     if not _has_margin(state, best, budget=strat.budget):
                         logger.info(f"{strat.name}: insufficient margin/budget, skipping auto entry")
                         continue
+                    qty = _position_size(state, strat.budget, best.margin)
+                    if qty <= 0:
+                        continue
                     try:
-                        resp = await place_strategy_entry(ib, state, strat, best)
+                        resp = await place_strategy_entry(ib, state, strat, best, qty=qty)
                         if (resp.get("data") or {}).get("status", "") not in ("Error", ""):
                             rt.entered = True
                             rt.trade = {
@@ -556,9 +606,6 @@ async def strategy_evaluation_loop(ib, state, broadcast_fn):
                             await broadcast_fn({"type": "strategy_exit", "data": {"name": name, "event": "auto_entry"}})
                     except Exception as e:
                         logger.error(f"Auto entry failed for {name}: {e}")
-                elif not strat.auto_execute:
-                    await broadcast_fn({"type": "strategy_candidate",
-                                        "data": {"name": name, "candidates": [c.to_dict() for c in ev.candidates]}})
         except asyncio.CancelledError:
             break
         except Exception as e:

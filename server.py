@@ -50,6 +50,7 @@ from risk_free import get_risk_free_rate
 from strategy_store import load_strategies
 from strategy_engine import strategy_evaluation_loop, take_profit_loop
 from ib_connection import setup_vix_subscription
+from log_buffer import LogStoreHandler, log_push_loop
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -77,6 +78,9 @@ async def lifespan(_app):
     """Startup and shutdown logic."""
     global ib, broadcast_fn
     logger.info("Starting SPX 0DTE GEX Dashboard...")
+
+    # Capture every framework log record into the Log console's ring buffer.
+    logging.getLogger().addHandler(LogStoreHandler(state))
 
     loop = asyncio.get_event_loop()
     nest_asyncio.apply(loop)
@@ -121,6 +125,7 @@ async def lifespan(_app):
         state.background_tasks.append(asyncio.create_task(price_push_loop(ib, state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(status_push_loop(state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(account_push_loop(ib, state, broadcast_fn)))
+        state.background_tasks.append(asyncio.create_task(log_push_loop(state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(strategy_evaluation_loop(ib, state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(take_profit_loop(ib, state, broadcast_fn)))
 
@@ -258,6 +263,7 @@ async def reconnect_ib(payload: dict):
         state.background_tasks.append(asyncio.create_task(price_push_loop(ib, state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(status_push_loop(state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(account_push_loop(ib, state, broadcast_fn)))
+        state.background_tasks.append(asyncio.create_task(log_push_loop(state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(chain_fetch_loop(ib, state, broadcast_fn)))
         state.background_tasks.append(asyncio.create_task(chain_stream_loop(ib, state, broadcast_fn)))
         # Strategy engine: re-subscribe VIX, reload strategies, and restart the

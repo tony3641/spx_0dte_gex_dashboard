@@ -55,6 +55,43 @@ def test_has_margin_budget_caps():
     assert _has_margin(state, cand, budget=3000.0) is False   # budget is the binding cap
 
 
+def test_position_size_budget_sizing():
+    from strategy_engine import _position_size
+    state = type("S", (), {"account_summary": {"ExcessLiquidity": 100000.0}})()
+    assert _position_size(state, 10000, 3000) == 3
+
+
+def test_position_size_respects_excess_liquidity():
+    from strategy_engine import _position_size
+    state = type("S", (), {"account_summary": {"ExcessLiquidity": 5000.0}})()
+    assert _position_size(state, 10000, 3000) == 1
+
+
+def test_position_size_zero_when_single_exceeds_capacity():
+    from strategy_engine import _position_size
+    state = type("S", (), {"account_summary": {"ExcessLiquidity": 100000.0}})()
+    assert _position_size(state, 2500, 3000) == 0
+
+
+def test_position_size_no_budget_returns_one():
+    from strategy_engine import _position_size
+    state = type("S", (), {"account_summary": {"ExcessLiquidity": 100000.0}})()
+    assert _position_size(state, None, 3000) == 1
+
+
+def test_candidate_view_includes_sizing():
+    from strategy_engine import _candidate_view, Candidate
+    state = type("S", (), {"account_summary": {"ExcessLiquidity": 100000.0}})()
+    cand = Candidate(direction="bear_call", short_strike=5200.0, long_strike=5300.0, width_points=30.0,
+                     margin=3000.0, credit_bid=0.35, credit_ask=0.45, credit_mid=0.4,
+                     short_delta=0.3, long_delta=0.1, atm_iv=18.0)
+    strat = Strategy(name="t", direction="bear_call", conditions=[], budget=10000.0)
+    d = _candidate_view(cand, strat, state)
+    assert d["size"] == 3
+    assert d["total_credit"] == pytest.approx(1.2)
+    assert d["total_margin"] == pytest.approx(9000.0)
+
+
 def _closes():
     return [100.0 + 0.2 * i for i in range(20)]  # gently rising
 
@@ -183,6 +220,30 @@ def test_build_entry_payload_includes_trading_class():
     assert p2["legs"][1]["trading_class"] == "SPX"
 
 
+def test_build_entry_payload_sizes_qty():
+    from strategy_engine import _build_entry_payload
+    strat = Strategy(name="t", direction="bear_call", conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
+    cand = type("C", (), {"direction": "bear_call", "short_strike": 5200.0, "long_strike": 5300.0,
+                          "credit_mid": 2.0})()
+    p = _build_entry_payload(strat, cand, _state_t8(), qty=3)
+    assert p["legs"][0]["qty"] == 1   # per-combo leg ratio stays 1
+    assert p["legs"][1]["qty"] == 1
+    assert p["comboQuantity"] == 3    # sized count lives on the combo
+
+
+def test_build_entry_payload_combo_ratio_is_one():
+    from strategy_engine import _build_entry_payload
+    strat = Strategy(name="t", direction="bear_call", conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})])
+    cand = type("C", (), {"direction": "bear_call", "short_strike": 5200.0, "long_strike": 5300.0,
+                          "credit_mid": 2.0})()
+    ref = _build_entry_payload(strat, cand, _state_t8(), qty=1)   # per-combo net reference
+    p = _build_entry_payload(strat, cand, _state_t8(), qty=4)
+    assert p["legs"][0]["qty"] == 1   # per-combo leg ratio, NOT the sized count
+    assert p["legs"][1]["qty"] == 1
+    assert p["comboQuantity"] == 4    # number of spreads
+    assert p["comboLmtPrice"] == ref["comboLmtPrice"]   # unchanged, still the per-combo net
+
+
 def test_option_contract_trading_class_default_and_override():
     """order_manager._option_contract defaults to SPXW but honors an override."""
     from order_manager import _option_contract
@@ -249,7 +310,7 @@ async def test_eval_loop_skips_strategy_with_open_position(monkeypatch, mock_ib,
     app_state.strategy_open_positions = {"guard_strat": cand.to_dict()}
 
     placed = []
-    async def fake_place_entry(ib, state, strategy, candidate):
+    async def fake_place_entry(ib, state, strategy, candidate, qty=1):
         placed.append(strategy.name)
         return {"type": "order_status", "data": {"status": "Filled"}}
     def fake_eval(strategy, state, now=None, candidates=None):
@@ -271,6 +332,66 @@ async def test_eval_loop_skips_strategy_with_open_position(monkeypatch, mock_ib,
     # Only the unguarded strategy placed; the seeded one was skipped.
     assert placed == ["open_strat"]
     assert "guard_strat" not in placed
+
+
+@pytest.mark.asyncio
+async def test_eval_loop_broadcasts_candidates_for_auto_execute(monkeypatch, mock_ib, app_state):
+    """The Live Candidates pane must be fed for auto-execute strategies too.
+
+    Regression: the eval loop only broadcast strategy_candidate in the
+    non-auto-execute branch, so an auto-execute strategy's scanner stayed empty
+    even though the engine scanned and auto-placed.
+    """
+    import asyncio
+    from market_hours import now_et
+    from strategy_engine import strategy_evaluation_loop, StrategyEval, Candidate
+
+    app_state.connected = True
+    app_state.account_summary = {"ExcessLiquidity": 100000.0}   # margin check passes
+    app_state.expirations = [now_et().date().strftime("%Y%m%d")]  # today is tradeable
+
+    strat = Strategy(name="auto_strat", direction="bear_call", auto_execute=True, armed=True,
+                     conditions=[Condition(kind="short_delta", params={"min": 0.2, "max": 0.4})],
+                     run_days=[now_et().weekday()], short_day_enabled=True,
+                     run_on_fomc=True, run_on_nfp=True)
+    strat.budget = 25000   # margin 10000 -> floor(25000/10000) = 2 contracts
+    app_state.strategies = {"auto_strat": strat}
+
+    cand = Candidate(direction="bear_call", short_strike=5200.0, long_strike=5300.0, width_points=100.0,
+                     margin=10000.0, credit_bid=1.8, credit_ask=2.2, credit_mid=2.0,
+                     short_delta=0.3, long_delta=0.1, atm_iv=18.0)
+
+    placed = []
+    placed_qty = []
+    broadcasts = []
+    async def fake_place_entry(ib, state, strategy, candidate, qty=1):
+        placed.append(strategy.name)
+        placed_qty.append(qty)
+        return {"type": "order_status", "data": {"status": "Filled"}}
+    def fake_eval(strategy, state, now=None, candidates=None):
+        return StrategyEval(status="ready", candidates=[cand])
+    async def fake_broadcast(message):
+        broadcasts.append(message)
+
+    monkeypatch.setattr("strategy_engine.place_strategy_entry", fake_place_entry)
+    monkeypatch.setattr("strategy_engine.evaluate_conditions", fake_eval)
+
+    task = asyncio.create_task(strategy_evaluation_loop(mock_ib, app_state, fake_broadcast))
+    await asyncio.sleep(3.5)   # one full 3s cadence
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    # Still auto-places (at the budget-sized qty), AND now feeds the Live Candidates pane.
+    assert placed == ["auto_strat"]
+    assert placed_qty == [2]   # budget 25000 / margin 10000 -> 2 contracts
+    cand_msgs = [m for m in broadcasts if m["type"] == "strategy_candidate"]
+    assert len(cand_msgs) >= 1
+    assert cand_msgs[0]["data"]["name"] == "auto_strat"
+    assert cand_msgs[0]["data"]["candidates"][0]["short_strike"] == 5200.0
+    assert cand_msgs[0]["data"]["candidates"][0]["size"] == 2
 
 
 from strategy_engine import signature_for_candidate, find_strategy_positions
@@ -706,7 +827,7 @@ async def test_eval_loop_child_enters_once_eligible(monkeypatch):
     cand = Candidate(direction="bull_put", short_strike=5100.0, long_strike=5000.0, width_points=100.0,
                      margin=10000.0, credit_bid=0.2, credit_ask=0.4, credit_mid=0.30,
                      short_delta=0.3, long_delta=0.1, atm_iv=18.0)
-    async def fake_place(ib, s, strat, candidate):
+    async def fake_place(ib, s, strat, candidate, qty=1):
         placed.append(strat.name)
         return {"type": "order_status", "data": {"status": "Filled"}}
     def fake_eval(strategy, s, now=None, candidates=None):
@@ -736,3 +857,46 @@ async def test_eval_loop_child_enters_once_eligible(monkeypatch):
         pass
 
     assert placed == ["child"]   # only the eligible child placed; parent skipped; child once
+
+
+# ---------------------------------------------------------------------------
+# _sort_candidate_views — best-first ranking of candidate-view dicts.
+# Order: highest total_credit, then fewer spreads (size asc), then lower
+# total_margin (more efficient margin use for equal credit + size).
+# ---------------------------------------------------------------------------
+
+def _cand_view(**kw):
+    base = {"direction": "bull_put", "short_strike": 5100.0, "long_strike": 5000.0,
+            "width_points": 100.0, "margin": 10000.0, "credit_bid": 0.2,
+            "credit_ask": 0.4, "credit_mid": 0.30, "short_delta": 0.3,
+            "long_delta": 0.1, "atm_iv": 18.0, "size": 1,
+            "total_margin": 10000.0, "total_credit": 0.30}
+    base.update(kw)
+    return base
+
+
+def test_sort_candidate_views_prefers_highest_total_credit():
+    from strategy_engine import _sort_candidate_views
+    worse = _cand_view(total_credit=1.2, size=1)
+    best = _cand_view(total_credit=2.0, size=1)
+    out = _sort_candidate_views([worse, best])
+    assert out[0]["total_credit"] == 2.0
+    assert out[1]["total_credit"] == 1.2
+
+
+def test_sort_candidate_views_tie_fewer_spreads_first():
+    from strategy_engine import _sort_candidate_views
+    big = _cand_view(total_credit=2.0, size=3, total_margin=30000.0)
+    small = _cand_view(total_credit=2.0, size=1, total_margin=10000.0)
+    out = _sort_candidate_views([big, small])
+    assert out[0]["size"] == 1
+    assert out[1]["size"] == 3
+
+
+def test_sort_candidate_views_tie_lower_margin_first():
+    from strategy_engine import _sort_candidate_views
+    high = _cand_view(total_credit=2.0, size=2, total_margin=24000.0)
+    low = _cand_view(total_credit=2.0, size=2, total_margin=16000.0)
+    out = _sort_candidate_views([high, low])
+    assert out[0]["total_margin"] == 16000.0
+    assert out[1]["total_margin"] == 24000.0

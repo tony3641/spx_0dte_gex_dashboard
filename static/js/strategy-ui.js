@@ -656,7 +656,11 @@
     }
 
     function armStrategy(name) {
-        sendWsMessage('strategy_arm:', name);
+        const s = state.strategies.find(x => x.name === name);
+        if (!s) return;
+        s.armed = !s.armed;   // toggle — the button flips Arm<->Disarm based on armed
+        sendWsMessage(s.armed ? 'strategy_arm:' : 'strategy_disarm:', name);
+        renderStrategyList();
     }
 
     function deleteStrategy(name) {
@@ -682,19 +686,29 @@
         if (!el) return;
         const cands = state.strategyCandidates[name] || [];
         const s = state.strategies.find(x => x.name === name);
-        const rows = cands.map(c => `
-            <div class="cand-row">SELL ${c.short_strike} ${c.direction === 'bull_put' ? 'P' : 'C'} / BUY ${c.long_strike}
-             · credit $${(c.credit_mid || 0).toFixed(2)} · d=${(c.short_delta || 0).toFixed(2)} · w=${c.width_points}
-             ${s && s.auto_execute ? '<span>(auto)</span>' : `<button onclick="placeStrategyCandidate('${name}')">Place</button>`}</div>`).join('');
+        const rows = cands.map((c, i) => {
+            const size = (c.size != null) ? c.size : 1;
+            const sizing = size > 0
+                ? `· credit $${(c.credit_mid || 0).toFixed(2)} · d=${(c.short_delta || 0).toFixed(2)} · w=${c.width_points} · ×${size} · total credit $${(c.total_credit || 0).toFixed(2)} · margin $${(c.total_margin || 0).toLocaleString()}`
+                : `· doesn't fit budget`;
+            let action = '';
+            if (s && s.auto_execute) {
+                action = '<span>(auto)</span>';
+            } else if (size > 0) {
+                action = `<button onclick="event.stopPropagation(); placeStrategyCandidate('${name}', ${i})">Place</button>`;
+            }
+            return `<div class="cand-row">SELL ${c.short_strike} ${c.direction === 'bull_put' ? 'P' : 'C'} / BUY ${c.long_strike} ${sizing} ${action}</div>`;
+        }).join('');
         el.innerHTML = `<h3>Live candidates</h3>` + (cands.length ? rows : '<p>No matches</p>');
     }
 
-    function placeStrategyCandidate(name) {
+    function placeStrategyCandidate(name, index) {
         const s = state.strategies.find(x => x.name === name);
         const cands = state.strategyCandidates[name] || [];
         if (!cands.length) { showOrderToast('No candidate to place', 'info'); return; }
         if (s && s.auto_execute) { showOrderToast('Auto-execute on; strategy places automatically', 'info'); return; }
-        const c = cands[0];
+        const c = (cands[index] || cands[0]);
+        const size = (c.size > 0) ? c.size : 1;
         const right = (s && s.direction === 'bull_put') ? 'P' : 'C';
         const expiry = state.chainMeta ? (state.chainMeta.expiration_raw || '') : '';
         const tradingClass = (state.chainMeta && (state.chainMeta.trading_class || 'SPXW')) || 'SPXW';
@@ -713,7 +727,7 @@
         const payload = {
             legs, orderType: 'LMT', tif: 'DAY', comboAction: 'BUY',
             comboLmtPrice: -Math.round((c.credit_mid || 0) * 100) / 100,
-            comboQuantity: 1, outsideRth: false, stopLoss,
+            comboQuantity: size, outsideRth: false, stopLoss,
         };
         if (typeof sendPlaceOrder === 'function') {
             sendPlaceOrder(payload, (resp) => {

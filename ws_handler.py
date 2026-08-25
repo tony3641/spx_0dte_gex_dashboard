@@ -57,6 +57,17 @@ def _budget_error(state, budget) -> Optional[str]:
     return None
 
 
+def _strategy_list_payload(state) -> dict:
+    """The full strategy_list message clients use to repaint the Strategies tab."""
+    return {
+        "type": "strategy_list",
+        "data": {
+            "strategies": [s.to_dict() for s in state.strategies.values()],
+            "kill_switch": state.auto_trade_kill_switch,
+        },
+    }
+
+
 async def broadcast(state, message: dict):
     """Send a message to all connected WebSocket clients."""
     if not state.ws_clients:
@@ -260,10 +271,12 @@ async def websocket_endpoint(ws: WebSocket, ib, state, broadcast_fn):
                     state.active_tab = "strategies"
                     logger.info("Client active tab: strategies")
                     state.strategies = load_strategies()
-                    await ws.send_text(json.dumps({"type": "strategy_list", "data": {
-                        "strategies": [s.to_dict() for s in state.strategies.values()],
-                        "kill_switch": state.auto_trade_kill_switch,
-                    }}))
+                    await ws.send_text(json.dumps(_strategy_list_payload(state)))
+
+                elif msg == "set_tab:log":
+                    state.active_tab = "log"
+                    # Push current log backlog so a freshly-opened console fills up.
+                    await ws.send_text(json.dumps({"type": "log_history", "data": list(state.log_buffer)}))
 
                 elif msg.startswith("strategy_save:"):
                     try:
@@ -275,9 +288,7 @@ async def websocket_endpoint(ws: WebSocket, ib, state, broadcast_fn):
                             continue
                         state.strategies[strat.name] = strat
                         save_strategy(None, strat)
-                        await ws.send_text(json.dumps({"type": "strategy_list", "data": {
-                            "strategies": [s.to_dict() for s in state.strategies.values()],
-                            "kill_switch": state.auto_trade_kill_switch}}))
+                        await ws.send_text(json.dumps(_strategy_list_payload(state)))
                     except Exception as e:
                         logger.error(f"strategy_save error: {e}", exc_info=True)
 
@@ -291,11 +302,13 @@ async def websocket_endpoint(ws: WebSocket, ib, state, broadcast_fn):
                     if s is not None:
                         s.armed = True
                         reset_strategy_runtime(state, s.name)
+                        await ws.send_text(json.dumps(_strategy_list_payload(state)))
 
                 elif msg.startswith("strategy_disarm:"):
                     s = state.strategies.get(_unquote_name(msg.split(":", 1)[1]))
                     if s is not None:
                         s.armed = False
+                        await ws.send_text(json.dumps(_strategy_list_payload(state)))
 
                 elif msg.startswith("strategy_kill_switch:"):
                     state.auto_trade_kill_switch = msg.split(":", 1)[1] == "true"
