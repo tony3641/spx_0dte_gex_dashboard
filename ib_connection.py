@@ -48,6 +48,7 @@ async def connect_ib(ib, state, host: str = None, port: int = None,
     try:
         await ib.connect(h, p, cid, timeout=15)
         state.connected = True
+        state.ib_port = p
         logger.info(f"Connected to IB at {h}:{p}")
     except Exception as e:
         logger.error(f"Failed to connect to IB: {e}")
