@@ -86,6 +86,15 @@ def test_apply_passes_settings_to_factory():
     asyncio.run(m.stop())
 
 
+def test_apply_passes_cleared_channel_through_and_guild_none():
+    m, made, calls, state = _manager_seq(["ok"])
+    asyncio.run(m.apply(DiscordSettings(token="t", channel_id="")))
+    kw = made[0].kw
+    assert kw["channel_id"] == ""       # cleared channel passes through, not None
+    assert kw["guild_id"] is None       # empty guild still maps to None
+    asyncio.run(m.stop())
+
+
 def test_apply_bad_token_rolls_back():
     m, made, calls, state = _manager_seq(["ok", discord.LoginFailure()])
     assert asyncio.run(m.apply(DiscordSettings(token="good")))["ok"] is True

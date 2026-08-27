@@ -83,7 +83,7 @@ class DiscordSettingsManager:
             self.ib, self.state,
             token=new.token,
             guild_id=new.guild_id or None,
-            channel_id=new.channel_id or None,
+            channel_id=new.channel_id,
             allowed_user_ids=new.allowed_user_ids,
             allowed_role=new.allowed_role,
         )
