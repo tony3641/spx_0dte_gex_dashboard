@@ -252,10 +252,15 @@ class DiscordBot:
     client never leaves the bot reading stale data).
     """
 
-    def __init__(self, ib, state, token=None, guild_id=None, channel_id=None, poster=None):
+    def __init__(self, ib, state, token=None, guild_id=None, channel_id=None,
+                 allowed_user_ids=None, allowed_role=None, poster=None):
         self.ib = ib
         self.state = state
         self.token = token or config.DISCORD_TOKEN
+        self.allowed_user_ids = (list(allowed_user_ids) if allowed_user_ids is not None
+                                 else list(config.DISCORD_ALLOWED_USER_IDS))
+        self.allowed_role = (allowed_role if allowed_role is not None
+                             else config.DISCORD_ALLOWED_ROLE)
         self.guild_id = (int(guild_id) if guild_id is not None
                          else (int(config.DISCORD_GUILD_ID) if str(config.DISCORD_GUILD_ID).isdigit() else None))
         intents = discord.Intents.default()
@@ -361,8 +366,8 @@ class DiscordBot:
     async def _respond(self, interaction, fn, kwargs):
         roles = getattr(interaction.user, "roles", None) or []
         if not is_authorized(interaction.user.id,
-                             config.DISCORD_ALLOWED_USER_IDS,
-                             config.DISCORD_ALLOWED_ROLE,
+                             self.allowed_user_ids,
+                             self.allowed_role,
                              [r.name for r in roles], [r.id for r in roles]):
             await interaction.response.send_message("Not authorized for this command.", ephemeral=True)
             return
@@ -388,8 +393,11 @@ class DiscordBot:
         await self.bot.close()
 
 
-def make_discord_bot(ib, state, token=None, guild_id=None, channel_id=None, poster=None) -> DiscordBot:
-    return DiscordBot(ib, state, token=token, guild_id=guild_id, channel_id=channel_id, poster=poster)
+def make_discord_bot(ib, state, token=None, guild_id=None, channel_id=None,
+                     allowed_user_ids=None, allowed_role=None, poster=None) -> DiscordBot:
+    return DiscordBot(ib, state, token=token, guild_id=guild_id, channel_id=channel_id,
+                      allowed_user_ids=allowed_user_ids, allowed_role=allowed_role,
+                      poster=poster)
 
 
 def _embed(title, result) -> discord.Embed:
