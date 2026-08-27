@@ -17,8 +17,20 @@ try:
 except Exception:  # pragma: no cover
     yaml = None
 
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover
+    load_dotenv = None
+
 
 PARAMS_YAML_PATH = Path(__file__).parent / "config" / "params.yaml"
+
+DOTENV_PATH = Path(os.getenv("DOTENV_PATH", Path(__file__).parent / ".env"))
+
+# Repo-root .env fills the gap between real env vars and params.yaml.
+# override=False (the default): an explicitly-set env var still wins.
+if load_dotenv is not None:
+    load_dotenv(dotenv_path=DOTENV_PATH)
 
 
 def _load_yaml_params() -> Dict[str, Any]:
@@ -133,7 +145,7 @@ DISCORD_GUILD_ID = _get_setting("DISCORD_GUILD_ID", "", str)
 DISCORD_CHANNEL_ID = _get_setting("DISCORD_CHANNEL_ID", "", str)
 
 
-def _parse_user_ids(val):
+def parse_user_ids(val):
     if val is None:
         return []
     if isinstance(val, (list, tuple)):
@@ -146,7 +158,7 @@ def _parse_user_ids(val):
     return out
 
 
-DISCORD_ALLOWED_USER_IDS = _get_setting("DISCORD_ALLOWED_USER_IDS", [], _parse_user_ids)
+DISCORD_ALLOWED_USER_IDS = _get_setting("DISCORD_ALLOWED_USER_IDS", [], parse_user_ids)
 DISCORD_ALLOWED_ROLE = _get_setting("DISCORD_ALLOWED_ROLE", "", str)
 
 # Enabled only when a token is configured. Never hardcode a real token default.
