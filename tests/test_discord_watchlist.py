@@ -85,9 +85,17 @@ class _FakeResp:
     async def defer(self, **kw): pass
 
 
+class _FakeFollowup:
+    def __init__(self, sent): self.sent = sent
+    async def send(self, content=None, **kw): self.sent.append(content)
+
+
 class _FakeInteraction:
     def __init__(self, uid=1):
-        self.user = _FakeUser(uid); self.response = _FakeResp(); self.sent = self.response.sent
+        self.user = _FakeUser(uid)
+        self.response = _FakeResp()
+        self.followup = _FakeFollowup(self.response.sent)
+        self.sent = self.response.sent
     async def send_ok(self):
         pass
 

@@ -612,22 +612,37 @@ class DiscordBot:
             except Exception:
                 pass
 
+    async def _reply(self, interaction, text):
+        """Send a reply after a defer; falls back to a direct response if followup fails."""
+        try:
+            await interaction.followup.send(text, ephemeral=False)
+        except Exception as e:
+            logger.error(f"followup send failed: {e}")
+            try:
+                await interaction.response.send_message(text, ephemeral=False)
+            except Exception:
+                pass
+
     async def _handle_watchlist(self, interaction, name=None):
         roles = getattr(interaction.user, "roles", None) or []
         if not is_authorized(interaction.user.id, self.allowed_user_ids,
                              self.allowed_role, [r.name for r in roles], [r.id for r in roles]):
             await interaction.response.send_message("Not authorized.", ephemeral=True)
             return
+        try:
+            await interaction.response.defer(ephemeral=False)
+        except Exception:
+            pass
         view = watchlist_view(self.state, name)
         if not view.get("ok"):
-            await interaction.response.send_message(f"⚠️ {view.get('error')}", ephemeral=False)
+            await self._reply(interaction, f"⚠️ {view.get('error')}")
             return
         groups = view.get("groups") or []
         if not groups:
-            await interaction.response.send_message(view.get("note", "No symbols."), ephemeral=False)
+            await self._reply(interaction, view.get("note", "No symbols."))
             return
         if self.ib is None or not self.ib.isConnected():
-            await interaction.response.send_message("⚠️ IB not connected — quotes unavailable.", ephemeral=False)
+            await self._reply(interaction, "⚠️ IB not connected — quotes unavailable.")
             return
         from watchlist_store import WatchlistEntry
         flat = []
@@ -641,12 +656,12 @@ class DiscordBot:
             streams = await self.ib.fetch_snapshot(contracts)
         except Exception as e:
             logger.error(f"watchlist fetch_snapshot failed: {e}")
-            await interaction.response.send_message("⚠️ Failed to fetch quotes.", ephemeral=False)
+            await self._reply(interaction, "⚠️ Failed to fetch quotes.")
             return
         rows = [(gname, entry.display_name or entry.symbol, _quote_from_stream(s))
                 for (gname, entry), s in zip(flat, streams)]
         text = _fmt_watchlist(rows, show_list=(name is None))
-        await interaction.response.send_message(text, ephemeral=False)
+        await self._reply(interaction, text)
 
     @property
     def command_names(self):
@@ -994,8 +1009,12 @@ def _quote_from_stream(s) -> dict:
     last, close = _num(s.last), _num(s.close)
     if last is not None and last > 0:
         price = last
-    elif (bid is not None and bid > 0) or (ask is not None and ask > 0):
-        price = ((bid or 0) + (ask or 0)) / 2
+    elif (bid is not None and bid > 0) and (ask is not None and ask > 0):
+        price = (bid + ask) / 2
+    elif bid is not None and bid > 0:
+        price = bid
+    elif ask is not None and ask > 0:
+        price = ask
     elif close is not None and close > 0:
         price = close
     else:

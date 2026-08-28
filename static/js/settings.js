@@ -47,6 +47,7 @@
         } catch (e) {
             document.getElementById('setDiscordResult').textContent =
                 'Failed to load settings: ' + e.message;
+            setWatchlistSaveEnabled(false);   // settings fetch failed => keep Save disabled
         }
     }
 

@@ -35,6 +35,7 @@ Thumbs.db
 *_old.*
 *todo*
 config/strategies.json
+config/watchlists.json
 docs/superpowers/
 
 # Superpowers SDD workspace (scratch)
