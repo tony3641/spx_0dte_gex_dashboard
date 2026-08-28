@@ -622,7 +622,7 @@ def _fmt_strategy(result) -> str:
             for c in conds]
         cond_tbl = _table(["condition", "on", "params"], rows) if rows else "none"
         run_days = s.get("run_days") or []
-        run_str = ",".join(str(d) for d in run_days) if run_days else "-"
+        run_line = _run_days_line(run_days)
         budget = s.get("budget")
         width = f"${budget:,.0f}" if isinstance(budget, (int, float)) else "-"
         exit_rules = s.get("exit_rules") or {}
@@ -632,7 +632,7 @@ def _fmt_strategy(result) -> str:
             f"**{s.get('name', '')}**   {_badge(s.get('armed', False))} armed  "
             f"{_badge(s.get('auto_execute', False))} auto\n"
             f"Direction: **{s.get('direction', '')}**   Budget: {width}   Expiry: {s.get('target_expiry', '-')}\n"
-            f"Run days: {run_str}   Trigger: {s.get('trigger_logic', 'any')}\n"
+            f"Run days: {run_line}   Trigger: {s.get('trigger_logic', 'any')}\n"
             f"Exit: TP {tp.get('mode', 'pct_credit')} {tp.get('value', 0)} / "
             f"SL x{sl.get('multiplier', 1)}  hold_to_expire={exit_rules.get('hold_to_expire', False)}\n"
             f"Conditions ({len(conds)}):\n{_fence(cond_tbl)}"
@@ -656,12 +656,54 @@ def _fmt_status(result) -> str:
             f"SPX: **{_money(result.get('spot'))}**   VIX: **{vix if vix is not None else '-'}**")
 
 
+def _opt_name(contract) -> str:
+    """Human name for a position contract: 'SPX Jun26 7700 CALL' or 'QCOM' for stocks."""
+    if not isinstance(contract, dict):
+        return "-"
+    sym = contract.get("symbol") or "-"
+    expiry = contract.get("expiry") or ""
+    strike = contract.get("strike")
+    right = (contract.get("right") or "").strip()
+    sec_type = contract.get("secType") or ""
+    # Options carry expiry+strike+right; stocks don't.
+    if sec_type == "OPT" and expiry and strike is not None and right:
+        try:
+            from datetime import datetime
+            mon_yr = datetime.strptime(expiry, "%Y%m%d").strftime("%b%y")
+        except (ValueError, TypeError):
+            mon_yr = expiry
+        strike_str = f"{strike:.0f}" if isinstance(strike, (int, float)) else str(strike)
+        full = "CALL" if right.upper().startswith("C") else "PUT"
+        return f"{sym} {mon_yr} {strike_str} {full}"
+    if contract.get("localSymbol") and contract.get("localSymbol") != sym:
+        return str(contract.get("localSymbol"))
+    return sym
+
+
+_RUN_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+
+
+def _run_days_line(days) -> str:
+    """Render run days as '[ Mon | Tue | ... ]' with selected days bolded."""
+    selected = set(int(d) for d in (days or []) if d is not None and str(d).isdigit())
+    parts = []
+    for i, label in enumerate(_RUN_DAYS):
+        cell = f"**{label}**" if i in selected else label
+        parts.append(cell)
+    return "[ " + " | ".join(parts) + " ]"
+
+
 def _fmt_account(result) -> str:
     summary = result.get("summary") or {}
     positions = result.get("positions") or []
-    nl = summary.get("NetLiquidation")
-    bp = summary.get("BuyingPower")
-    return (f"💰 Net Liq: **{_money(nl)}**   Buying Power: **{_money(bp)}**\n"
+    cash = summary.get("TotalCashValue")
+    excess = summary.get("ExcessLiquidity")
+    un = summary.get("UnrealizedPnL")
+    re = summary.get("RealizedPnL")
+    return (f"💰 Net Liq: **{_money(summary.get('NetLiquidation'))}**  "
+            f"Cash: **{_money(cash)}**  Excess: **{_money(excess)}**\n"
+            f"Buying Power: **{_money(summary.get('BuyingPower'))}**  "
+            f"Unrealized PnL: **{_money(un)}**  Realized PnL: **{_money(re)}**\n"
             f"📈 {len(positions)} position{'s' if len(positions) != 1 else ''}"
             f"   {len(result.get('executions') or [])} executions")
 
@@ -678,9 +720,9 @@ def _fmt_orders(result) -> str:
 
 def _fmt_positions(result) -> str:
     positions = result.get("positions") or []
-    headers = ["symbol", "qty", "avg_cost"]
-    rows = [[(p.get("contract") or {}).get("symbol", "-"), p.get("position", ""),
-             p.get("avgCost", "")] for p in positions]
+    headers = ["contract", "qty", "avg cost", "unrlzd pnl"]
+    rows = [[_opt_name(p.get("contract")), p.get("position", ""),
+             _money(p.get("averageCost")), _money(p.get("unrealizedPNL"))] for p in positions]
     block = _fence(_table(headers, rows)) if rows else "none"
     count = result.get("count", len(positions))
     return f"💼 {count} position{'s' if count != 1 else ''}\n{block}"

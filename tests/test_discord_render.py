@@ -22,6 +22,7 @@ from discord_bot import (
     _fmt_positions,
     _fmt_action,
     _fmt_alert,
+    _run_days_line,
     _embed_color,
 )
 
@@ -71,7 +72,9 @@ def _status_result():
 
 
 def _account_result():
-    return {"summary": {"NetLiquidation": 100000.0, "BuyingPower": 50000.0},
+    return {"summary": {"NetLiquidation": 100000.0, "BuyingPower": 50000.0,
+                        "TotalCashValue": 40000.0, "ExcessLiquidity": 25000.0,
+                        "UnrealizedPnL": -500.0, "RealizedPnL": 1200.0},
             "positions": [{"contract": {"symbol": "SPX"}, "position": -1}],
             "executions": []}
 
@@ -85,8 +88,12 @@ def _orders_result():
 
 def _positions_result():
     return {"count": 2, "positions": [
-        {"contract": {"symbol": "SPX", "localSymbol": "SPXW"}, "position": -4},
-        {"contract": {"symbol": "SPX", "localSymbol": "SPXW"}, "position": 2},
+        {"contract": {"symbol": "SPX", "localSymbol": "SPXW", "secType": "OPT",
+                      "expiry": "20260626", "strike": 7700.0, "right": "C"},
+         "position": -4, "averageCost": 1.85, "unrealizedPNL": -40.0},
+        {"contract": {"symbol": "QCOM", "localSymbol": "QCOM", "secType": "STK",
+                      "expiry": "", "strike": None, "right": ""},
+         "position": -100, "averageCost": 175.2, "unrealizedPNL": 320.0},
     ]}
 
 
@@ -168,6 +175,23 @@ def test_strategy_detail_shows_summary_and_conditions():
     assert "15,000" in out          # budget (thousands-separated)
 
 
+def test_strategy_run_days_on_one_line_with_bold_selected():
+    line = _run_days_line([0, 1, 2, 3, 4])   # all weekdays
+    assert "Mon" in line and "Fri" in line
+    assert "[" in line and "]" in line
+    assert "**Mon**" in line
+    # a weekday not in the run list stays dimmed (not bold)
+    dim = _run_days_line([0])                # Monday only
+    assert "**Mon**" in dim
+    assert "**Tue**" not in dim
+
+
+def test_strategy_detail_uses_run_days_line():
+    out = _fmt_strategy(_strategy_result())
+    assert "[" in out
+    assert "Mon" in out and "Wed" in out and "Fri" in out
+
+
 # ---------------------------------------------------------------------------
 # _fmt_status
 # ---------------------------------------------------------------------------
@@ -188,6 +212,22 @@ def test_account_shows_summary_and_count_not_raw_list():
     assert "1 position" in out
 
 
+def test_account_shows_cash_and_excess_margin():
+    out = _fmt_account(_account_result())
+    assert "40,000.00" in out              # TotalCashValue -> Cash
+    assert "Cash" in out
+    assert "25,000.00" in out              # ExcessLiquidity -> Excess margin
+    assert "Excess" in out
+    assert "-500.00" in out                # UnrealizedPnL
+    assert "1,200.00" in out               # RealizedPnL
+
+
+def test_account_renders_summary_as_kv_not_dict_lines():
+    out = _fmt_account(_account_result())
+    assert "TotalCashValue:" not in out
+    assert "NetLiquidation:" not in out
+
+
 # ---------------------------------------------------------------------------
 # _fmt_orders
 # ---------------------------------------------------------------------------
@@ -205,6 +245,20 @@ def test_positions_shows_count_and_contracts():
     out = _fmt_positions(_positions_result())
     assert "2 positions" in out
     assert "SPX" in out
+
+
+def test_positions_lists_full_option_name():
+    out = _fmt_positions(_positions_result())
+    assert "SPX Jun26 7700 CALL" in out
+    assert "QCOM" in out
+
+
+def test_positions_shows_avg_cost_and_unrealized_pnl():
+    out = _fmt_positions(_positions_result())
+    assert "1.85" in out                  # SPX averageCost
+    assert "-40.00" in out                # SPX unrealizedPNL
+    assert "175.20" in out                # QCOM averageCost
+    assert "320.00" in out                # QCOM unrealizedPNL
 
 
 # ---------------------------------------------------------------------------
