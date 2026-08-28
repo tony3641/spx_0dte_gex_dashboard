@@ -170,7 +170,16 @@ Optional in-process bot that lets an allowlisted user query the dashboard and
 control strategies from Discord. **Orders are never placed from Discord** —
 the `/place` command shows the candidate and directs you to confirm in the web UI.
 
-### Setup
+### Settings UI
+
+Configure Discord — and the IB Gateway port — from the dashboard: click the
+gear icon in the header. Apply hot-applies the change (the Discord bot restarts
+in place; the IB port reconnects immediately) and persists it to the repo-root
+`.env`, which overrides `config/params.yaml` but loses to real environment
+variables. Settings endpoints only accept localhost connections. The header
+connection badge is display-only now.
+
+### Manual setup (headless alternative)
 
 1. Create a bot in the Discord Developer Portal, copy its token, and add the
    `applications.commands` scope. Invite it to your server.

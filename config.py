@@ -3,8 +3,9 @@ Centralized configuration constants and tick-rounding helpers.
 
 Load order for each setting:
 1) Environment variable
-2) config/params.yaml
-3) hardcoded default
+2) repo-root `.env`
+3) config/params.yaml
+4) hardcoded default
 """
 
 import os
