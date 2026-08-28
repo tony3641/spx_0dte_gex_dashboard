@@ -14,7 +14,7 @@ import logging
 import signal
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 # Must be BEFORE any event-loop creation
 if sys.platform == "win32":
@@ -56,6 +56,7 @@ from discord_settings import (
     DiscordSettings, DiscordSettingsManager, load_initial_settings,
 )
 from env_store import update_env
+from watchlist_store import WatchlistStore, Watchlist, WatchlistEntry
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -74,6 +75,7 @@ ib: Optional[IBClient] = None
 state = AppState()
 broadcast_fn = None  # set in lifespan
 discord_manager: Optional[DiscordSettingsManager] = None
+watchlist_store: Optional[WatchlistStore] = None
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +84,7 @@ discord_manager: Optional[DiscordSettingsManager] = None
 @asynccontextmanager
 async def lifespan(_app):
     """Startup and shutdown logic."""
-    global ib, broadcast_fn
+    global ib, broadcast_fn, watchlist_store
     logger.info("Starting SPX 0DTE GEX Dashboard...")
 
     # Capture every framework log record into the Log console's ring buffer.
@@ -113,6 +115,11 @@ async def lifespan(_app):
             logger.warning(f"Discord not started: {result.get('error')}")
     except Exception as e:
         logger.error(f"Failed to start Discord bot: {e}", exc_info=True)
+
+    # Watchlist store: independent of IB health, like the Discord manager.
+    watchlist_store = WatchlistStore()
+    watchlist_store.load()
+    state.watchlist_store = watchlist_store
 
     try:
         await connect_ib(ib, state)
@@ -411,6 +418,58 @@ async def post_ib_settings(body: IbSettingsIn, request: Request):
         logger.warning(f"Failed to persist IB_PORT to .env: {e}")
         persisted = False
     return {"ok": True, "port": body.port, "persisted": persisted}
+
+
+class WatchlistEntryIn(BaseModel):
+    symbol: str
+    sec_type: str = "STK"
+    exchange: str = "SMART"
+    display_name: str = ""
+
+
+class WatchlistIn(BaseModel):
+    name: str
+    entries: List[WatchlistEntryIn] = []
+
+
+class WatchlistSetIn(BaseModel):
+    watchlists: List[WatchlistIn] = []
+
+
+@app.get("/api/watchlist")
+async def get_watchlist(request: Request):
+    if not _is_localhost(request):
+        raise HTTPException(status_code=403, detail="Localhost only")
+    if watchlist_store is None:
+        raise HTTPException(status_code=503, detail="Watchlist unavailable (startup incomplete)")
+    return {"watchlists": [w.to_dict() for w in watchlist_store.all()]}
+
+
+@app.post("/api/watchlist")
+async def post_watchlist(body: WatchlistSetIn, request: Request):
+    global watchlist_store
+    if not _is_localhost(request):
+        raise HTTPException(status_code=403, detail="Localhost only")
+    if watchlist_store is None:
+        raise HTTPException(status_code=503, detail="Watchlist unavailable (startup incomplete)")
+    # Validate the payload into a fresh store, then swap + persist atomically.
+    next_store = WatchlistStore(path=watchlist_store.path)
+    for w in body.watchlists:
+        if not w.name.strip():
+            raise HTTPException(status_code=400, detail="Watchlist name required")
+        if not next_store.create(w.name):
+            raise HTTPException(status_code=400, detail=f"Duplicate watchlist '{w.name}'")
+        for e in w.entries:
+            if not next_store.add_entry(w.name, WatchlistEntry(
+                    symbol=e.symbol, sec_type=e.sec_type, exchange=e.exchange,
+                    display_name=e.display_name)):
+                # add_entry returns False on empty symbol / dup within the list
+                raise HTTPException(status_code=400,
+                                    detail=f"Bad entry in '{w.name}': empty symbol or duplicate")
+    next_store.save()
+    watchlist_store = next_store
+    state.watchlist_store = next_store
+    return {"watchlists": [x.to_dict() for x in next_store.all()]}
 
 
 # ---------------------------------------------------------------------------
