@@ -136,13 +136,13 @@ Key strike prices and conditions:
 | `strategy_store.py` | Strategy persistence to `config/strategies.json` |
 | `app_state.py` | Shared AppState runtime, day key, kill switch |
 | `log_buffer.py` | Ring-buffer framework log for the Log tab |
-| `config.py` | Centralized settings: env var → `config/params.yaml` → defaults |
+| `config.py` | Centralized settings: env var → repo-root `.env` → `config/params.yaml` → defaults |
 | `static/` | Browser app: `index.html`, `css/`, `js/` (charts, chain table, order entry, strategy UI, tabs, WS) |
 | `tests/` | Pytest suite + `run_tests.py` structured runner |
 
 ## Configuration
 
-Settings are resolved in order: **environment variable → `config/params.yaml` → hardcoded default**.
+Settings are resolved in order: **environment variable → repo-root `.env` → `config/params.yaml` → hardcoded default**.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -163,6 +163,49 @@ Settings are resolved in order: **environment variable → `config/params.yaml` 
 | `FOMC_DATES` | `[]` | FOMC meeting dates (via `params.yaml`) |
 
 Additional tunables (chain streaming, batch sizes, viewport sync, SPXW cease/gap windows) live in `config.py` and `config/params.yaml`.
+
+## Discord Bot
+
+Optional in-process bot that lets an allowlisted user query the dashboard and
+control strategies from Discord. **Orders are never placed from Discord** —
+the `/place` command shows the candidate and directs you to confirm in the web UI.
+
+### Settings UI
+
+Configure Discord — and the IB Gateway port — from the dashboard: click the
+gear icon in the header. Apply hot-applies the change (the Discord bot restarts
+in place; the IB port reconnects immediately) and persists it to the repo-root
+`.env`, which overrides `config/params.yaml` but loses to real environment
+variables. Settings endpoints only accept localhost connections. The header
+connection badge is display-only now.
+
+### Manual setup (headless alternative)
+
+1. Create a bot in the Discord Developer Portal, copy its token, and add the
+   `applications.commands` scope. Invite it to your server.
+2. Provide the token and options via env var or `config/params.yaml` (never
+   commit a real token):
+
+| Variable | Example | Notes |
+|---|---|---|
+| `DISCORD_TOKEN` | `abc...` | Bot token. Presence enables the bot. |
+| `DISCORD_GUILD_ID` | `123456789` | Reserved for alerts; slash commands are registered globally (available in any server the bot is in). New global commands can take up to ~1 hour to appear after first sync. |
+| `DISCORD_CHANNEL_ID` | `987654321` | Optional; alert-stream channel. |
+| `DISCORD_ALLOWED_USER_IDS` | `111,222` | Allowed Discord user IDs. |
+| `DISCORD_ALLOWED_ROLE` | `trader` | Optional role name or ID that is also allowed. |
+
+3. Restart the server.
+
+### Commands
+
+`/status` `/account` `/positions` `/orders` `/strategy` `/candidates <name>`
+`/arm <name>` `/disarm <name>` `/killswitch on|off` `/place <name> <index>`
+
+- Read commands query live dashboard state.
+- `/arm` warns when the strategy `auto_execute`s, and honors the global kill switch.
+- `/place` intentionally refuses — place orders in the browser.
+- A curated stream (fills, strategy exits, take-profit closes, IB errors,
+  connection and kill-switch changes) is posted to `DISCORD_CHANNEL_ID`.
 
 ## Data Modes
 

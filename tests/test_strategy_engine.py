@@ -946,3 +946,33 @@ def test_sort_candidate_views_tie_lower_margin_first():
     out = _sort_candidate_views([high, low])
     assert out[0]["total_margin"] == 16000.0
     assert out[1]["total_margin"] == 24000.0
+
+
+def _rows_put():
+    return {"strikes": [
+        {"strike": 5100, "put_bid": 1.0, "put_ask": 1.4, "put_delta": -0.20,
+         "call_bid": 9.0, "call_ask": 9.6, "call_delta": 0.60, "call_iv": 20.0, "put_iv": 21.0},
+        {"strike": 5200, "put_bid": 3.0, "put_ask": 3.4, "put_delta": -0.30,
+         "call_bid": 4.0, "call_ask": 4.6, "call_delta": 0.30, "call_iv": 18.0, "put_iv": 19.0},
+        {"strike": 5300, "put_bid": 6.0, "put_ask": 6.6, "put_delta": -0.80,
+         "call_bid": 2.0, "call_ask": 2.6, "call_delta": 0.10, "call_iv": 22.0, "put_iv": 23.0},
+    ], "spot_price": 5200.0}
+
+
+def test_build_candidate_views_size_and_sort():
+    from strategy_engine import build_candidate_views
+    strat = Strategy(name="bp", direction="bull_put", budget=10000, conditions=[
+        Condition(kind="short_delta", params={"min": 0.1, "max": 0.4}),
+        Condition(kind="spread_width", params={"min": 50, "max": 200}),
+    ])
+    state = type("S", (), {"chain_quotes_cache": _rows_put(),
+                           "account_summary": {"ExcessLiquidity": 50000.0}})()
+    views = build_candidate_views(strat, state)
+    assert views, "expected at least one candidate"
+    assert all("size" in v and "total_credit" in v and "total_margin" in v for v in views)
+    # best-first: total_credit non-increasing
+    credits = [v["total_credit"] for v in views]
+    assert all(credits[i] >= credits[i + 1] for i in range(len(credits) - 1))
+    # sized views: total_credit = credit_mid * size
+    for v in views:
+        assert v["total_credit"] == round((v["credit_mid"] or 0) * v["size"], 4)

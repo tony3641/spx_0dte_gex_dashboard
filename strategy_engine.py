@@ -260,6 +260,16 @@ def evaluate_conditions(strategy: Strategy, state, now=None, candidates=None) ->
     return StrategyEval(status="ready", candidates=passing, values=values)
 
 
+def build_candidate_views(strategy: Strategy, state) -> list:
+    """Best-first, budget-sized candidate views for display/selection.
+
+    Reuses the engine's own condition evaluation; returns the same dict shape
+    the evaluation loop publishes to ``state.strategy_candidates``.
+    """
+    ev = evaluate_conditions(strategy, state)
+    return _sort_candidate_views([_candidate_view(c, strategy, state) for c in ev.candidates])
+
+
 def signature_for_candidate(candidate: Candidate, state) -> set:
     """Contract signature (set of (strike, right)) to match a strategy to positions."""
     return {(candidate.short_strike, short_right_for(candidate.direction)),

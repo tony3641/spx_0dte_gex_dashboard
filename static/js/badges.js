@@ -117,39 +117,6 @@
         }
     }
 
-    function promptReconnectIb() {
-        const portText = prompt('Enter IB API port number:', '7497');
-        if (portText === null) return;
-        const port = parseInt(portText.trim(), 10);
-        if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-            alert('Please enter a valid port number between 1 and 65535.');
-            return;
-        }
-        reconnectIb(port);
-    }
-
-    async function reconnectIb(port) {
-        try {
-            const response = await fetch('/api/reconnect_ib', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ port }),
-            });
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => null);
-                const message = errorData?.detail || response.statusText || 'Unknown error';
-                throw new Error(message);
-            }
-            const result = await response.json();
-            document.getElementById('overlayMsg').textContent = `Reconnecting IB on port ${result.port}...`;
-            document.getElementById('loadingOverlay').classList.remove('hidden');
-            alert(`Reconnect request sent for port ${result.port}.`);
-        } catch (e) {
-            console.error('IB reconnect failed', e);
-            alert('IB reconnect failed: ' + e.message);
-        }
-    }
-
     function updateModeBadge() {
         const badge = document.getElementById('modeBadge');
         const text  = document.getElementById('modeBadgeText');

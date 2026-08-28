@@ -23,7 +23,8 @@ if sys.platform == "win32":
 import nest_asyncio
 import uvicorn
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, HTTPException
+from fastapi import FastAPI, WebSocket, HTTPException, Request
+from pydantic import BaseModel
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from ib_client import IBClient
@@ -51,6 +52,10 @@ from strategy_store import load_strategies
 from strategy_engine import strategy_evaluation_loop, take_profit_loop
 from ib_connection import setup_vix_subscription
 from log_buffer import LogStoreHandler, log_push_loop
+from discord_settings import (
+    DiscordSettings, DiscordSettingsManager, load_initial_settings,
+)
+from env_store import update_env
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -68,6 +73,7 @@ logger = logging.getLogger("server")
 ib: Optional[IBClient] = None
 state = AppState()
 broadcast_fn = None  # set in lifespan
+discord_manager: Optional[DiscordSettingsManager] = None
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +92,27 @@ async def lifespan(_app):
     nest_asyncio.apply(loop)
     ib = IBClient()
     broadcast_fn = make_broadcast_fn(state)
+
+    # Discord bot (in-process, on the same loop). Owned by the manager so
+    # IB reconnects (which cancel state.background_tasks) never kill it.
+    # Constructed OUTSIDE the IB setup try: Discord startup/config must not
+    # depend on IB health, and the settings endpoints need the manager to
+    # exist even when IB boot fails.
+    global discord_manager
+    discord_manager = DiscordSettingsManager(ib, state)
+    try:
+        # persist=False: config-derived boot never writes back to .env — only
+        # UI-authored applies persist (otherwise empty DISCORD_* keys would
+        # shadow params.yaml on later boots).
+        result = await discord_manager.apply(load_initial_settings(),
+                                             persist=False)
+        if result.get("ok"):
+            logger.info("Discord bot started" if result["running"]
+                        else "Discord disabled (no token)")
+        else:
+            logger.warning(f"Discord not started: {result.get('error')}")
+    except Exception as e:
+        logger.error(f"Failed to start Discord bot: {e}", exc_info=True)
 
     try:
         await connect_ib(ib, state)
@@ -160,6 +187,11 @@ async def lifespan(_app):
     logger.info("Shutting down...")
     for task in state.background_tasks:
         task.cancel()
+    if discord_manager is not None:
+        try:
+            await discord_manager.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping Discord bot: {e}")
     if getattr(ib, "connected", False):
         ib.disconnect()
         logger.info("Disconnected from IB")
@@ -199,22 +231,10 @@ async def get_state():
     }
 
 
-@app.post("/api/reconnect_ib")
-async def reconnect_ib(payload: dict):
-    """Reconnect to the IB API using a specified port number."""
+async def reconnect_ib_on(port: int) -> dict:
+    """Reconnect IB on `port` (validated by callers). Same teardown/reconnect/
+    restart behavior the /api/reconnect_ib endpoint had."""
     global ib
-    if payload is None:
-        raise HTTPException(status_code=400, detail="Request JSON body required")
-    port = payload.get("port")
-    if port is None:
-        raise HTTPException(status_code=400, detail="Port number is required")
-    try:
-        port = int(port)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="Port must be an integer")
-    if port <= 0 or port > 65535:
-        raise HTTPException(status_code=400, detail="Port must be between 1 and 65535")
-
     logger.info(f"Reconnecting to IB on port {port}")
     state.connected = False
     if state.chain_fetch_active is not None:
@@ -247,6 +267,8 @@ async def reconnect_ib(payload: dict):
     except Exception as e:
         logger.warning(f"Error disconnecting IB before reconnect: {e}")
     ib = IBClient()
+    if discord_manager is not None:
+        discord_manager.ib = ib   # keep the manager on the live client
 
     try:
         await connect_ib(ib, state, port=port)
@@ -294,6 +316,101 @@ async def reconnect_ib(payload: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
     return {"status": "ok", "port": port}
+
+
+# ---------------------------------------------------------------------------
+# Settings endpoints (localhost-only)
+# ---------------------------------------------------------------------------
+def _is_localhost(request: Request) -> bool:
+    client = request.client
+    return client is not None and client.host in ("127.0.0.1", "::1")
+
+
+class DiscordSettingsIn(BaseModel):
+    token: Optional[str] = None   # None = keep existing, "" = clear, str = set
+    guild_id: str = ""
+    channel_id: str = ""
+    allowed_user_ids: str = ""
+    allowed_role: str = ""
+
+
+class IbSettingsIn(BaseModel):
+    port: int
+
+
+@app.get("/api/settings/discord")
+async def get_discord_settings(request: Request):
+    if not _is_localhost(request):
+        raise HTTPException(status_code=403, detail="Localhost only")
+    if discord_manager is None:
+        raise HTTPException(status_code=503,
+                            detail="Discord settings unavailable (server startup incomplete)")
+    s = discord_manager.settings
+    return {
+        "token_set": bool(s.token),
+        "token_hint": ("…" + s.token[-4:]) if s.token else None,
+        "guild_id": s.guild_id,
+        "channel_id": s.channel_id,
+        "allowed_user_ids": list(s.allowed_user_ids),
+        "allowed_role": s.allowed_role,
+        "running": discord_manager.running,
+    }
+
+
+@app.post("/api/settings/discord")
+async def post_discord_settings(body: DiscordSettingsIn, request: Request):
+    if not _is_localhost(request):
+        raise HTTPException(status_code=403, detail="Localhost only")
+    if discord_manager is None:
+        raise HTTPException(status_code=503,
+                            detail="Discord settings unavailable (server startup incomplete)")
+    cur = discord_manager.settings
+    ids = config.parse_user_ids(body.allowed_user_ids)
+    if body.allowed_user_ids.strip() and not ids:
+        raise HTTPException(status_code=400,
+                            detail="No valid user IDs (comma-separated digits)")
+    if body.guild_id.strip() and not body.guild_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="Guild ID must be numeric")
+    if body.channel_id.strip() and not body.channel_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="Channel ID must be numeric")
+    new = DiscordSettings(
+        token=body.token if body.token is not None else cur.token,
+        guild_id=body.guild_id.strip(),
+        channel_id=body.channel_id.strip(),
+        allowed_user_ids=ids,
+        allowed_role=body.allowed_role.strip(),
+    )
+    result = await discord_manager.apply(new)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Apply failed"))
+    return result
+
+
+@app.get("/api/settings/ib")
+async def get_ib_settings(request: Request):
+    if not _is_localhost(request):
+        raise HTTPException(status_code=403, detail="Localhost only")
+    return {"port": state.ib_port, "connected": state.connected}
+
+
+@app.post("/api/settings/ib")
+async def post_ib_settings(body: IbSettingsIn, request: Request):
+    if not _is_localhost(request):
+        raise HTTPException(status_code=403, detail="Localhost only")
+    if body.port <= 0 or body.port > 65535:
+        raise HTTPException(status_code=400, detail="Port must be between 1 and 65535")
+    try:
+        await reconnect_ib_on(body.port)
+    except Exception as e:
+        logger.error(f"IB reconnect to port {body.port} failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    persisted = True
+    try:
+        update_env({"IB_PORT": str(body.port)})
+    except Exception as e:
+        logger.warning(f"Failed to persist IB_PORT to .env: {e}")
+        persisted = False
+    return {"ok": True, "port": body.port, "persisted": persisted}
 
 
 # ---------------------------------------------------------------------------

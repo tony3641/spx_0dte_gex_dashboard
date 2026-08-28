@@ -9,6 +9,7 @@ import asyncio
 from collections import deque
 from typing import Dict, List, Optional, Set
 
+import config
 from gex_calculator import GEXResult, OptionData
 from strategy_models import RuntimeState
 
@@ -36,9 +37,11 @@ class AppState:
 
         # Connection
         self.connected: bool = False
+        self.ib_port: int = config.IB_PORT   # live port; updated by connect_ib
         self.chain_fetching: bool = False
         self.last_chain_update: str = ""
         self.ws_clients: set = set()     # Set[WebSocket]
+        self.alert_bridge = None       # Optional[AlertBridge] — Discord event observer
         self.background_tasks: List[asyncio.Task] = []
 
         # Mode tracking
