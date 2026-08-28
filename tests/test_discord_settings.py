@@ -131,6 +131,33 @@ def test_empty_token_stops_bot_and_persists():
     assert calls[-1]["DISCORD_TOKEN"] == ""
 
 
+def test_apply_persist_false_empty_token_skips_persist():
+    # Startup apply (config -> manager) must never write .env: only
+    # UI-authored applies persist, otherwise empty DISCORD_* keys in .env
+    # would shadow params.yaml on later boots.
+    m, made, calls, state = _manager_seq(["ok"])
+    assert asyncio.run(m.apply(DiscordSettings(token="t")))["running"] is True
+    calls.clear()                            # drop the first (UI-style) apply
+    result = asyncio.run(m.apply(DiscordSettings(token=""), persist=False))
+    assert result == {"ok": True, "running": False, "persisted": False}
+    assert calls == []                       # persist recorder untouched
+    assert m.running is False
+    assert made[0].closed is True
+    assert state.alert_bridge is None
+    asyncio.run(m.stop())
+
+
+def test_apply_persist_false_success_skips_persist():
+    m, made, calls, state = _manager_seq(["ok"])
+    result = asyncio.run(m.apply(
+        DiscordSettings(token="tok", guild_id="1", channel_id="2"),
+        persist=False))
+    assert result == {"ok": True, "running": True, "persisted": False}
+    assert calls == []
+    assert m.running is True
+    asyncio.run(m.stop())
+
+
 def test_stop_is_idempotent():
     m, made, calls, state = _manager_seq([])
     asyncio.run(m.stop())

@@ -147,6 +147,38 @@ def test_post_invalid_user_ids_400(monkeypatch):
     assert ei.value.status_code == 400
 
 
+def test_post_non_numeric_guild_id_400(monkeypatch):
+    calls = []
+    _manager(monkeypatch, calls)
+    with pytest.raises(server.HTTPException) as ei:
+        _run(server.post_discord_settings(
+            server.DiscordSettingsIn(token="t", guild_id="abc"), _req()))
+    assert ei.value.status_code == 400
+    assert "Guild ID" in ei.value.detail
+    assert calls == []                       # rejected before any apply/persist
+
+
+def test_post_non_numeric_channel_id_400(monkeypatch):
+    calls = []
+    _manager(monkeypatch, calls)
+    with pytest.raises(server.HTTPException) as ei:
+        _run(server.post_discord_settings(
+            server.DiscordSettingsIn(token="t", channel_id="abc"), _req()))
+    assert ei.value.status_code == 400
+    assert "Channel ID" in ei.value.detail
+    assert calls == []
+
+
+def test_post_empty_ids_still_allowed(monkeypatch):
+    # Empty guild/channel means cleared and must stay legal.
+    m = _manager(monkeypatch, [])
+    resp = _run(server.post_discord_settings(
+        server.DiscordSettingsIn(token="t"), _req()))
+    assert resp["ok"] is True
+    assert m.settings.guild_id == ""
+    assert m.settings.channel_id == ""
+
+
 def test_post_bad_token_400_no_persist_old_kept(monkeypatch):
     calls = []
     state = SimpleNamespace(alert_bridge=None, background_tasks=[])

@@ -136,13 +136,13 @@ Key strike prices and conditions:
 | `strategy_store.py` | Strategy persistence to `config/strategies.json` |
 | `app_state.py` | Shared AppState runtime, day key, kill switch |
 | `log_buffer.py` | Ring-buffer framework log for the Log tab |
-| `config.py` | Centralized settings: env var → `config/params.yaml` → defaults |
+| `config.py` | Centralized settings: env var → repo-root `.env` → `config/params.yaml` → defaults |
 | `static/` | Browser app: `index.html`, `css/`, `js/` (charts, chain table, order entry, strategy UI, tabs, WS) |
 | `tests/` | Pytest suite + `run_tests.py` structured runner |
 
 ## Configuration
 
-Settings are resolved in order: **environment variable → `config/params.yaml` → hardcoded default**.
+Settings are resolved in order: **environment variable → repo-root `.env` → `config/params.yaml` → hardcoded default**.
 
 | Variable | Default | Description |
 |---|---|---|

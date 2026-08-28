@@ -101,7 +101,11 @@ async def lifespan(_app):
     global discord_manager
     discord_manager = DiscordSettingsManager(ib, state)
     try:
-        result = await discord_manager.apply(load_initial_settings())
+        # persist=False: config-derived boot never writes back to .env — only
+        # UI-authored applies persist (otherwise empty DISCORD_* keys would
+        # shadow params.yaml on later boots).
+        result = await discord_manager.apply(load_initial_settings(),
+                                             persist=False)
         if result.get("ok"):
             logger.info("Discord bot started" if result["running"]
                         else "Discord disabled (no token)")
@@ -365,6 +369,10 @@ async def post_discord_settings(body: DiscordSettingsIn, request: Request):
     if body.allowed_user_ids.strip() and not ids:
         raise HTTPException(status_code=400,
                             detail="No valid user IDs (comma-separated digits)")
+    if body.guild_id.strip() and not body.guild_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="Guild ID must be numeric")
+    if body.channel_id.strip() and not body.channel_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="Channel ID must be numeric")
     new = DiscordSettings(
         token=body.token if body.token is not None else cur.token,
         guild_id=body.guild_id.strip(),

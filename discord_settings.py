@@ -1,7 +1,9 @@
 """
 Runtime owner of the Discord subsystem: current settings, the live bot, and
 try-then-commit applies (a new bot must log in before the old one is replaced;
-.env is written only on success).
+.env is written only on success, and only for UI-authored applies — the
+lifespan startup apply uses persist=False so config never writes back to .env
+and empty DISCORD_* keys cannot shadow params.yaml).
 
 config module globals are never mutated at runtime — bots are constructed with
 explicit settings. The manager's run task is deliberately NOT in
@@ -71,11 +73,13 @@ class DiscordSettingsManager:
     def running(self) -> bool:
         return self.bot is not None
 
-    async def apply(self, new: DiscordSettings) -> dict:
+    async def apply(self, new: DiscordSettings, persist: bool = True) -> dict:
         # Disabled (no token): stop anything running, adopt settings, persist.
         if not new.token:
             await self._stop_bot()
             self.settings = new
+            if not persist:
+                return {"ok": True, "running": False, "persisted": False}
             return {"ok": True, "running": False,
                     "persisted": self._persist_discord_env(new)}
 
@@ -128,7 +132,7 @@ class DiscordSettingsManager:
             await self._close_bot(old_bot, old_task)
 
         return {"ok": True, "running": True,
-                "persisted": self._persist_discord_env(new)}
+                "persisted": self._persist_discord_env(new) if persist else False}
 
     async def stop(self):
         """Stop the bot (idempotent). Used on shutdown and when disabled."""
