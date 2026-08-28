@@ -93,6 +93,23 @@ async def lifespan(_app):
     ib = IBClient()
     broadcast_fn = make_broadcast_fn(state)
 
+    # Discord bot (in-process, on the same loop). Owned by the manager so
+    # IB reconnects (which cancel state.background_tasks) never kill it.
+    # Constructed OUTSIDE the IB setup try: Discord startup/config must not
+    # depend on IB health, and the settings endpoints need the manager to
+    # exist even when IB boot fails.
+    global discord_manager
+    discord_manager = DiscordSettingsManager(ib, state)
+    try:
+        result = await discord_manager.apply(load_initial_settings())
+        if result.get("ok"):
+            logger.info("Discord bot started" if result["running"]
+                        else "Discord disabled (no token)")
+        else:
+            logger.warning(f"Discord not started: {result.get('error')}")
+    except Exception as e:
+        logger.error(f"Failed to start Discord bot: {e}", exc_info=True)
+
     try:
         await connect_ib(ib, state)
         ib.error_handler = make_ib_error_handler(state, broadcast_fn)
@@ -156,20 +173,6 @@ async def lifespan(_app):
 
         state.background_tasks.append(asyncio.create_task(chain_stream_loop(ib, state, broadcast_fn)))
         logger.info("All background tasks started")
-
-        # Discord bot (in-process, on the same loop). Owned by the manager so
-        # IB reconnects (which cancel state.background_tasks) never kill it.
-        global discord_manager
-        discord_manager = DiscordSettingsManager(ib, state)
-        try:
-            result = await discord_manager.apply(load_initial_settings())
-            if result.get("ok"):
-                logger.info("Discord bot started" if result["running"]
-                            else "Discord disabled (no token)")
-            else:
-                logger.warning(f"Discord not started: {result.get('error')}")
-        except Exception as e:
-            logger.error(f"Failed to start Discord bot: {e}", exc_info=True)
 
     except Exception as e:
         logger.error(f"Startup failed: {e}", exc_info=True)
@@ -335,6 +338,9 @@ class IbSettingsIn(BaseModel):
 async def get_discord_settings(request: Request):
     if not _is_localhost(request):
         raise HTTPException(status_code=403, detail="Localhost only")
+    if discord_manager is None:
+        raise HTTPException(status_code=503,
+                            detail="Discord settings unavailable (server startup incomplete)")
     s = discord_manager.settings
     return {
         "token_set": bool(s.token),
@@ -351,6 +357,9 @@ async def get_discord_settings(request: Request):
 async def post_discord_settings(body: DiscordSettingsIn, request: Request):
     if not _is_localhost(request):
         raise HTTPException(status_code=403, detail="Localhost only")
+    if discord_manager is None:
+        raise HTTPException(status_code=503,
+                            detail="Discord settings unavailable (server startup incomplete)")
     cur = discord_manager.settings
     ids = config.parse_user_ids(body.allowed_user_ids)
     if body.allowed_user_ids.strip() and not ids:

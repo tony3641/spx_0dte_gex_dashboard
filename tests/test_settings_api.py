@@ -71,6 +71,20 @@ def test_settings_403_for_remote(monkeypatch):
 
 
 # ---- discord endpoints -----------------------------------------------------
+def test_discord_settings_503_when_manager_none(monkeypatch, ib_state):
+    # Degraded boot (IB failure leaves the manager unconstructed): the Discord
+    # settings endpoints must answer 503, not crash with AttributeError; the
+    # IB endpoints keep working.
+    monkeypatch.setattr(server, "discord_manager", None)
+    with pytest.raises(server.HTTPException) as ei:
+        _run(server.get_discord_settings(_req()))
+    assert ei.value.status_code == 503
+    with pytest.raises(server.HTTPException) as ei:
+        _run(server.post_discord_settings(server.DiscordSettingsIn(token="x"), _req()))
+    assert ei.value.status_code == 503
+    assert _run(server.get_ib_settings(_req())) == {"port": 7497, "connected": True}
+
+
 def test_get_discord_masks_token(monkeypatch):
     calls = []
     m = _manager(monkeypatch, calls)
