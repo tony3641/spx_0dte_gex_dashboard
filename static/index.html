@@ -456,6 +456,17 @@
                     <button class="order-modal-confirm" id="setIbApplyBtn" onclick="applyIbSettings()">Apply Port</button>
                 </div>
             </div>
+
+            <div class="settings-section">
+                <div class="settings-section-title">Watchlists</div>
+                <div id="watchlistEditor"></div>
+                <button type="button" class="order-modal-cancel" id="watchlistNewBtn" onclick="addNewWatchlist()">+ New watchlist</button>
+                <div class="settings-result" id="setWatchlistResult"></div>
+                <div class="order-modal-footer">
+                    <button class="order-modal-cancel" onclick="closeSettings()">Cancel</button>
+                    <button class="order-modal-confirm" id="setWatchlistSaveBtn" onclick="saveWatchlists()">Save Watchlists</button>
+                </div>
+            </div>
         </div>
     </div>
 
