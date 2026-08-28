@@ -406,6 +406,11 @@ class DiscordBot:
             await self._respond(interaction, place_refusal, {"name": name, "index": index})
         names.append("place")
 
+        @tb.command(name="watchlist", description="Watchlist quotes")
+        async def watchlist_cmd(interaction: discord.Interaction, name: str = None):
+            await self._handle_watchlist(interaction, name)
+        names.append("watchlist")
+
         @self.bot.event
         async def on_ready():
             await tb.sync()
@@ -606,6 +611,42 @@ class DiscordBot:
                 await interaction.response.send_message(text, ephemeral=True)
             except Exception:
                 pass
+
+    async def _handle_watchlist(self, interaction, name=None):
+        roles = getattr(interaction.user, "roles", None) or []
+        if not is_authorized(interaction.user.id, self.allowed_user_ids,
+                             self.allowed_role, [r.name for r in roles], [r.id for r in roles]):
+            await interaction.response.send_message("Not authorized.", ephemeral=True)
+            return
+        view = watchlist_view(self.state, name)
+        if not view.get("ok"):
+            await interaction.response.send_message(f"⚠️ {view.get('error')}", ephemeral=False)
+            return
+        groups = view.get("groups") or []
+        if not groups:
+            await interaction.response.send_message(view.get("note", "No symbols."), ephemeral=False)
+            return
+        if self.ib is None or not self.ib.isConnected():
+            await interaction.response.send_message("⚠️ IB not connected — quotes unavailable.", ephemeral=False)
+            return
+        from watchlist_store import WatchlistEntry
+        flat = []
+        contracts = []
+        for g in groups:
+            for e in g["entries"]:
+                entry = WatchlistEntry.from_dict(e)
+                flat.append((g["name"], entry))
+                contracts.append(_watchlist_contract(entry))
+        try:
+            streams = await self.ib.fetch_snapshot(contracts)
+        except Exception as e:
+            logger.error(f"watchlist fetch_snapshot failed: {e}")
+            await interaction.response.send_message("⚠️ Failed to fetch quotes.", ephemeral=False)
+            return
+        rows = [(gname, entry.display_name or entry.symbol, _quote_from_stream(s))
+                for (gname, entry), s in zip(flat, streams)]
+        text = _fmt_watchlist(rows, show_list=(name is None))
+        await interaction.response.send_message(text, ephemeral=False)
 
     @property
     def command_names(self):
