@@ -263,6 +263,29 @@ class _LiquidateButton(discord.ui.Button):
         await self._handler(interaction, self._poskey)
 
 
+class _ArmButton(discord.ui.Button):
+    """A clickable Arm button bound to one strategy (by name, for reorder safety).
+
+    The label carries the table row index; the object holds the strategy name so
+    clicking arms the right one even if the list order changed since render.
+    """
+
+    def __init__(self, name, index, handler):
+        super().__init__(style=discord.ButtonStyle.success, label=f"Arm {index}",
+                         custom_id=f"arm-{_slug(name)}")
+        self._name = name
+        self._handler = handler
+
+    async def callback(self, interaction):
+        await self._handler(interaction, self._name)
+
+
+def _slug(text) -> str:
+    """Discord-safe token ([] A-Z a-z 0-9 _ - only) for a custom_id."""
+    import re
+    return re.sub(r"[^A-Za-z0-9_-]", "-", str(text or ""))
+
+
 class DiscordBot:
     """Thin discord.py wrapper around the command logic in this module.
 
@@ -470,7 +493,20 @@ class DiscordBot:
         """Return a discord.ui.View (buttons) for a command result, or None."""
         if name == "positions":
             return self._build_positions_view(result)
+        if name == "strategy" and isinstance(result, dict) and "strategies" in result:
+            return self._build_strategies_view(result)
         return None
+
+    def _build_strategies_view(self, result):
+        """One Arm button per strategy (list form only), matching the table # col."""
+        strategies = result.get("strategies") or []
+        view = discord.ui.View(timeout=300)
+        for i, s in enumerate(strategies, start=1):
+            name = s.get("name") or ""
+            if not name:
+                continue
+            view.add_item(_ArmButton(name, i, self._handle_arm))
+        return view if view.children else None
 
     def _build_positions_view(self, result):
         """One Liquidate button per liquidatable position, in row order.
@@ -521,6 +557,31 @@ class DiscordBot:
             return False, f"Liquidation failed: {data.get('message', 'Unknown error')}"
         sym = (pos.get("contract") or {}).get("symbol", "")
         return True, f"{sym} liquidation {status.lower()}"
+
+    async def _handle_arm(self, interaction, name):
+        """Arm button callback: authorize, defer, arm the strategy, follow up."""
+        roles = getattr(interaction.user, "roles", None) or []
+        if not is_authorized(interaction.user.id, self.allowed_user_ids,
+                             self.allowed_role, [r.name for r in roles],
+                             [r.id for r in roles]):
+            await interaction.response.send_message("Not authorized.", ephemeral=True)
+            return
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception:
+            pass
+        result = arm_strategy(self.state, name)
+        text = _fmt_action("arm", result)
+        ok = result.get("ok", False)
+        send = text if ok else f"⚠️ {text}"
+        try:
+            await interaction.followup.send(send, ephemeral=True)
+        except Exception as e:
+            logger.error(f"arm followup failed: {e}")
+            try:
+                await interaction.response.send_message(send, ephemeral=True)
+            except Exception:
+                pass
 
     async def _handle_liquidate(self, interaction, poskey):
         """Button callback: authorize, defer, place the close order, follow up."""
@@ -589,6 +650,23 @@ def _pct(x) -> str:
 
 def _badge(on) -> str:
     return f"{'🟢' if on else '⚫'} {'ON' if on else 'OFF'}"
+
+
+def _flag(on) -> str:
+    """Compact ON/OFF for use inside a monospace table cell.
+
+    Unlike ``_badge`` (which prefixes a 2-column emoji and overflows fixed-width
+    cells), this stays a predictable 3 chars so columns never wrap.
+    """
+    return "ON" if on else "OFF"
+
+
+def _trunc(text, max_len) -> str:
+    """Truncate to ``max_len`` chars, adding '…' when cut (keeps tables in width)."""
+    text = str(text or "")
+    if len(text) <= max_len:
+        return text
+    return text[:max_len - 1].rstrip() + "…"
 
 
 def _num_cell(x) -> str:
@@ -740,10 +818,13 @@ def _fmt_strategy(result) -> str:
     strategies = result.get("strategies") or []
     kill = result.get("kill_switch", False)
     lines = [f"🛑 Kill-Switch: {_badge(kill)}   📊 {len(strategies)} strategies"]
-    rows = [[s.get("name", ""), s.get("direction", ""),
-             _badge(s.get("armed", False)), _badge(s.get("auto_execute", False))] for s in strategies]
+    # Compact flags + truncated names keep the table inside Discord's code block
+    # width; wide emoji badges overflow fixed-width cells (see _flag/_trunc).
+    rows = [[i, _trunc(s.get("name", ""), 18), s.get("direction", ""),
+             _flag(s.get("armed", False)), _flag(s.get("auto_execute", False))]
+            for i, s in enumerate(strategies, start=1)]
     if rows:
-        lines.append(_fence(_table(["name", "direction", "armed", "auto"], rows)))
+        lines.append(_fence(_table(["#", "name", "direction", "armed", "auto"], rows)))
     return "\n".join(lines)
 
 
@@ -847,44 +928,54 @@ def _run_days_line(days) -> str:
     return "[ " + " | ".join(parts) + " ]"
 
 
-def _fmt_account(result) -> str:
-    summary = result.get("summary") or {}
-    positions = result.get("positions") or []
-    cash = summary.get("TotalCashValue")
-    excess = summary.get("ExcessLiquidity")
-    un = summary.get("UnrealizedPnL")
-    re = summary.get("RealizedPnL")
-    return (f"💰 Net Liq: **{_money(summary.get('NetLiquidation'))}**  "
-            f"Cash: **{_money(cash)}**  Excess: **{_money(excess)}**\n"
-            f"Buying Power: **{_money(summary.get('BuyingPower'))}**  "
-            f"Unrealized PnL: **{_money(un)}**  Realized PnL: **{_money(re)}**\n"
-            f"📈 {len(positions)} position{'s' if len(positions) != 1 else ''}"
-            f"   {len(result.get('executions') or [])} executions")
-
-
-def _fmt_orders(result) -> str:
-    orders = result.get("orders") or []
-    headers = ["id", "action", "qty", "status", "type"]
-    rows = [[o.get("orderId", ""), o.get("action", ""), o.get("totalQuantity", ""),
-             o.get("status", ""), o.get("orderType", "")] for o in orders]
-    block = _fence(_table(headers, rows)) if rows else "none"
-    count = result.get("count", len(orders))
-    return f"📦 {count} open order{'s' if count != 1 else ''}\n{block}"
-
-
-def _fmt_positions(result) -> str:
-    positions = result.get("positions") or []
-    # A `#` index column so each row maps to the matching "Liquidate #n" button
-    # below (a code-block cell can't be a clickable order link).
+def _positions_table(positions) -> str:
+    """Fenced table for a list of position dicts (shared by /positions and /account)."""
     headers = ["#", "contract", "qty", "avg cost", "unrlzd pnl"]
     rows = []
     for i, p in enumerate(positions, start=1):
         c = p.get("contract") or {}
         rows.append([i, _opt_name(c), p.get("position"),
                      _money(p.get("averageCost")), _money(p.get("unrealizedPNL"))])
-    block = _fence(_table(headers, rows)) if rows else "none"
+    return _fence(_table(headers, rows)) if rows else "none"
+
+
+def _orders_table(orders) -> str:
+    """Fenced table for a list of open orders (shared by /orders and /account)."""
+    headers = ["id", "action", "qty", "status", "type"]
+    rows = [[o.get("orderId", ""), o.get("action", ""), o.get("totalQuantity", ""),
+             o.get("status", ""), o.get("orderType", "")] for o in orders]
+    return _fence(_table(headers, rows)) if rows else "none"
+
+
+def _fmt_account(result) -> str:
+    summary = result.get("summary") or {}
+    positions = result.get("positions") or []
+    orders = result.get("orders") or []
+    # '—' when an account metric isn't reported yet (e.g. right after connect).
+    mv = lambda x: _money(x) or "—"
+    blocks = [
+        f"💰 Net Liq: **{mv(summary.get('NetLiquidation'))}**  Cash: **{mv(summary.get('TotalCashValue'))}**  "
+        f"Excess: **{mv(summary.get('ExcessLiquidity'))}**\n"
+        f"Buying Power: **{mv(summary.get('BuyingPower'))}**  Unrealized PnL: **{mv(summary.get('UnrealizedPnL'))}**  "
+        f"Realized PnL: **{mv(summary.get('RealizedPnL'))}**",
+    ]
+    if positions:
+        blocks.append(f"📈 Positions ({len(positions)})\n{_positions_table(positions)}")
+    if orders:
+        blocks.append(f"📦 Open Orders ({len(orders)})\n{_orders_table(orders)}")
+    return "\n\n".join(blocks)
+
+
+def _fmt_orders(result) -> str:
+    orders = result.get("orders") or []
+    count = result.get("count", len(orders))
+    return f"📦 {count} open order{'s' if count != 1 else ''}\n{_orders_table(orders)}"
+
+
+def _fmt_positions(result) -> str:
+    positions = result.get("positions") or []
     count = result.get("count", len(positions))
-    return f"💼 {count} position{'s' if count != 1 else ''}\n{block}"
+    return f"💼 {count} position{'s' if count != 1 else ''}\n{_positions_table(positions)}"
 
 
 def _fmt_alert(etype, data) -> str:

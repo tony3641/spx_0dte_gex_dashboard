@@ -105,3 +105,92 @@ def test_positions_view_builds_button_per_liquidatable():
 def test_positions_view_empty_returns_none():
     bot = _bot(_state())
     assert bot._build_positions_view({"positions": []}) is None
+
+
+# ---------------------------------------------------------------------------
+# /strategy list -> Arm buttons (same index pattern as positions)
+# ---------------------------------------------------------------------------
+def _strat_state():
+    from strategy_models import Strategy, Condition
+    state = create_app_state()
+    state.strategies["Main"] = Strategy(
+        name="Main", direction="bull_put",
+        conditions=[Condition(kind="short_delta", params={"min": 0.1, "max": 0.4})])
+    state.strategies["Aux"] = Strategy(
+        name="Aux", direction="bear_call",
+        conditions=[Condition(kind="credit", params={"min": 0.2})])
+    return state
+
+
+def _strat_list_result(state):
+    return {"ok": True,
+            "strategies": [s.to_dict() for s in state.strategies.values()],
+            "kill_switch": False}
+
+
+def test_strategy_list_builds_arm_buttons():
+    state = _strat_state()
+    bot = _bot(state)
+    view = bot._build_view("strategy", _strat_list_result(state))
+    assert view is not None
+    assert len(view.children) == 2
+    assert view.children[0].label == "Arm 1"
+    assert view.children[1].label == "Arm 2"
+    assert view.children[0].custom_id.startswith("arm-")
+
+
+def test_strategy_detail_has_no_arm_buttons():
+    state = _strat_state()
+    bot = _bot(state)
+    detail = {"ok": True, "name": "Main", "strategy": state.strategies["Main"].to_dict()}
+    assert bot._build_view("strategy", detail) is None
+
+
+def test_strategy_list_table_has_index_column():
+    from discord_bot import strategies_view, _fmt_strategy
+    state = _strat_state()
+    out = _fmt_strategy(strategies_view(state))
+    assert "#" in out
+    assert "Main" in out and "Aux" in out
+
+
+class _FakeUser:
+    def __init__(self, uid):
+        self.id = uid
+        self.roles = []
+
+
+class _FakeResponse:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, content=None, **kwargs):
+        self.sent.append(content)
+
+    async def defer(self, **kwargs):
+        pass
+
+
+class _FakeFollowup:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, content=None, **kwargs):
+        self.sent.append(content)
+
+
+class _FakeInteraction:
+    def __init__(self, uid=1):
+        self.user = _FakeUser(uid)
+        self.response = _FakeResponse()
+        self.followup = _FakeFollowup()
+
+
+def test_handle_arm_arms_strategy_and_responds():
+    state = _strat_state()
+    bot = _bot(state)
+    inter = _FakeInteraction(uid=1)
+    asyncio.run(bot._handle_arm(inter, "Main"))
+    assert state.strategies["Main"].armed is True
+    assert state.strategies["Aux"].armed is False
+    assert inter.followup.sent, "expected a follow-up message"

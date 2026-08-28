@@ -9,6 +9,7 @@ The bind: each formatter must render the *view* dict as a readable message,
 not dump the raw structure. These tests assert the human-facing output.
 """
 
+from app_state import create_app_state
 from discord_bot import (
     _table,
     _money,
@@ -27,6 +28,7 @@ from discord_bot import (
     _liquidation_payload,
     _liquidatable,
     _embed_color,
+    strategies_view,
 )
 
 
@@ -78,7 +80,12 @@ def _account_result():
     return {"summary": {"NetLiquidation": 100000.0, "BuyingPower": 50000.0,
                         "TotalCashValue": 40000.0, "ExcessLiquidity": 25000.0,
                         "UnrealizedPnL": -500.0, "RealizedPnL": 1200.0},
-            "positions": [{"contract": {"symbol": "SPX"}, "position": -1}],
+            "positions": [{"contract": {"symbol": "SPX", "localSymbol": "SPXW",
+                                        "secType": "OPT", "expiry": "20260626",
+                                        "strike": 7700.0, "right": "C"},
+                           "position": -1, "averageCost": 1.85, "unrealizedPNL": -40.0}],
+            "orders": [{"orderId": 1, "status": "Submitted", "action": "BUY",
+                        "totalQuantity": 3}],
             "executions": []}
 
 
@@ -178,6 +185,25 @@ def test_strategy_detail_shows_summary_and_conditions():
     assert "15,000" in out          # budget (thousands-separated)
 
 
+def test_strategy_list_table_no_emoji_spill():
+    from strategy_models import Strategy, Condition
+    state = create_app_state()
+    state.strategies["Sub_Second-wave_loss_scenario"] = Strategy(
+        name="Sub_Second-wave_loss_scenario", direction="bull_put",
+        conditions=[Condition(kind="credit", params={"min": 0.2})])
+    state.strategies["Main"] = Strategy(
+        name="Main", direction="bear_call",
+        conditions=[Condition(kind="short_delta", params={"min": 0.1, "max": 0.4})])
+    state.strategies["Main"].armed = True
+    out = _fmt_strategy(strategies_view(state))
+    # armed/auto column cells are compact ON/OFF text — no wide emoji overflowing cells
+    assert out.count("🟢") == 0
+    assert out.count("⚫") <= 1      # only the kill-switch badge line, not per-row cells
+    # over-long names are truncated so the table fits Discord's code-block width
+    assert "Sub_Second-wave_loss_scenario" not in out
+    assert "…" in out
+
+
 def test_strategy_run_days_on_one_line_with_bold_selected():
     line = _run_days_line([0, 1, 2, 3, 4])   # all weekdays
     assert "Mon" in line and "Fri" in line
@@ -212,7 +238,29 @@ def test_account_shows_summary_and_count_not_raw_list():
     out = _fmt_account(_account_result())
     assert "100,000.00" in out
     assert "Net Liq" in out
-    assert "1 position" in out
+    assert "Positions (1)" in out
+
+
+def test_account_shows_positions_table_when_present():
+    out = _fmt_account(_account_result())
+    assert "SPX Jun26 7700 CALL" in out
+    # rendered as a table, not a raw struct dump
+    assert "averageCost:" not in out
+    assert "secType:" not in out
+
+
+def test_account_shows_open_orders_when_present():
+    out = _fmt_account(_account_result())
+    assert "Open Orders" in out
+    assert "BUY" in out and "Submitted" in out
+
+
+def test_account_omits_positions_and_orders_when_empty():
+    r = {"summary": {"NetLiquidation": 100.0},
+         "positions": [], "orders": [], "executions": []}
+    out = _fmt_account(r)
+    assert "Positions" not in out
+    assert "Orders" not in out
 
 
 def test_account_shows_cash_and_excess_margin():
