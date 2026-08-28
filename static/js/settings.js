@@ -42,8 +42,8 @@
             document.getElementById('setDiscordResult').textContent = '';
             document.getElementById('setIbResult').textContent = '';
             document.getElementById('setWatchlistResult').textContent = '';
-            await loadWatchlists();          // self-contained; own error handling
-            settingsLoaded = true;
+            const wlOk = await loadWatchlists();   // self-contained; own error handling
+            settingsLoaded = wlOk;                 // retry the whole load on next open if watchlists failed
         } catch (e) {
             document.getElementById('setDiscordResult').textContent =
                 'Failed to load settings: ' + e.message;
@@ -126,6 +126,7 @@
     // Config-only editor. No live quotes are fetched/rendered here; the state is
     // a full copy of GET /api/watchlist and Save POSTs the ENTIRE set back.
     let watchlistsState = [];
+    let watchlistsLoadFailed = false;   // true => Save is disabled (full-replace would wipe data)
 
     async function loadWatchlists() {
         try {
@@ -141,17 +142,40 @@
                     display_name: e.display_name || '',
                 })),
             }));
+            watchlistsLoadFailed = false;
+            setWatchlistSaveEnabled(true);
             setSettingsResult('setWatchlistResult', '', true);
             renderWatchlistEditor();
+            return true;
         } catch (e) {
-            setSettingsResult('setWatchlistResult', 'Failed to load watchlists: ' + e.message, false);
+            watchlistsLoadFailed = true;
+            setWatchlistSaveEnabled(false);
+            setSettingsResult('setWatchlistResult',
+                'Failed to load watchlists — Save disabled: ' + e.message, false);
             renderWatchlistEditor();
+            return false;
         }
+    }
+
+    function setWatchlistSaveEnabled(enabled) {
+        const btn = document.getElementById('setWatchlistSaveBtn');
+        btn.disabled = !enabled;
+        // No .disabled class exists in the theme; reflect state via attributes.
+        btn.style.opacity = enabled ? '' : '0.5';
+        btn.style.cursor = enabled ? '' : 'not-allowed';
     }
 
     function renderWatchlistEditor() {
         const container = document.getElementById('watchlistEditor');
         container.textContent = '';
+        if (watchlistsLoadFailed) {
+            const hint = document.createElement('div');
+            hint.className = 'settings-result err';
+            hint.textContent = 'Watchlists could not be loaded — Save is disabled. ' +
+                'Close and reopen Settings to retry.';
+            container.appendChild(hint);
+            return;
+        }
         if (watchlistsState.length === 0) {
             const hint = document.createElement('div');
             hint.className = 'settings-status off';
@@ -323,6 +347,11 @@
     }
 
     async function saveWatchlists() {
+        if (watchlistsLoadFailed) {
+            setSettingsResult('setWatchlistResult',
+                'Save disabled: watchlists failed to load. Close and reopen Settings to retry.', false);
+            return;
+        }
         const btn = document.getElementById('setWatchlistSaveBtn');
         const payload = {
             watchlists: watchlistsState.map(w => ({
