@@ -9,6 +9,7 @@ from typing import List, Optional, Set
 
 import config
 from account_manager import build_account_payload
+from ibapi.contract import Contract
 from market_hours import market_status, get_expiration_display
 from strategy_engine import (build_candidate_views, reset_strategy_runtime)
 
@@ -926,6 +927,82 @@ def _run_days_line(days) -> str:
         cell = f"**{label}**" if i in selected else label
         parts.append(cell)
     return "[ " + " | ".join(parts) + " ]"
+
+
+def _watchlist_contract(entry) -> Contract:
+    c = Contract()
+    c.symbol = entry.symbol
+    c.secType = entry.sec_type
+    c.exchange = entry.exchange or "SMART"
+    c.currency = "USD"
+    return c
+
+
+def _num(x):
+    if x in (None, -1):
+        return None
+    try:
+        f = float(x)
+        return f if f > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _quote_from_stream(s) -> dict:
+    bid, ask = _num(s.bid), _num(s.ask)
+    last, close = _num(s.last), _num(s.close)
+    if last is not None and last > 0:
+        price = last
+    elif (bid is not None and bid > 0) or (ask is not None and ask > 0):
+        price = ((bid or 0) + (ask or 0)) / 2
+    elif close is not None and close > 0:
+        price = close
+    else:
+        return {"price": None, "chg": None, "chg_pct": None}
+    if close is None or close <= 0:
+        return {"price": price, "chg": None, "chg_pct": None}
+    chg = price - close
+    return {"price": price, "chg": chg, "chg_pct": (chg / close) * 100}
+
+
+def _signed(x) -> str:
+    if x is None:
+        return "—"
+    try:
+        return f"{float(x):+,.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_watchlist(rows, show_list=True) -> str:
+    """rows: list of (watchlist_name, symbol_label, quote). quote = {price, chg, chg_pct}."""
+    if not rows:
+        return _fence("No symbols.")
+    body = []
+    for gname, label, q in rows:
+        row = [_trunc(label, 12), _money(q.get("price")) or "—",
+               _signed(q.get("chg")), _signed(q.get("chg_pct"))]
+        if show_list:
+            row.insert(0, _trunc(gname, 8))
+        body.append(row)
+    headers = (["list", "name", "price", "chg", "chg%"] if show_list
+               else ["name", "price", "chg", "chg%"])
+    return _fence(_table(headers, body))
+
+
+def watchlist_view(state, name=None) -> dict:
+    store = getattr(state, "watchlist_store", None)
+    if store is None:
+        return {"ok": False, "error": "Watchlist store not available"}
+    if name:
+        w = store.get(name)
+        if w is None:
+            return {"ok": False, "error": f"No watchlist named '{name}'"}
+        return {"ok": True, "groups": [{"name": w.name, "entries": [e.to_dict() for e in w.entries]}]}
+    groups = [{"name": w.name, "entries": [e.to_dict() for e in w.entries]} for w in store.all()]
+    if not groups:
+        return {"ok": True, "groups": [], "note": "No watchlists yet — add symbols in the dashboard settings."}
+    return {"ok": True, "groups": groups}
 
 
 def _positions_table(positions) -> str:
