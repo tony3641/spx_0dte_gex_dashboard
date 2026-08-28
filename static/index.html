@@ -14,6 +14,7 @@
     <link rel="stylesheet" href="/static/css/order-entry.css">
     <link rel="stylesheet" href="/static/css/strategies.css">
     <link rel="stylesheet" href="/static/css/logs.css">
+    <link rel="stylesheet" href="/static/css/settings.css">
     <link rel="stylesheet" href="/static/css/mobile.css">
 </head>
 <body>
@@ -21,7 +22,7 @@
     <div class="header">
         <h1><span>SPX</span> 0DTE GEX Dashboard</h1>
         <div class="status-bar">
-            <div class="status-item clickable" id="connStatusItem" onclick="promptReconnectIb()" title="Click to reconnect IB on a custom port">
+            <div class="status-item" id="connStatusItem">
                 <span class="dot" id="connDot"></span>
                 <span class="status-value" id="connStatus">Connecting...</span>
             </div>
@@ -37,6 +38,7 @@
                 <span class="status-label">Last GEX:</span>
                 <span class="status-value" id="lastGexUpdate">-</span>
             </div>
+            <button class="settings-btn" id="settingsBtn" onclick="openSettings()" title="Settings">&#9881;</button>
         </div>
     </div>
 
@@ -404,6 +406,59 @@
     <!-- Order status toast -->
     <div class="order-toast hidden" id="orderToast"></div>
 
+    <!-- Settings Modal -->
+    <div class="order-modal-backdrop hidden" id="settingsModalBackdrop">
+        <div class="order-modal settings-modal">
+            <div class="order-modal-title">Settings</div>
+
+            <div class="settings-section">
+                <div class="settings-section-title">Discord</div>
+                <label class="settings-field">
+                    <span>Bot token</span>
+                    <input type="password" id="setDiscordToken" autocomplete="off" placeholder="Not set">
+                </label>
+                <label class="settings-field">
+                    <span>Server (guild) ID</span>
+                    <input type="text" id="setDiscordGuildId" autocomplete="off">
+                </label>
+                <label class="settings-field">
+                    <span>Alert channel ID</span>
+                    <input type="text" id="setDiscordChannelId" autocomplete="off">
+                </label>
+                <label class="settings-field">
+                    <span>Allowed user IDs (comma-separated)</span>
+                    <input type="text" id="setDiscordUserIds" autocomplete="off">
+                </label>
+                <label class="settings-field">
+                    <span>Allowed role (name or ID)</span>
+                    <input type="text" id="setDiscordRole" autocomplete="off">
+                </label>
+                <label class="settings-check">
+                    <input type="checkbox" id="setDiscordClearToken"> Clear saved token (disables Discord)
+                </label>
+                <div class="settings-status off" id="setDiscordStatus">-</div>
+                <div class="settings-result" id="setDiscordResult"></div>
+                <div class="order-modal-footer">
+                    <button class="order-modal-cancel" onclick="closeSettings()">Cancel</button>
+                    <button class="order-modal-confirm" id="setDiscordApplyBtn" onclick="applyDiscordSettings()">Apply Discord</button>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <div class="settings-section-title">IB Gateway</div>
+                <label class="settings-field">
+                    <span>Port</span>
+                    <input type="number" id="setIbPort" min="1" max="65535">
+                </label>
+                <div class="settings-result" id="setIbResult"></div>
+                <div class="order-modal-footer">
+                    <button class="order-modal-cancel" onclick="closeSettings()">Cancel</button>
+                    <button class="order-modal-confirm" id="setIbApplyBtn" onclick="applyIbSettings()">Apply Port</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Loading overlay -->
     <div class="overlay" id="loadingOverlay">
         <div class="spinner"></div>
@@ -422,5 +477,6 @@
     <script src="/static/js/strategy-ui.js"></script>
     <script src="/static/js/log-console.js"></script>
     <script src="/static/js/main.js"></script>
+    <script src="/static/js/settings.js"></script>
 </body>
 </html>
