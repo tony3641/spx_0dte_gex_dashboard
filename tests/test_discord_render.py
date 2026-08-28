@@ -1,0 +1,274 @@
+"""Pure formatting tests for the Discord message renderers.
+
+These exercise the string/color layer only (the part that turns a ``*_view``
+dict into readable Discord text). No live Discord gateway is needed and no
+``discord.Embed`` is required — the functions under test return plain strings
+and color ints.
+
+The bind: each formatter must render the *view* dict as a readable message,
+not dump the raw structure. These tests assert the human-facing output.
+"""
+
+from discord_bot import (
+    _table,
+    _money,
+    _pct,
+    _badge,
+    _fmt_candidates,
+    _fmt_strategy,
+    _fmt_status,
+    _fmt_account,
+    _fmt_orders,
+    _fmt_positions,
+    _fmt_action,
+    _fmt_alert,
+    _embed_color,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures — hand-built view dicts (never reuse the renderer's own logic)
+# ---------------------------------------------------------------------------
+def _cand_rows():
+    return [
+        {"index": 0, "direction": "bull_put", "short_strike": 7650.0,
+         "long_strike": 7600.0, "right": "P", "credit_mid": 2.5,
+         "short_delta": -0.10, "width_points": 50.0, "size": 4,
+         "total_credit": 10.0, "total_margin": 20000.0},
+        {"index": 1, "direction": "bull_put", "short_strike": 7650.0,
+         "long_strike": 7605.0, "right": "P", "credit_mid": 1.7,
+         "short_delta": -0.20, "width_points": 45.0, "size": 2,
+         "total_credit": 3.4, "total_margin": 8000.0},
+    ]
+
+
+def _cand_result():
+    return {"ok": True, "name": "New 3", "armed": True, "auto_execute": True,
+            "count": 2, "rows": _cand_rows()}
+
+
+def _empty_cand_result():
+    return {"ok": True, "name": "New 3", "armed": False, "auto_execute": False,
+            "count": 0, "rows": []}
+
+
+def _strategy_result():
+    from strategy_models import Strategy, Condition
+    s = Strategy(
+        name="Main", direction="bull_put", budget=15000.0,
+        conditions=[
+            Condition(kind="short_delta", params={"min": 0.1, "max": 0.4}),
+            Condition(kind="spread_width", params={"min": 50, "max": 200}),
+        ],
+    )
+    return {"ok": True, "name": "Main", "strategy": s.to_dict()}
+
+
+def _status_result():
+    return {"connected": True, "market_status": "RTH",
+            "expiration": "2026-08-28", "data_mode": "live", "gex_mode": "0dte",
+            "spot": 6100.5, "vix": 14.2}
+
+
+def _account_result():
+    return {"summary": {"NetLiquidation": 100000.0, "BuyingPower": 50000.0},
+            "positions": [{"contract": {"symbol": "SPX"}, "position": -1}],
+            "executions": []}
+
+
+def _orders_result():
+    return {"count": 2, "orders": [
+        {"orderId": 1, "status": "Submitted", "action": "BUY", "totalQuantity": 3},
+        {"orderId": 2, "status": "Filled", "action": "SELL", "totalQuantity": 1},
+    ]}
+
+
+def _positions_result():
+    return {"count": 2, "positions": [
+        {"contract": {"symbol": "SPX", "localSymbol": "SPXW"}, "position": -4},
+        {"contract": {"symbol": "SPX", "localSymbol": "SPXW"}, "position": 2},
+    ]}
+
+
+# ---------------------------------------------------------------------------
+# _table
+# ---------------------------------------------------------------------------
+def test_table_emits_header_separator_and_data():
+    out = _table(["name", "score"], [["sam", 95], ["jo", 7]])
+    assert "name" in out
+    assert "score" in out
+    # numeric column is right-aligned so the tens digit lines up
+    assert "95" in out and "7" in out
+    # a header/data separator row of dashes exists
+    assert "---" in out
+
+
+def test_table_empty_rows_still_show_header():
+    out = _table(["a", "b"], [])
+    assert "a" in out and "b" in out
+
+
+# ---------------------------------------------------------------------------
+# Number/badge helpers
+# ---------------------------------------------------------------------------
+def test_money_formats_to_two_places():
+    assert _money(2.5) == "2.50"
+    assert _money(0) == "0.00"
+    assert _money(-1.005) == "-1.00"   # 2 dp, normal rounding
+    assert _money(None) == ""
+
+
+def test_pct_formats_negative_ratio():
+    assert _pct(-0.10) == "-10.0%"
+    assert _pct(0.5) == "50.0%"
+    assert _pct(None) == ""
+
+
+def test_badge_is_emoji_plus_word():
+    assert _badge(True) == "🟢 ON"
+    assert _badge(False) == "⚫ OFF"
+
+
+# ---------------------------------------------------------------------------
+# _fmt_candidates
+# ---------------------------------------------------------------------------
+def test_candidates_is_a_table_not_a_dict_dump():
+    out = _fmt_candidates(_cand_result())
+    assert "```" in out                       # code block
+    assert "**New 3**" in out                 # bold strategy name
+    assert "id" in out and "SELL" in out and "BUY" in out
+    assert "7,650" in out and "7,600" in out
+    assert "2.50" in out                       # credit_mid
+    assert "-10.0%" in out                     # short_delta as pct
+    assert "20,000" in out                     # total_margin (thousands-separated)
+
+
+def test_candidates_empty_returns_clean_message():
+    out = _fmt_candidates(_empty_cand_result())
+    assert "No live candidates" in out
+    assert "New 3" in out
+    assert "ok" not in "ok: True" or "ok: True" not in out   # not a dict dump
+
+
+def test_candidates_uses_strategy_metadata():
+    out = _fmt_candidates(_cand_result())
+    assert "2 rows" in out
+    assert "🟢 ON" in out                      # armed true => ON
+
+
+# ---------------------------------------------------------------------------
+# _fmt_strategy
+# ---------------------------------------------------------------------------
+def test_strategy_detail_shows_summary_and_conditions():
+    out = _fmt_strategy(_strategy_result())
+    assert "**Main**" in out
+    assert "Bull Put" in out or "bull_put" in out
+    assert "short_delta" in out
+    assert "spread_width" in out
+    assert "15,000" in out          # budget (thousands-separated)
+
+
+# ---------------------------------------------------------------------------
+# _fmt_status
+# ---------------------------------------------------------------------------
+def test_status_shows_readable_key_values():
+    out = _fmt_status(_status_result())
+    assert "RTH" in out
+    assert "6,100.50" in out
+    assert "14.2" in out
+
+
+# ---------------------------------------------------------------------------
+# _fmt_account
+# ---------------------------------------------------------------------------
+def test_account_shows_summary_and_count_not_raw_list():
+    out = _fmt_account(_account_result())
+    assert "100,000.00" in out
+    assert "Net Liq" in out
+    assert "1 position" in out
+
+
+# ---------------------------------------------------------------------------
+# _fmt_orders
+# ---------------------------------------------------------------------------
+def test_orders_shows_count_and_rows():
+    out = _fmt_orders(_orders_result())
+    assert "2 open orders" in out
+    assert "BUY" in out and "SELL" in out
+    assert "Submitted" in out or "Filled" in out
+
+
+# ---------------------------------------------------------------------------
+# _fmt_positions
+# ---------------------------------------------------------------------------
+def test_positions_shows_count_and_contracts():
+    out = _fmt_positions(_positions_result())
+    assert "2 positions" in out
+    assert "SPX" in out
+
+
+# ---------------------------------------------------------------------------
+# _fmt_action (arm/disarm/killswitch/place)
+# ---------------------------------------------------------------------------
+def test_action_arm_renders_armed_badge():
+    out = _fmt_action("arm", {"ok": True, "name": "bp", "armed": True,
+                              "auto_execute": False, "kill_switch": False})
+    assert "**bp**" in out
+    assert "🟢 ON" in out
+
+
+def test_action_killswitch_renders_state():
+    out = _fmt_action("killswitch", {"ok": True, "kill_switch": True})
+    assert "🛑" in out
+    assert "OFF" not in out
+
+
+def test_action_place_refusal_renders_message():
+    out = _fmt_action("place", {"ok": False,
+                                "message": "Order placement is not allowed from Discord. Open the web UI."})
+    assert "web UI" in out
+
+
+# ---------------------------------------------------------------------------
+# _fmt_alert (WebSocket broadcast alerts)
+# ---------------------------------------------------------------------------
+def test_alert_order_status_is_readable_not_dict():
+    out = _fmt_alert("order_status", {"status": "Filled", "orderId": 7})
+    assert "7" in out
+    assert "Filled" in out
+    assert "'orderId'" not in out        # not a raw dict dump
+
+
+def test_alert_connection_transition():
+    out = _fmt_alert("connection", {"connected": True})
+    assert "Connected" in out or "connected" in out
+
+
+def test_alert_kill_switch_uses_symbol():
+    out = _fmt_alert("kill_switch", {"kill_switch": True})
+    assert "🛑" in out
+
+
+def test_alert_exit_reason():
+    out = _fmt_alert("strategy_exit", {"name": "Main", "event": "take_profit"})
+    assert "Main" in out
+    assert "take_profit" in out
+
+
+# ---------------------------------------------------------------------------
+# _embed_color
+# ---------------------------------------------------------------------------
+def test_embed_color_red_on_error():
+    assert _embed_color({"ok": False, "error": "not found"}) == 0xFF4136
+
+
+def test_embed_color_red_when_kill_switch_on():
+    assert _embed_color({"ok": True, "kill_switch": True}) == 0xFF4136
+
+
+def test_embed_color_amber_for_empty_candidates():
+    assert _embed_color(_empty_cand_result()) == 0xFFB347
+
+
+def test_embed_color_green_for_ok_data():
+    assert _embed_color(_cand_result()) == 0x00FF88

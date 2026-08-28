@@ -466,13 +466,334 @@ def make_discord_bot(ib, state, token=None, guild_id=None, channel_id=None,
                       poster=poster)
 
 
+# ---------------------------------------------------------------------------
+# Text formatting helpers (pure, no discord dependency — unit-testable)
+# ---------------------------------------------------------------------------
+def _money(x) -> str:
+    if x is None:
+        return ""
+    try:
+        return f"{float(x):,.2f}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _pct(x) -> str:
+    if x is None:
+        return ""
+    try:
+        return f"{float(x) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _badge(on) -> str:
+    return f"{'🟢' if on else '⚫'} {'ON' if on else 'OFF'}"
+
+
+def _num_cell(x) -> str:
+    """Render a possibly-float numeric cell without trailing .0; '' for None/err.
+
+    Whole numbers get thousands separators (e.g. strike 7650.0 -> '7,650') so
+    margins and strikes read clean in a table; floats keep their decimals.
+    """
+    if x is None:
+        return ""
+    if isinstance(x, float) and x.is_integer():
+        return f"{int(x):,}"
+    if isinstance(x, int):
+        return f"{x:,}"
+    return str(x)
+
+
+def _money_cell(x) -> str:
+    """Two-decimal money cell for table columns; '' for None/err."""
+    if x is None:
+        return ""
+    try:
+        return f"{float(x):.2f}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _table(headers, rows) -> str:
+    """Render an aligned monospace table with a header separator.
+
+    Each column is right-aligned when every non-empty cell is numeric, else
+    left-aligned. Columns are joined by two spaces. Returns the bare table
+    (no code fence); callers wrap it.
+    """
+    headers = list(headers)
+    rows = [list(r) for r in rows]
+    ncols = len(headers)
+    widths = [len(str(h)) for h in headers]
+
+    def _is_num(v) -> bool:
+        if v is None:
+            return False
+        return isinstance(v, (int, float))
+
+    # Column widths from the widest cell; numeric detection per column.
+    numeric = [True] * ncols
+    for row in rows:
+        for i in range(ncols):
+            v = row[i] if i < len(row) else ""
+            widths[i] = max(widths[i], len(_num_cell(v)) if v is not None else 0)
+            if v is not None and not _is_num(v):
+                numeric[i] = False
+    for i in range(ncols):
+        if not headers:
+            break
+
+    def _pad(cell, w, right):
+        cell = _num_cell(cell)
+        return cell.rjust(w) if right else cell.ljust(w)
+
+    lines = ["  ".join(_pad(headers[i], widths[i], numeric[i]) for i in range(ncols))]
+    lines.append("  ".join("-" * w for w in widths))
+    for row in rows:
+        cells = list(row) + [""] * (ncols - len(row))
+        lines.append("  ".join(
+            _pad(cells[i], widths[i], numeric[i]) for i in range(ncols)))
+    return "\n".join(lines)
+
+
+def _fence(text: str) -> str:
+    return f"```{text}```"
+
+
+# ---------------------------------------------------------------------------
+# Per-command formatters: turn a *_view dict into readable Discord text.
+# Each returns a plain str (survives .strip()/substring checks without a bot).
+# ---------------------------------------------------------------------------
+# Cap tables so a long candidate list can't overflow Discord's ~4k description.
+_MAX_TABLE_ROWS = 50
+
+
+def _fmt_candidates(result) -> str:
+    if not result.get("ok", False):
+        return _fmt_error_text(result)
+    rows = result.get("rows") or []
+    name = result.get("name", "")
+    armed = result.get("armed", False)
+    auto = result.get("auto_execute", False)
+    count = result.get("count", len(rows))
+    if not rows:
+        return (f"**{name}**\n"
+                f"{_badge(armed)} armed   {_badge(auto)} auto-execute\n"
+                f"No live candidates. Arm the strategy or wait for market hours to re-run /candidates.")
+    headers = ["id", "dir", "SELL", "BUY", "W", "CRED", "DELTA", "SZ", "TCRED", "MGN"]
+    body = []
+    shown = rows[:_MAX_TABLE_ROWS]
+    for r in shown:
+        body.append([
+            r.get("index", ""),
+            r.get("right", ""),
+            _num_cell(r.get("short_strike")),
+            _num_cell(r.get("long_strike")),
+            _num_cell(r.get("width_points")),
+            _money_cell(r.get("credit_mid")),
+            _pct(r.get("short_delta")),
+            _num_cell(r.get("size")),
+            _money_cell(r.get("total_credit")),
+            _num_cell(r.get("total_margin")),
+        ])
+    tbl = _table(headers, body)
+    note = "" if len(rows) <= _MAX_TABLE_ROWS else f"\n… {len(rows) - len(shown)} more (truncated)"
+    return (f"**{name}**   {_badge(armed)} armed   {_badge(auto)} auto-execute   "
+            f"📊 {count} rows\n"
+            f"{_fence(tbl)}{note}\n"
+            f"Confirm entries in the web UI — Discord never places orders.")
+
+
+def _fmt_error_text(result) -> str:
+    msg = result.get("error") or result.get("message") or "Unknown error."
+    return f"🔴 {msg}"
+
+
+def _fmt_strategy(result) -> str:
+    if not result.get("ok", False):
+        return _fmt_error_text(result)
+    if "strategy" in result:
+        s = result["strategy"]
+        conds = s.get("conditions") or []
+        rows = [[c.get("kind", ""), _badge(c.get("enabled", True)), ",".join(
+            f"{k}={v}" for k, v in (c.get("params") or {}).items())]
+            for c in conds]
+        cond_tbl = _table(["condition", "on", "params"], rows) if rows else "none"
+        run_days = s.get("run_days") or []
+        run_str = ",".join(str(d) for d in run_days) if run_days else "-"
+        budget = s.get("budget")
+        width = f"${budget:,.0f}" if isinstance(budget, (int, float)) else "-"
+        exit_rules = s.get("exit_rules") or {}
+        tp = exit_rules.get("take_profit") or {}
+        sl = exit_rules.get("stop_loss") or {}
+        return (
+            f"**{s.get('name', '')}**   {_badge(s.get('armed', False))} armed  "
+            f"{_badge(s.get('auto_execute', False))} auto\n"
+            f"Direction: **{s.get('direction', '')}**   Budget: {width}   Expiry: {s.get('target_expiry', '-')}\n"
+            f"Run days: {run_str}   Trigger: {s.get('trigger_logic', 'any')}\n"
+            f"Exit: TP {tp.get('mode', 'pct_credit')} {tp.get('value', 0)} / "
+            f"SL x{sl.get('multiplier', 1)}  hold_to_expire={exit_rules.get('hold_to_expire', False)}\n"
+            f"Conditions ({len(conds)}):\n{_fence(cond_tbl)}"
+        )
+    strategies = result.get("strategies") or []
+    kill = result.get("kill_switch", False)
+    lines = [f"🛑 Kill-Switch: {_badge(kill)}   📊 {len(strategies)} strategies"]
+    rows = [[s.get("name", ""), s.get("direction", ""),
+             _badge(s.get("armed", False)), _badge(s.get("auto_execute", False))] for s in strategies]
+    if rows:
+        lines.append(_fence(_table(["name", "direction", "armed", "auto"], rows)))
+    return "\n".join(lines)
+
+
+def _fmt_status(result) -> str:
+    vix = result.get("vix")
+    return (f"Market: **{result.get('market_status', '?')}**\n"
+            f"Expiration: {result.get('expiration', '-')}   "
+            f"Data: {result.get('data_mode', '?')}   GEX: {result.get('gex_mode', '?')}\n"
+            f"{'🟢' if result.get('connected') else '🔴'} connected\n"
+            f"SPX: **{_money(result.get('spot'))}**   VIX: **{vix if vix is not None else '-'}**")
+
+
+def _fmt_account(result) -> str:
+    summary = result.get("summary") or {}
+    positions = result.get("positions") or []
+    nl = summary.get("NetLiquidation")
+    bp = summary.get("BuyingPower")
+    return (f"💰 Net Liq: **{_money(nl)}**   Buying Power: **{_money(bp)}**\n"
+            f"📈 {len(positions)} position{'s' if len(positions) != 1 else ''}"
+            f"   {len(result.get('executions') or [])} executions")
+
+
+def _fmt_orders(result) -> str:
+    orders = result.get("orders") or []
+    headers = ["id", "action", "qty", "status", "type"]
+    rows = [[o.get("orderId", ""), o.get("action", ""), o.get("totalQuantity", ""),
+             o.get("status", ""), o.get("orderType", "")] for o in orders]
+    block = _fence(_table(headers, rows)) if rows else "none"
+    count = result.get("count", len(orders))
+    return f"📦 {count} open order{'s' if count != 1 else ''}\n{block}"
+
+
+def _fmt_positions(result) -> str:
+    positions = result.get("positions") or []
+    headers = ["symbol", "qty", "avg_cost"]
+    rows = [[(p.get("contract") or {}).get("symbol", "-"), p.get("position", ""),
+             p.get("avgCost", "")] for p in positions]
+    block = _fence(_table(headers, rows)) if rows else "none"
+    count = result.get("count", len(positions))
+    return f"💼 {count} position{'s' if count != 1 else ''}\n{block}"
+
+
+def _fmt_alert(etype, data) -> str:
+    """Render a WebSocket broadcast alert as a short, readable line."""
+    if not isinstance(data, dict):
+        return str(data)
+    if etype == "order_status":
+        status = data.get("status", "?")
+        oid = data.get("orderId", "")
+        action = data.get("action", "")
+        qty = data.get("totalQuantity", "")
+        sym = (data.get("contract") or {}).get("symbol", "")
+        return " ".join(p for p in (
+            f"📦 Order **{oid}** {status} —", action, f"{qty} {sym}".strip()) if p).rstrip()
+    if etype == "strategy_exit":
+        price = data.get("price")
+        at_price = f" at ${price:,.2f}" if price is not None else ""
+        return (f"🚪 Exit **{data.get('name', '')}** — "
+                f"{data.get('event', 'closed')}{at_price}")
+    if etype == "strategy_trigger":
+        return (f"⚡ Trigger **{data.get('name', '')}** — {data.get('event', 'fired')} "
+                f"({data.get('trigger', '')})")
+    if etype == "connection":
+        on = bool(data.get("connected"))
+        return f"{'🟢' if on else '🔴'} {'Connected' if on else 'Disconnected'}"
+    if etype == "kill_switch":
+        on = bool(data.get("kill_switch"))
+        return f"{'🛑' if on else '▶️'} Kill-Switch: {_badge(on)}"
+    if etype == "ib_error":
+        return (f"⚠️ IB error {data.get('errorCode', '')}: "
+                f"{data.get('message', '')}".rstrip())
+    if etype == "status":
+        return _fmt_status(data)
+    return _fmt(data)
+
+
+def _fmt_action(title, result) -> str:
+    if not result.get("ok", False):
+        return _fmt_error_text(result)
+    if title == "arm":
+        return (f"**{result.get('name', '')}** armed → {_badge(result.get('armed', False))}   "
+                f"auto {_badge(result.get('auto_execute', False))}   "
+                f"budget ${result.get('budget', '-')}")
+    if title == "disarm":
+        return f"**{result.get('name', '')}** disarmed → {_badge(False)}"
+    if title == "killswitch":
+        ks = result.get("kill_switch", False)
+        return f"{'🛑' if ks else '▶️'} Kill-Switch: {_badge(ks)}"
+    if title == "place":
+        return _fmt_error_text(result)
+    return _fmt(result)
+
+
+# ---------------------------------------------------------------------------
+# Embed orchestration: pick a color + formatter by command/event title.
+# ---------------------------------------------------------------------------
+def _embed_color(result) -> int:
+    if not isinstance(result, dict):
+        return 0x00FF88
+    # Error results (ok:False) and a triggered kill-switch are loud red.
+    if result.get("kill_switch"):
+        return 0xFF4136
+    if result.get("ok") is False:
+        return 0xFF4136
+    # Empty candidates: nothing actionable — amber rather than green.
+    if "candidates" in result or "count" in result:
+        if not result.get("rows"):
+            return 0xFFB347
+    return 0x00FF88
+
+
+_FORMATTERS = {
+    "candidates": _fmt_candidates,
+    "strategy": _fmt_strategy,
+    "status": _fmt_status,
+    "account": _fmt_account,
+    "orders": _fmt_orders,
+    "positions": _fmt_positions,
+    "arm": _fmt_action,
+    "disarm": _fmt_action,
+    "killswitch": _fmt_action,
+    "place": _fmt_action,
+    # WebSocket broadcast alerts
+    "order_status": _fmt_alert,
+    "strategy_exit": _fmt_alert,
+    "strategy_trigger": _fmt_alert,
+    "connection": _fmt_alert,
+    "kill_switch": _fmt_alert,
+    "ib_error": _fmt_alert,
+}
+
+
 def _embed(title, result) -> discord.Embed:
-    """Minimal embed builder: title + a text dump of the result dict."""
-    embed = discord.Embed(title=title, color=0x00FF88)
-    if isinstance(result, dict):
+    """Build a readable embed for a command/event result.
+
+    The view functions return data structures (they also feed the web UI); this
+    is the only place they become human text. Unknown titles fall back to the
+    dict dump below.
+    """
+    color = _embed_color(result)
+    formatter = _FORMATTERS.get(title)
+    if formatter is not None and isinstance(result, dict):
+        # _fmt_action and _fmt_alert need the title (command/event) as context.
+        text = formatter(title, result) if formatter in (_fmt_action, _fmt_alert) \
+            else formatter(result)
+    elif isinstance(result, dict):
         text = _fmt(result)
     else:
         text = str(result)
+    embed = discord.Embed(title=title, color=color)
     embed.description = text[:4000]
     return embed
 
