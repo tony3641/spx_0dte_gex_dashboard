@@ -473,13 +473,14 @@ def _build_entry_payload(strategy: Strategy, candidate: Candidate, state, qty=1)
             "limitPrice": round_signed_to_tick(-stop_mag, stop_tick),
         }
 
+    gth = getattr(strategy, "gth", False)
     return {
         "legs": legs,
-        "orderType": "LMT", "tif": "DAY",
+        "orderType": "LMT", "tif": "GTC" if gth else "DAY",
         "comboAction": "BUY",
         "comboLmtPrice": round_signed_to_tick(-abs(candidate.credit_mid), tick),
         "comboQuantity": qty,
-        "outsideRth": False,
+        "outsideRth": bool(gth),
         "stopLoss": payload_stop_loss,
     }
 
@@ -740,7 +741,7 @@ def _tp_target(tp, max_credit: float) -> float:
     return tp.value
 
 
-async def maybe_flatten_at_take_profit(ib, state, candidate, positions, tp) -> bool:
+async def maybe_flatten_at_take_profit(ib, state, candidate, positions, tp, gth=False) -> bool:
     """Close the spread when net PnL across its legs reaches the TP target.
 
     Returns True only when a close order was actually accepted (not on Error),
@@ -776,8 +777,8 @@ async def maybe_flatten_at_take_profit(ib, state, candidate, positions, tp) -> b
          "right": right, "action": "SELL", "qty": 1, "lmtPrice": round(float(long_bid), 2),
          "secType": "OPT", "trading_class": trading_class},
     ]
-    payload = {"legs": legs, "orderType": "LMT", "tif": "DAY", "comboAction": "BUY",
-               "comboLmtPrice": round_signed_to_tick(net, tick), "comboQuantity": 1, "outsideRth": False}
+    payload = {"legs": legs, "orderType": "LMT", "tif": "GTC" if gth else "DAY", "comboAction": "BUY",
+               "comboLmtPrice": round_signed_to_tick(net, tick), "comboQuantity": 1, "outsideRth": bool(gth)}
     resp = await handle_place_order(ib, state, payload, ws=None, refresh_fn=refresh_account_state)
     status = (resp.get("data") or {}).get("status", "")
     return status not in ("Error",)
@@ -801,7 +802,8 @@ async def take_profit_loop(ib, state, broadcast_fn):
                 positions = find_strategy_positions(cand, state)
                 if len(positions) < 2:
                     continue
-                closed = await maybe_flatten_at_take_profit(ib, state, cand, positions, tp)
+                closed = await maybe_flatten_at_take_profit(ib, state, cand, positions, tp,
+                                                            gth=getattr(strat, "gth", False))
                 if closed:
                     rt = get_runtime(state, name)
                     rt.done = True

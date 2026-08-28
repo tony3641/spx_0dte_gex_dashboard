@@ -128,6 +128,7 @@
             short_day_enabled: false,
             run_on_fomc: true,
             run_on_nfp: true,
+            gth: false,
         };
         state.strategies.push(s);
         _selStrategy = s.name;
@@ -211,6 +212,7 @@
             <label class="caps"><input type="checkbox" id="shortDayEnabled" ${s.short_day_enabled ? 'checked' : ''}> Short/half trading day</label>
             <label class="caps"><input type="checkbox" id="runOnFomc" ${s.run_on_fomc ? 'checked' : ''}> Execute on FOMC</label>
             <label class="caps"><input type="checkbox" id="runOnNfp" ${s.run_on_nfp ? 'checked' : ''}> Execute on NFP</label>
+            <label class="caps"><input type="checkbox" id="gthEnabled" ${s.gth ? 'checked' : ''} title="Submit orders (entry, stop-loss, take-profit) with outsideRth=true and tif GTC"> Global Trading Hours (GTH)</label>
             <label class="caps"><input type="checkbox" id="autoExec" ${s.auto_execute ? 'checked' : ''}> Auto-execute</label>
             <button onclick="validateStrategyFromForm()">Validate</button>
             <button onclick="saveStrategyFromForm()">Save</button>`;
@@ -586,6 +588,7 @@
             short_day_enabled: document.getElementById('shortDayEnabled').checked,
             run_on_fomc: document.getElementById('runOnFomc').checked,
             run_on_nfp: document.getElementById('runOnNfp').checked,
+            gth: document.getElementById('gthEnabled').checked,
             parent_name: document.getElementById('isSubsequent') && document.getElementById('isSubsequent').checked
                 ? (document.getElementById('subParent').value || '') : '',
             subsequent_triggers: (s.subsequent_triggers || []).map(t => Object.assign({}, t)),
@@ -724,10 +727,11 @@
             const mag = (c.credit_mid || 0) * s.exit_rules.stop_loss.multiplier;
             stopLoss = { stopPrice: -mag, limitPrice: -mag };
         }
+        const gth = !!(s && s.gth);
         const payload = {
-            legs, orderType: 'LMT', tif: 'DAY', comboAction: 'BUY',
+            legs, orderType: 'LMT', tif: gth ? 'GTC' : 'DAY', comboAction: 'BUY',
             comboLmtPrice: -Math.round((c.credit_mid || 0) * 100) / 100,
-            comboQuantity: size, outsideRth: false, stopLoss,
+            comboQuantity: size, outsideRth: gth, stopLoss,
         };
         if (typeof sendPlaceOrder === 'function') {
             sendPlaceOrder(payload, (resp) => {
