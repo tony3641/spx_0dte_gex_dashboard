@@ -189,7 +189,7 @@ connection badge is display-only now.
 | Variable | Example | Notes |
 |---|---|---|
 | `DISCORD_TOKEN` | `abc...` | Bot token. Presence enables the bot. |
-| `DISCORD_GUILD_ID` | `123456789` | Optional; guild-local slash commands sync instantly. |
+| `DISCORD_GUILD_ID` | `123456789` | Reserved for alerts; slash commands are registered globally (available in any server the bot is in). New global commands can take up to ~1 hour to appear after first sync. |
 | `DISCORD_CHANNEL_ID` | `987654321` | Optional; alert-stream channel. |
 | `DISCORD_ALLOWED_USER_IDS` | `111,222` | Allowed Discord user IDs. |
 | `DISCORD_ALLOWED_ROLE` | `trader` | Optional role name or ID that is also allowed. |

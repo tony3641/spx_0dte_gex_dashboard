@@ -241,6 +241,7 @@ class AlertBridge:
 
 import asyncio
 import discord
+from discord.app_commands import CommandNotFound
 from discord.ext import commands
 
 
@@ -299,85 +300,150 @@ class DiscordBot:
 
     # -- registration --------------------------------------------------------
     def _register_commands(self):
+        # Commands are registered GLOBALLY, not guild-scoped.
+        #
+        # Guild-scoped commands (guilds=[...]) require the interaction's
+        # data['guild_id'] to be present for discord.py's resolver
+        # (_get_app_command_options) to find them. Discord omits guild_id from
+        # the command-data payload, so a guild-scoped command raises
+        # CommandNotFound on every invocation — the bot never runs the command
+        # and Discord shows "The application did not respond". Global commands
+        # live in the global registry, which the resolver checks as a fallback
+        # regardless of guild_id, so they always resolve.
         tb = self.bot.tree
-        g = self.guild_ids
         names = []
 
-        @tb.command(name="status", description="SPX 0DTE dashboard status", guilds=g)
+        @tb.command(name="status", description="SPX 0DTE dashboard status")
         async def status_cmd(interaction: discord.Interaction):
             await self._respond(interaction, status_view, {})
         names.append("status")
 
-        @tb.command(name="account", description="Account summary", guilds=g)
+        @tb.command(name="account", description="Account summary")
         async def account_cmd(interaction: discord.Interaction):
             await self._respond(interaction, account_view, {})
         names.append("account")
 
-        @tb.command(name="positions", description="Portfolio positions", guilds=g)
+        @tb.command(name="positions", description="Portfolio positions")
         async def positions_cmd(interaction: discord.Interaction, filter: str = None):
             await self._respond(interaction, positions_view, {"filter": filter})
         names.append("positions")
 
-        @tb.command(name="orders", description="Open orders", guilds=g)
+        @tb.command(name="orders", description="Open orders")
         async def orders_cmd(interaction: discord.Interaction):
             await self._respond(interaction, orders_view, {})
         names.append("orders")
 
-        @tb.command(name="strategy", description="Strategy list/detail", guilds=g)
+        @tb.command(name="strategy", description="Strategy list/detail")
         async def strategy_cmd(interaction: discord.Interaction, name: str = None):
             await self._respond(interaction, strategies_view, {"name": name})
         names.append("strategy")
 
-        @tb.command(name="candidates", description="Live candidates for a strategy", guilds=g)
+        @tb.command(name="candidates", description="Live candidates for a strategy")
         async def candidates_cmd(interaction: discord.Interaction, name: str):
             await self._respond(interaction, candidates_view, {"name": name})
         names.append("candidates")
 
-        @tb.command(name="arm", description="Arm a strategy", guilds=g)
+        @tb.command(name="arm", description="Arm a strategy")
         async def arm_cmd(interaction: discord.Interaction, name: str):
             await self._respond(interaction, arm_strategy, {"name": name})
         names.append("arm")
 
-        @tb.command(name="disarm", description="Disarm a strategy", guilds=g)
+        @tb.command(name="disarm", description="Disarm a strategy")
         async def disarm_cmd(interaction: discord.Interaction, name: str):
             await self._respond(interaction, disarm_strategy, {"name": name})
         names.append("disarm")
 
-        @tb.command(name="killswitch", description="Toggle the auto-trade kill switch", guilds=g)
+        @tb.command(name="killswitch", description="Toggle the auto-trade kill switch")
         async def killswitch_cmd(interaction: discord.Interaction, on: bool):
             await self._respond(interaction, lambda st: {"ok": True, "kill_switch": set_kill_switch(st, on)}, {})
         names.append("killswitch")
 
-        @tb.command(name="place", description="Refuse: place orders only via the web UI", guilds=g)
+        @tb.command(name="place", description="Refuse: place orders only via the web UI")
         async def place_cmd(interaction: discord.Interaction, name: str, index: int = 0):
             await self._respond(interaction, place_refusal, {"name": name, "index": index})
         names.append("place")
 
         @self.bot.event
         async def on_ready():
-            if self.guild_id:
-                await tb.sync(guild=discord.Object(id=self.guild_id))
-            else:
-                await tb.sync()
+            await tb.sync()
+
+        # Any app-command error (incl. CommandNotFound from a guild/scope mismatch)
+        # must respond to the interaction; discord.py's default on_error only logs
+        # and lets Discord time out with "The application did not respond".
+        tb.on_error = self._on_tree_error
 
         self._command_names = names
 
     # -- response helper -----------------------------------------------------
-    async def _respond(self, interaction, fn, kwargs):
-        roles = getattr(interaction.user, "roles", None) or []
-        if not is_authorized(interaction.user.id,
-                             self.allowed_user_ids,
-                             self.allowed_role,
-                             [r.name for r in roles], [r.id for r in roles]):
-            await interaction.response.send_message("Not authorized for this command.", ephemeral=True)
+    def _interaction_name(self, interaction) -> str:
+        """Best-effort command name. ``interaction.command`` is a cached lookup that
+        can be ``None`` (e.g. CommandNotFound before the callback runs), so fall
+        back to the raw ``data['name']`` instead of calling ``.name`` unguarded."""
+        cmd = getattr(interaction, "command", None)
+        if cmd is not None:
+            return getattr(cmd, "name", "command") or "command"
+        data = interaction.data or {}
+        return data.get("name", "command") or "command"
+
+    async def _safe_respond(self, interaction, content=None, *, embed=None, ephemeral=True):
+        """Attempt one interaction response; never raise.
+
+        Discord drops an interaction that receives no callback within 3s with the
+        message "The application did not respond". Every error path funnels through
+        here so a failure can never silently time out the interaction.
+        """
+        if content is None and embed is None:
             return
         try:
+            if embed is not None:
+                await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+            else:
+                await interaction.response.send_message(content or "Command failed.", ephemeral=ephemeral)
+        except discord.InteractionResponded:
+            pass
+        except Exception as e:
+            logger.error(f"Failed to respond to Discord interaction: {e}")
+
+    def _friendly_command_error(self, name, error, guild_id) -> str:
+        if isinstance(error, CommandNotFound):
+            return (
+                f"The /{name} command is registered for a different server, so it can't be "
+                f"resolved here.\n\nThis usually happens when commands were synced while "
+                f"DISCORD_GUILD_ID was empty or pointed at another server. Have the bot owner "
+                f"re-sync the commands in the server it's configured for "
+                f"(guild {guild_id or '?'})."
+            )
+        return f"The /{name} command ran into an error. The bot owner can find the full details in the dashboard Log tab."
+
+    async def _on_tree_error(self, interaction, error):
+        """Application-command error handler: surface the failure instead of leaving the
+        interaction unanswered (which Discord reports as 'The application did not respond')."""
+        name = self._interaction_name(interaction)
+        guild_id = getattr(interaction, "guild_id", None) or (interaction.data or {}).get("guild_id")
+        user_id = getattr(getattr(interaction, "user", None), "id", None)
+        logger.error("Discord command error: /%s (guild_id=%s user_id=%s): %s",
+                     name, guild_id, user_id, error, exc_info=error)
+        await self._safe_respond(interaction, self._friendly_command_error(name, error, guild_id))
+
+    async def _respond(self, interaction, fn, kwargs):
+        name = self._interaction_name(interaction)
+        guild_id = getattr(interaction, "guild_id", None)
+        logger.debug("Discord command /%s from user %s in guild %s",
+                     name, getattr(interaction.user, "id", None), guild_id)
+        roles = getattr(interaction.user, "roles", None) or []
+        try:
+            if not is_authorized(interaction.user.id,
+                                 self.allowed_user_ids,
+                                 self.allowed_role,
+                                 [r.name for r in roles], [r.id for r in roles]):
+                await self._safe_respond(interaction, "Not authorized for this command.")
+                return
             result = fn(self.state, **kwargs)
         except Exception as e:
-            logger.error(f"command {interaction.command.name} failed: {e}")
-            await interaction.response.send_message("Command failed. Check server logs.", ephemeral=True)
+            logger.error(f"command {name} failed: {e}", exc_info=True)
+            await self._safe_respond(interaction, "Command failed. Check server logs.")
             return
-        await interaction.response.send_message(embed=_embed(interaction.command.name, result))
+        await self._safe_respond(interaction, embed=_embed(name, result), ephemeral=False)
 
     @property
     def command_names(self):
