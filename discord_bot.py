@@ -245,6 +245,24 @@ from discord.app_commands import CommandNotFound
 from discord.ext import commands
 
 
+class _LiquidateButton(discord.ui.Button):
+    """A clickable Liquidate button bound to one position key.
+
+    ``custom_id`` carries the position identity (Discord-safe: only letters,
+    digits and hyphens) while the real poskey is held on the object so the
+    callback can act on the live position it identifies.
+    """
+
+    def __init__(self, poskey, index, handler):
+        super().__init__(style=discord.ButtonStyle.danger, label=f"Liquidate {index}",
+                         custom_id=f"liquidate-{poskey}")
+        self._poskey = poskey
+        self._handler = handler
+
+    async def callback(self, interaction):
+        await self._handler(interaction, self._poskey)
+
+
 class DiscordBot:
     """Thin discord.py wrapper around the command logic in this module.
 
@@ -271,6 +289,7 @@ class DiscordBot:
         self.alert_bridge = AlertBridge(self._channel_id, poster=poster if poster is not None else self._default_poster)
         self._command_names = []
         self._alert_tasks = set()
+        self._liquidating = set()   # position keys with a close order in flight
         self._register_commands()
 
     @property
@@ -385,7 +404,7 @@ class DiscordBot:
         data = interaction.data or {}
         return data.get("name", "command") or "command"
 
-    async def _safe_respond(self, interaction, content=None, *, embed=None, ephemeral=True):
+    async def _safe_respond(self, interaction, content=None, *, embed=None, view=None, ephemeral=True):
         """Attempt one interaction response; never raise.
 
         Discord drops an interaction that receives no callback within 3s with the
@@ -396,9 +415,9 @@ class DiscordBot:
             return
         try:
             if embed is not None:
-                await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=ephemeral)
             else:
-                await interaction.response.send_message(content or "Command failed.", ephemeral=ephemeral)
+                await interaction.response.send_message(content or "Command failed.", view=view, ephemeral=ephemeral)
         except discord.InteractionResponded:
             pass
         except Exception as e:
@@ -443,7 +462,88 @@ class DiscordBot:
             logger.error(f"command {name} failed: {e}", exc_info=True)
             await self._safe_respond(interaction, "Command failed. Check server logs.")
             return
-        await self._safe_respond(interaction, embed=_embed(name, result), ephemeral=False)
+        await self._safe_respond(interaction, embed=_embed(name, result),
+                                 view=self._build_view(name, result), ephemeral=False)
+
+    # -- position liquidation (interaction buttons) --------------------------
+    def _build_view(self, name, result):
+        """Return a discord.ui.View (buttons) for a command result, or None."""
+        if name == "positions":
+            return self._build_positions_view(result)
+        return None
+
+    def _build_positions_view(self, result):
+        """One Liquidate button per liquidatable position, in row order.
+
+        The button label carries the same row index as the table's ``#`` column
+        so clicking one unambiguously targets that row's position.
+        """
+        positions = result.get("positions") or []
+        view = discord.ui.View(timeout=300)
+        for i, p in enumerate(positions, start=1):
+            c = p.get("contract") or {}
+            if not _liquidatable(c, p.get("position")):
+                continue
+            view.add_item(_LiquidateButton(_position_key(c), i, self._handle_liquidate))
+        return view if view.children else None
+
+    def _find_position(self, poskey):
+        for p in getattr(self.state, "positions", []) or []:
+            if _position_key(p.get("contract") or {}) == poskey:
+                return p
+        return None
+
+    async def _liquidate_poskey(self, poskey):
+        """Place a close order for the position identified by ``poskey``.
+
+        Returns (ok, message). Uses the same close payload as the web UI and the
+        shared handle_place_order path; dedupes via ``self._liquidating``.
+        """
+        pos = self._find_position(poskey)
+        if pos is None:
+            return False, "Position not found."
+        if poskey in self._liquidating:
+            return False, "Already liquidating — a close order is in flight."
+        payload = _liquidation_payload(pos.get("contract"), pos.get("position"))
+        if payload is None:
+            return False, "Not a liquidatable position (OPT or STK required)."
+        self._liquidating.add(poskey)
+        from order_manager import handle_place_order
+        try:
+            resp = await handle_place_order(self.ib, self.state, payload)
+        except Exception as e:
+            self._liquidating.discard(poskey)
+            return False, f"Liquidation failed: {e}"
+        data = (resp or {}).get("data", {}) or {}
+        status = data.get("status", "Submitted")
+        if status == "Error":
+            self._liquidating.discard(poskey)
+            return False, f"Liquidation failed: {data.get('message', 'Unknown error')}"
+        sym = (pos.get("contract") or {}).get("symbol", "")
+        return True, f"{sym} liquidation {status.lower()}"
+
+    async def _handle_liquidate(self, interaction, poskey):
+        """Button callback: authorize, defer, place the close order, follow up."""
+        roles = getattr(interaction.user, "roles", None) or []
+        if not is_authorized(interaction.user.id, self.allowed_user_ids,
+                             self.allowed_role, [r.name for r in roles],
+                             [r.id for r in roles]):
+            await interaction.response.send_message("Not authorized.", ephemeral=True)
+            return
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception:
+            pass
+        ok, msg = await self._liquidate_poskey(poskey)
+        text = msg if ok else f"⚠️ {msg}"
+        try:
+            await interaction.followup.send(text, ephemeral=True)
+        except Exception as e:
+            logger.error(f"liquidate followup failed: {e}")
+            try:
+                await interaction.response.send_message(text, ephemeral=True)
+            except Exception:
+                pass
 
     @property
     def command_names(self):
@@ -680,6 +780,60 @@ def _opt_name(contract) -> str:
     return sym
 
 
+# -- Position identity + close-order payload (used by the Liquidate buttons) --
+def _position_key(contract) -> str:
+    """Stable, Discord-safe identity for a position ('SPX-OPT-20260626-7700-C').
+
+    Used as a button custom_id and to re-locate the live position. Components
+    are stripped to alphanumerics so the string is a valid custom_id.
+    """
+    import re
+    safe = lambda v: re.sub(r"[^A-Za-z0-9]", "", str(v or ""))
+    c = contract or {}
+    sym = safe(c.get("symbol"))
+    st = safe(c.get("secType"))
+    ex = safe(c.get("expiry"))
+    strike = c.get("strike")
+    sk = safe(int(strike) if isinstance(strike, (int, float)) and strike else strike)
+    right = safe(c.get("right"))
+    return "-".join([sym, st, ex, sk, right])
+
+
+def _liquidatable(contract, position) -> bool:
+    """True when the position can be liquidated (OPT or STK, non-zero size)."""
+    c = contract or {}
+    sec_type = c.get("secType")
+    if position in (None, 0):
+        return False
+    if sec_type not in ("OPT", "STK") or not c.get("symbol"):
+        return False
+    if sec_type == "OPT":
+        if not (c.get("expiry") and c.get("strike") is not None and c.get("right")):
+            return False
+    return True
+
+
+def _liquidation_payload(contract, position) -> Optional[dict]:
+    """Build the same close-order payload the web UI sends (adaptive mid fill).
+
+    Returns None when the contract can't be liquidated. Close action flips the
+    sign of the held position (short -> BUY, long -> SELL).
+    """
+    if not _liquidatable(contract, position):
+        return None
+    c = contract or {}
+    sec_type = c.get("secType")
+    close_action = "SELL" if position > 0 else "BUY"
+    leg = {"symbol": c.get("symbol"), "action": close_action, "qty": abs(int(position)),
+           "lmtPrice": None, "secType": sec_type}
+    if sec_type == "OPT":
+        leg["expiry"] = c.get("expiry")
+        leg["strike"] = c.get("strike")
+        leg["right"] = c.get("right")
+    return {"legs": [leg], "orderType": "LMT", "tif": "DAY", "outsideRth": True,
+            "dynamicFill": True, "repriceIntervalSec": 0.3}
+
+
 _RUN_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 
 
@@ -720,9 +874,14 @@ def _fmt_orders(result) -> str:
 
 def _fmt_positions(result) -> str:
     positions = result.get("positions") or []
-    headers = ["contract", "qty", "avg cost", "unrlzd pnl"]
-    rows = [[_opt_name(p.get("contract")), p.get("position", ""),
-             _money(p.get("averageCost")), _money(p.get("unrealizedPNL"))] for p in positions]
+    # A `#` index column so each row maps to the matching "Liquidate #n" button
+    # below (a code-block cell can't be a clickable order link).
+    headers = ["#", "contract", "qty", "avg cost", "unrlzd pnl"]
+    rows = []
+    for i, p in enumerate(positions, start=1):
+        c = p.get("contract") or {}
+        rows.append([i, _opt_name(c), p.get("position"),
+                     _money(p.get("averageCost")), _money(p.get("unrealizedPNL"))])
     block = _fence(_table(headers, rows)) if rows else "none"
     count = result.get("count", len(positions))
     return f"💼 {count} position{'s' if count != 1 else ''}\n{block}"

@@ -23,6 +23,9 @@ from discord_bot import (
     _fmt_action,
     _fmt_alert,
     _run_days_line,
+    _position_key,
+    _liquidation_payload,
+    _liquidatable,
     _embed_color,
 )
 
@@ -307,6 +310,60 @@ def test_alert_exit_reason():
     out = _fmt_alert("strategy_exit", {"name": "Main", "event": "take_profit"})
     assert "Main" in out
     assert "take_profit" in out
+
+
+# ---------------------------------------------------------------------------
+# Liquidation: position identity + close-order payload (pure)
+# ---------------------------------------------------------------------------
+def test_position_key_is_stable_discord_safe():
+    c = {"symbol": "SPX", "secType": "OPT", "expiry": "20260626",
+         "strike": 7700.0, "right": "C"}
+    assert _position_key(c) == "SPX-OPT-20260626-7700-C"
+
+
+def test_liquidation_payload_close_short_position_buys_back():
+    # short option position (position < 0) -> BUY to close
+    p = _liquidation_payload(
+        {"symbol": "SPX", "secType": "OPT", "expiry": "20260626",
+         "strike": 7700.0, "right": "C"},
+        -4)
+    assert p is not None
+    leg = p["legs"][0]
+    assert leg["action"] == "BUY" and leg["qty"] == 4
+    assert leg["secType"] == "OPT"
+    assert leg["expiry"] == "20260626" and leg["strike"] == 7700.0 and leg["right"] == "C"
+    assert p["orderType"] == "LMT" and p["tif"] == "DAY"
+    assert p["outsideRth"] is True and p["dynamicFill"] is True
+
+
+def test_liquidation_payload_long_position_sells_to_close():
+    p = _liquidation_payload({"symbol": "QCOM", "secType": "STK"}, 100)
+    assert p is not None
+    assert p["legs"][0]["action"] == "SELL" and p["legs"][0]["qty"] == 100
+    assert "expiry" not in p["legs"][0]
+
+
+def test_liquidation_payload_rejects_zero_and_unsupported():
+    assert _liquidation_payload({"symbol": "SPX", "secType": "OPT"}, 0) is None
+    assert _liquidation_payload({"symbol": "BUSD", "secType": "FUT"}, 2) is None
+    assert _liquidation_payload(
+        {"symbol": "SPX", "secType": "OPT", "expiry": "20260626",
+         "strike": 7700.0, "right": ""}, -1) is None
+
+
+def test_liquidatable_true_for_opt_and_stk():
+    assert _liquidatable({"symbol": "SPX", "secType": "OPT",
+                          "expiry": "20260626", "strike": 7700.0, "right": "C"}, -4)
+    assert _liquidatable({"symbol": "QCOM", "secType": "STK"}, -100)
+    assert not _liquidatable({"symbol": "SPX", "secType": "OPT"}, 0)
+
+
+def test_positions_table_has_row_index_no_liq_column():
+    out = _fmt_positions(_positions_result())
+    # The clickable action lives on the buttons below, not as a wrapping liq column.
+    assert "Liquidate" not in out
+    assert "#" in out
+    assert "contract" in out and "unrlzd pnl" in out
 
 
 # ---------------------------------------------------------------------------
