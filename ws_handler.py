@@ -228,6 +228,13 @@ async def websocket_endpoint(ws: WebSocket, ib, state, broadcast_fn):
             }
         }
         await ws.send_text(json.dumps(init_msg))
+        # Push the strategy list on connect so a client opening any tab directly
+        # (e.g. #sim) receives strategies without first visiting the Strategies
+        # tab — otherwise its strategy dropdown stays empty. If the boot path never
+        # reached load_strategies() (e.g. IB was down), load from disk now.
+        if not state.strategies:
+            state.strategies = load_strategies()
+        await ws.send_text(json.dumps(_strategy_list_payload(state)))
 
         while True:
             try:

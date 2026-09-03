@@ -68,9 +68,11 @@ async def test_set_tab_strategies_sends_strategy_list(app_state, tmp_path, monke
 
     assert app_state.active_tab == "strategies"
     lists = ws.sent_by_type("strategy_list")
-    assert len(lists) == 1
-    assert lists[0]["data"]["strategies"] == []
-    assert lists[0]["data"]["kill_switch"] is False
+    # One strategy_list is pushed on connect (so a client opening any tab sees
+    # strategies) and a second when the client requests the Strategies tab.
+    assert len(lists) == 2
+    assert all(l["data"]["strategies"] == [] for l in lists)
+    assert all(l["data"]["kill_switch"] is False for l in lists)
 
 
 @pytest.mark.asyncio
@@ -85,8 +87,10 @@ async def test_strategy_save_persists_and_sends_strategy_list(app_state, tmp_pat
     saved = store.load_strategies()
     assert "a" in saved
     lists = ws.sent_by_type("strategy_list")
-    assert len(lists) == 1
-    assert lists[0]["data"]["strategies"][0]["name"] == "a"
+    # The connect-time list is empty (nothing saved yet); the save ack carries "a".
+    assert len(lists) == 2
+    assert lists[0]["data"]["strategies"] == []
+    assert lists[-1]["data"]["strategies"][0]["name"] == "a"
 
 
 @pytest.mark.asyncio
@@ -283,8 +287,10 @@ async def test_strategy_arm_sends_strategy_list(app_state, tmp_path, monkeypatch
 
     assert app_state.strategies["a"].armed is True
     lists = ws.sent_by_type("strategy_list")
-    assert len(lists) == 1
-    assert lists[0]["data"]["strategies"][0]["armed"] is True
+    # The connect-time list reflects the pre-arm state; the arm ack carries armed=True.
+    assert len(lists) == 2
+    assert lists[0]["data"]["strategies"][0]["armed"] is False
+    assert lists[-1]["data"]["strategies"][0]["armed"] is True
 
 
 @pytest.mark.asyncio
@@ -298,5 +304,7 @@ async def test_strategy_disarm_sends_strategy_list(app_state, tmp_path, monkeypa
 
     assert app_state.strategies["a"].armed is False
     lists = ws.sent_by_type("strategy_list")
-    assert len(lists) == 1
-    assert lists[0]["data"]["strategies"][0]["armed"] is False
+    # The connect-time list reflects the pre-disarm state; the disarm ack carries armed=False.
+    assert len(lists) == 2
+    assert lists[0]["data"]["strategies"][0]["armed"] is True
+    assert lists[-1]["data"]["strategies"][0]["armed"] is False
