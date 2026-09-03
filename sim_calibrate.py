@@ -97,3 +97,130 @@ def fit_gjr_t(returns: np.ndarray, nu_init: float = 6.0) -> Tuple[GarchParams, L
     omega, alpha, gamma, beta, nu = (float(v) for v in best)
     return GarchParams(omega=max(omega, 1e-16), alpha=alpha, gamma=gamma, beta=beta,
                        nu=max(nu, 2.2), converged=True), warnings
+
+
+# ---------- smile, U-shape, VIX mapping, full pipeline ----------
+import json
+import os
+from dataclasses import dataclass, field
+
+from sim_config import SimRunConfig
+from sim_data import BarSeries
+
+SMILE_CAPTURE_PATH = os.path.join("config", "sim_smile.json")
+SMILE_DEFAULT_PATH = os.path.join("config", "sim_smile_default.json")
+RTH_START_MIN = 570
+
+
+@dataclass
+class SmileParams:
+    a: float
+    b: float
+    c: float
+    half_spread_atm: float
+
+    def iv(self, m):
+        m = np.asarray(m, dtype=float)
+        return self.a + self.b * m + self.c * m * m
+
+    def to_dict(self) -> dict:
+        return {"a": self.a, "b": self.b, "c": self.c, "half_spread_atm": self.half_spread_atm}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SmileParams":
+        return cls(a=float(d["a"]), b=float(d["b"]), c=float(d["c"]),
+                   half_spread_atm=float(d.get("half_spread_atm", 0.05)))
+
+
+DEFAULT_SMILE = SmileParams(a=0.20, b=-0.35, c=1.20, half_spread_atm=0.05)
+
+
+@dataclass
+class CalibratedModel:
+    garch: GarchParams
+    ushape: np.ndarray            # (steps_per_day,), mean ~ 1
+    sigma0: float                 # mean per-bar conditional vol (decimal return units)
+    smile: SmileParams
+    vix0: float
+    source: str
+    warnings: List[str] = field(default_factory=list)
+
+    def sigma_annual(self, cfg: SimRunConfig) -> float:
+        return float(self.sigma0 * np.sqrt(cfg.steps_per_day() * 252))
+
+
+def fit_ushape(returns: np.ndarray, minute_of_day: np.ndarray, steps_per_day: int) -> np.ndarray:
+    """Multiplicative per-bar vol profile from mean |return| by minute-of-day, smoothed."""
+    # RTH day is 390 minutes (09:30-16:00). Derive the per-bar width in whole
+    # minutes from steps_per_day so minute-of-day aligns to bar buckets;
+    # sub-minute bars collapse to minute resolution (minute_of_day loses seconds).
+    bar_min = max(1, int(round(390 / steps_per_day)))
+    idx = np.clip(((minute_of_day - RTH_START_MIN) // bar_min - 1).astype(int), 0, steps_per_day - 1)
+    sums = np.zeros(steps_per_day)
+    counts = np.zeros(steps_per_day)
+    np.add.at(sums, idx, np.abs(returns))
+    np.add.at(counts, idx, 1.0)
+    mean_abs = np.where(counts > 0, sums / np.maximum(counts, 1), np.nan)
+    # fill empty buckets from neighbours, then normalize and smooth (15-bar moving mean)
+    n = len(mean_abs)
+    fill = np.where(np.isfinite(mean_abs), mean_abs, np.nanmean(mean_abs))
+    fill = np.where(np.isfinite(fill), fill, 1.0)
+    kernel = np.ones(15) / 15.0
+    smooth = np.convolve(fill, kernel, mode="same")
+    out = smooth / max(float(np.mean(smooth)), 1e-12)
+    return np.clip(out, 0.25, 4.0)
+
+
+def fit_smile(m_points, iv_points, fallback: SmileParams) -> Tuple[SmileParams, List[str]]:
+    """Least-squares quadratic IV(m); falls back when too few points or degenerate fit."""
+    m = np.asarray(m_points, dtype=float)
+    iv = np.asarray(iv_points, dtype=float)
+    ok = np.isfinite(m) & np.isfinite(iv) & (iv > 0.005) & (iv < 5.0)
+    m, iv = m[ok], iv[ok]
+    if len(m) < 5:
+        return fallback, ["smile: too few IV points — using fallback snapshot"]
+    A = np.vstack([np.ones_like(m), m, m * m]).T
+    coef, *_ = np.linalg.lstsq(A, iv, rcond=None)
+    if not np.isfinite(coef).all() or abs(coef[0]) > 5:
+        return fallback, ["smile: degenerate fit — using fallback snapshot"]
+    return SmileParams(a=float(coef[0]), b=float(coef[1]), c=float(coef[2]),
+                       half_spread_atm=fallback.half_spread_atm), []
+
+
+def load_smile_snapshot() -> Tuple[SmileParams, str]:
+    """captured (config/sim_smile.json) -> default file -> built-in constants."""
+    for path, src in ((SMILE_CAPTURE_PATH, "captured"), (SMILE_DEFAULT_PATH, "default")):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return SmileParams.from_dict(json.load(f)), src
+        except Exception:
+            continue
+    return DEFAULT_SMILE, "builtin"
+
+
+def save_smile_snapshot(smile: SmileParams) -> None:
+    os.makedirs(os.path.dirname(SMILE_CAPTURE_PATH), exist_ok=True)
+    with open(SMILE_CAPTURE_PATH, "w", encoding="utf-8") as f:
+        json.dump(smile.to_dict(), f, indent=2)
+
+
+def calibrate(bars: BarSeries, cfg: SimRunConfig) -> CalibratedModel:
+    """Full calibration: returns -> GJR-t MLE -> U-shape -> smile snapshot -> VIX mapping."""
+    warnings: List[str] = list(bars.warnings)
+    closes = bars.closes
+    rets = np.diff(np.log(closes))
+    mods = bars.minute_of_day[1:]
+    garch, w = fit_gjr_t(rets)
+    warnings += w
+    ushape = fit_ushape(rets, mods, cfg.steps_per_day())
+    sigma0 = float(np.mean(np.sqrt(gjr_variance_path(garch, rets))))
+    smile, smile_src = load_smile_snapshot()
+    if smile_src != "captured":
+        warnings.append(f"smile: {smile_src} snapshot (capture a live chain for best results)")
+    vix0 = 20.0
+    if bars.vix_closes is not None and len(bars.vix_closes):
+        vix0 = float(np.mean(bars.vix_closes[-20:]))
+    else:
+        warnings.append("VIX series unavailable — mapping anchored at VIX0=20")
+    return CalibratedModel(garch=garch, ushape=ushape, sigma0=sigma0, smile=smile,
+                           vix0=vix0, source=bars.source, warnings=warnings)
