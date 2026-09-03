@@ -88,7 +88,6 @@
                 const resp = await fetch(`/api/sim/status/${jobId}`);
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 state = await resp.json();
-                pollFailures = 0;
                 $('simProgress').style.width = `${Math.round((state.progress || 0) * 100)}%`;
                 $('simStatus').textContent = `${state.state} — ${state.message || ''}`;
                 if (state.state === 'done') {
@@ -98,6 +97,10 @@
                     selectedCell = 0;
                     render();
                 }
+                // Reset the failure counter only after a full tick (status AND, when done,
+                // the result fetch) succeeds — else a persistent result-fetch failure on a
+                // terminal job would reset to 0 each tick and never trip the >=3 bound.
+                pollFailures = 0;
                 terminal = ['done', 'error', 'cancelled'].includes(state.state);
             } catch (err) {
                 pollFailures += 1;
