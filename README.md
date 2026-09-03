@@ -23,6 +23,7 @@ A real-time Gamma Exposure (GEX) dashboard for SPX 0DTE options, powered by Inte
   - **Take-profit** (idempotent close loop, per-leg limit prices) and **stop-loss** as a single credit multiplier.
   - One-shot eval loop with re-entry guards, margin checks, and a kill switch.
   - **Subsequent strategies** — trigger children off a parent trade's state (parent close / time window), with acyclic tree validation.
+- **Simulation tab** — intraday Monte Carlo stress-testing for 0DTE strategies: GJR-GARCH + Student-t paths with U-shape volatility, BSM smile marking, tick-rule fills, family re-entry, SL/strike sweeps and stress dials (ν, γ, λ), PnL/CVaR/max-DD/ruin analytics.
 - **Logging tab** — server-side framework log streamed to the browser.
 
 ## Quick Start
@@ -71,7 +72,32 @@ The exact URLs are printed to the console when the server starts. You can overri
 - **Option Chain** — full streaming chain table with greeks and order entry.
 - **Account** — account summary, positions, executions, order placement.
 - **Strategies** — strategy list/editor, live candidates, triggers, and arm/disarm controls.
+- **Simulation** — run intraday MC stress tests, sweep stop-loss multipliers and dynamic strike distances, A/B stress dials, export results to CSV.
 - **Log** — real-time framework log.
+
+## Simulation
+
+The Simulation tab runs an intraday Monte Carlo stress test of a saved strategy (or a
+parent + children family) against synthetic GJR-GARCH + Student-t paths. It only **reads**
+`Strategy` objects — it never places orders or touches live trading state.
+
+### Known limitations
+
+- **Family mode** uses placeholder per-path stats (`mtm=None`) and does **not** support
+  SL/k sweeps — a family-mode config with `sl_multipliers` or `dynamic_k_values` is rejected.
+- **IB live bars are not yet implemented** in the simulator — use `csv` or `yfinance`
+  (`source="ib"` is rejected).
+- **trend / pmove / RSI / atm_iv entry gates are not supported.** A strategy that enables one
+  is rejected with a validation error rather than silently simulated without the gate
+  (`vix_enabled` volatility conditions are supported).
+- **`bear_call` is not simulated** — a non-`bull_put` strategy is rejected rather than
+  mis-simulated with bull-put geometry.
+- **Single-mode day-PnL stats count entered days only**; family-mode totals include zero-PnL
+  days for never-entered children paths (a definition mismatch between the two modes).
+- **Engine-mode exit scans are per-path Python loops**; "~10k paths in seconds" is optimistic
+  for large sweeps with many cells.
+- **Sweep cells use independent RNG streams** (no common random numbers), so cross-cell
+  differences include sampling noise — an experiment-quality tradeoff, not a paired A/B.
 
 ## Charts
 
@@ -137,6 +163,14 @@ Key strike prices and conditions:
 | `app_state.py` | Shared AppState runtime, day key, kill switch |
 | `log_buffer.py` | Ring-buffer framework log for the Log tab |
 | `config.py` | Centralized settings: env var → repo-root `.env` → `config/params.yaml` → defaults |
+| `sim_config.py` | Simulation run config: validation, JSON round-trip, sweep cells |
+| `sim_data.py` | Layered intraday bar loaders: CSV → yfinance → IB |
+| `sim_calibrate.py` | GJR-GARCH(1,1)-t MLE, U-shape profile, smile snapshot, VIX mapping |
+| `sim_paths.py` | Chunked vectorized path generation (stress dials: ν, γ×) |
+| `sim_pricing.py` | Vectorized BSM, vol-linked smile, spreads, tick fill rules |
+| `sim_engine.py` | Entry/exit scans, single + family simulation, experiment modes |
+| `sim_risk.py` | CVaR/exit breakdown/max-DD/bootstrap ruin metrics |
+| `sim_jobs.py` | Background job registry, progress, cancel, memoized calibration |
 | `static/` | Browser app: `index.html`, `css/`, `js/` (charts, chain table, order entry, strategy UI, tabs, WS) |
 | `tests/` | Pytest suite + `run_tests.py` structured runner |
 
@@ -163,6 +197,8 @@ Settings are resolved in order: **environment variable → repo-root `.env` → 
 | `FOMC_DATES` | `[]` | FOMC meeting dates (via `params.yaml`) |
 
 Additional tunables (chain streaming, batch sizes, viewport sync, SPXW cease/gap windows) live in `config.py` and `config/params.yaml`.
+
+`numpy` and `scipy` are new runtime requirements; `requirements-dev.txt` adds `pytest-playwright` for the UI E2E tier.
 
 ## Discord Bot
 

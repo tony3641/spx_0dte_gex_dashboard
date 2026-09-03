@@ -11,6 +11,7 @@ and the WebSocket endpoint.
 
 import asyncio
 import logging
+import math
 import signal
 import sys
 from pathlib import Path
@@ -22,10 +23,11 @@ if sys.platform == "win32":
 
 import nest_asyncio
 import uvicorn
+import numpy as np
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, HTTPException, Request
+from fastapi import Body, FastAPI, WebSocket, HTTPException, Request
 from pydantic import BaseModel
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from ib_client import IBClient
 
@@ -56,6 +58,7 @@ from discord_settings import (
     DiscordSettings, DiscordSettingsManager, load_initial_settings,
 )
 from env_store import update_env
+import sim_jobs
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -419,6 +422,75 @@ async def post_ib_settings(body: IbSettingsIn, request: Request):
 @app.websocket("/ws")
 async def websocket_route(ws: WebSocket):
     await ws_endpoint(ws, ib, state, broadcast_fn)
+
+
+# ---------------------------------------------------------------------------
+# Simulation (intraday MC stress test)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/sim/run")
+async def api_sim_run(body: dict = Body(...)):
+    try:
+        out = sim_jobs.start_run(body, state=state, ib=ib)
+        return out
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+    except RuntimeError as e:
+        return JSONResponse(status_code=409, content={"detail": str(e)})
+
+
+@app.get("/api/sim/status/{job_id}")
+async def api_sim_status(job_id: str):
+    try:
+        return sim_jobs.get_status(job_id)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"detail": "unknown job"})
+
+
+@app.get("/api/sim/result/{job_id}")
+async def api_sim_result(job_id: str):
+    try:
+        result = sim_jobs.get_result(job_id)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"detail": "unknown job"})
+    if result is None:
+        return JSONResponse(status_code=409, content={"detail": "job not finished"})
+    return result
+
+
+@app.post("/api/sim/cancel/{job_id}")
+async def api_sim_cancel(job_id: str):
+    return {"cancelled": sim_jobs.cancel(job_id)}
+
+
+@app.get("/api/sim/smile")
+async def api_sim_smile():
+    from sim_calibrate import load_smile_snapshot
+    smile, src = load_smile_snapshot()
+    return {"smile": smile.to_dict(), "source": src}
+
+
+@app.post("/api/sim/smile/capture")
+async def api_sim_smile_capture():
+    rows = getattr(state, "chain_quotes_cache", {}) or {}
+    strikes = rows.get("strikes") or []
+    spot = float(getattr(state, "spx_price", 0) or 0)
+    pts_m, pts_iv = [], []
+    for row in strikes:
+        iv = row.get("put_iv")
+        if iv and spot and row.get("strike"):
+            m = math.log(float(row["strike"]) / spot)
+            if abs(m) < 0.15:
+                pts_m.append(m)
+                pts_iv.append(float(iv) / 100.0)
+    if len(pts_m) < 5:
+        return JSONResponse(status_code=409, content={"detail": "live chain not available"})
+    from sim_calibrate import fit_smile, DEFAULT_SMILE, save_smile_snapshot
+    smile, warnings = fit_smile(np.array(pts_m), np.array(pts_iv), DEFAULT_SMILE)
+    if warnings:
+        return JSONResponse(status_code=409, content={"detail": warnings[0]})
+    save_smile_snapshot(smile)
+    return {"smile": smile.to_dict(), "source": "captured", "points": len(pts_m)}
 
 
 # ---------------------------------------------------------------------------

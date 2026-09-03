@@ -11,3 +11,5 @@ python-dotenv>=1.0
 yfinance>=0.2.54
 exchange_calendars>=4.4
 discord.py>=2.0
+numpy>=1.26
+scipy>=1.10

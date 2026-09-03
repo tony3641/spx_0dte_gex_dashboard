@@ -1,0 +1,33 @@
+/* Simulation tab */
+.sim-layout { display: flex; gap: 16px; padding: 12px; height: 100%; overflow: auto; }
+.sim-panel { min-width: 300px; max-width: 340px; background: var(--panel-bg, #16181d);
+  border: 1px solid var(--border, #2a2d34); border-radius: 8px; padding: 14px; }
+.sim-panel h3, .sim-panel h4 { margin: 8px 0 6px; }
+.sim-panel label { display: block; margin: 6px 0; font-size: 12px; opacity: 0.85; }
+.sim-panel input, .sim-panel select { width: 100%; box-sizing: border-box; margin-top: 3px;
+  background: var(--input-bg, #0f1115); color: var(--text, #e8e8e8);
+  border: 1px solid var(--border, #2a2d34); border-radius: 4px; padding: 5px 7px; font-size: 12px; }
+.sim-check { display: flex; align-items: center; gap: 6px; }
+.sim-check input { width: auto; }
+.sim-actions { display: flex; gap: 8px; margin: 10px 0; }
+.sim-actions button { padding: 6px 14px; border-radius: 4px; border: 1px solid var(--border, #2a2d34);
+  background: var(--accent-bg, #2456a8); color: #fff; cursor: pointer; }
+.sim-actions button:disabled { opacity: 0.4; cursor: default; }
+.sim-progress-wrap { height: 6px; background: var(--border, #2a2d34); border-radius: 3px; overflow: hidden; }
+#simProgress { height: 100%; width: 0; background: #3f8f5f; transition: width 0.2s; }
+.sim-status { font-size: 12px; margin-top: 6px; min-height: 16px; }
+.sim-status.error { color: #e06c60; }
+.sim-datainfo { font-size: 11px; opacity: 0.7; margin-top: 6px; white-space: pre-line; }
+.sim-results { flex: 1; min-width: 0; }
+.sim-tiles { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.sim-tile { background: var(--panel-bg, #16181d); border: 1px solid var(--border, #2a2d34);
+  border-radius: 8px; padding: 10px 14px; min-width: 130px; }
+.sim-tile .v { font-size: 20px; font-weight: 600; }
+.sim-tile .k { font-size: 11px; opacity: 0.65; }
+.sim-chart { height: 300px; margin-bottom: 10px; background: var(--panel-bg, #16181d);
+  border: 1px solid var(--border, #2a2d34); border-radius: 8px; }
+.sim-sweep { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 12px; }
+.sim-sweep th, .sim-sweep td { border-bottom: 1px solid var(--border, #2a2d34);
+  padding: 5px 8px; text-align: right; }
+.sim-sweep th:first-child, .sim-sweep td:first-child { text-align: left; }
+.sim-sweep tr.selected { background: rgba(63, 143, 95, 0.15); cursor: pointer; }
