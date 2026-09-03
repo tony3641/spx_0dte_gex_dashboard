@@ -58,34 +58,43 @@ def _ensure_hermetic_strategies() -> bool:
 @pytest.fixture(scope="module")
 def server_url():
     wrote_strat = _ensure_hermetic_strategies()
-    port = _free_port()
-    env = dict(os.environ, SERVER_PORT=str(port), SERVER_HOST="127.0.0.1")
-    proc = subprocess.Popen([sys.executable, "server.py"], cwd=ROOT, env=env,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-    url = f"http://127.0.0.1:{port}"
-    deadline = time.time() + 30
-    import urllib.request
-    while time.time() < deadline:
-        try:
-            urllib.request.urlopen(f"{url}/api/state", timeout=1)
-            break
-        except Exception:
-            time.sleep(0.3)
-    else:
-        proc.terminate()
-        pytest.fail("server did not start within 30s")
-    yield url
+    proc = None
     try:
-        try:
-            proc.send_signal(signal.SIGINT)
-        except (ValueError, OSError):
-            # Windows: Popen.send_signal does not support SIGINT (signal 2).
-            proc.terminate()
-        try:
-            proc.wait(10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        port = _free_port()
+        env = dict(os.environ, SERVER_PORT=str(port), SERVER_HOST="127.0.0.1")
+        # Strip Discord secrets: an ambient DISCORD_TOKEN makes the child server spend
+        # ~15s on a Discord login (on top of the IB-down connect timeout), which can push
+        # boot past the 30s deadline and fail the test spuriously.
+        for k in list(env):
+            if k.startswith("DISCORD_"):
+                env.pop(k, None)
+        proc = subprocess.Popen([sys.executable, "server.py"], cwd=ROOT, env=env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        url = f"http://127.0.0.1:{port}"
+        deadline = time.time() + 30
+        import urllib.request
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(f"{url}/api/state", timeout=1)
+                break
+            except Exception:
+                time.sleep(0.3)
+        else:
+            pytest.fail("server did not start within 30s")
+        yield url
     finally:
+        if proc is not None:
+            try:
+                proc.send_signal(signal.SIGINT)
+            except (ValueError, OSError):
+                # Windows: Popen.send_signal does not support SIGINT (signal 2).
+                proc.terminate()
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        # Unconditional hermetic cleanup: always run even when boot failed before yield,
+        # so a stray config/strategies.json never leaks into later runs.
         if wrote_strat and os.path.exists(STRAT_PATH):
             os.remove(STRAT_PATH)
 
