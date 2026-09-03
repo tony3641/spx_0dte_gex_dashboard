@@ -73,7 +73,7 @@ def bootstrap_ruin(pnls: np.ndarray, equity: float, threshold_pct: float,
         return dict(max_dd=np.zeros(0).tolist(), mean_max_dd=0.0, p95_max_dd=0.0, ruin_prob=0.0)
     rng = np.random.default_rng(seed)
     sample = p[rng.integers(0, len(p), size=(n_seqs, seq_len))]
-    curves = np.cumsum(sample, axis=1)
+    curves = np.concatenate([np.zeros((n_seqs, 1)), np.cumsum(sample, axis=1)], axis=1)
     peaks = np.maximum.accumulate(curves, axis=1)
     max_dd = (peaks - curves).max(axis=1)
     threshold = equity * threshold_pct

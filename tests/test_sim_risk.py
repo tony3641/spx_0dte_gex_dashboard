@@ -58,3 +58,11 @@ def test_build_cell_payload_shape():
     assert len(payload["hist"]["edges"]) >= 2
     assert payload["fan"]["q50"][1] == 0.0            # minute 1: every entered path marks 0
     assert 0.0 <= payload["ruin_prob"] <= 1.0
+
+
+def test_bootstrap_ruin_counts_first_bar_loss():
+    # an equity path that OPENS with a loss larger than the threshold must show a drawdown
+    out = bootstrap_ruin(np.array([-50_000.0]), equity=100_000.0, threshold_pct=0.20,
+                         n_seqs=5, seq_len=1, seed=0)
+    assert out["max_dd"] == [50_000.0] * 5          # max_dd is a LIST of per-seq values (5 seqs)
+    assert out["ruin_prob"] == 1.0
