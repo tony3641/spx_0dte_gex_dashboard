@@ -250,3 +250,100 @@ def run_entry(model: CalibratedModel, cfg: SimRunConfig, strategy: Strategy,
 def BAR_SECONDS_GET(cfg: SimRunConfig) -> int:
     from sim_config import BAR_SECONDS
     return BAR_SECONDS[cfg.bar_size]
+
+
+@dataclass
+class TrialResult:
+    entered: bool
+    entry_minute: int
+    exit_minute: int
+    exit_reason: str
+    short_strike: float
+    long_strike: float
+    width: float
+    qty: int
+    fill_credit: float
+    exit_debit: float
+    pnl: float
+    mtm: Optional[np.ndarray] = None
+
+
+def _spread_rows(model, cfg, paths, ladder, t):
+    """Put mids + half-spreads for every path at bar t -> (mid, bid, ask) each (n, M)."""
+    m = (ladder - paths.spots[:, t:t + 1]) / paths.spots[:, t:t + 1]
+    iv_t = smile_iv(m, model.smile, paths.sigmas[:, t:t + 1], model.sigma0,
+                    cfg.vol_beta, cfg.flat_iv, float(model.smile.iv(0.0)))
+    put = bsm_put(paths.spots[:, t:t + 1], ladder[None, :], t, RISK_FREE_RATE, iv_t)
+    hs = half_spread(m, model.smile.half_spread_atm)
+    return put, put - hs, put + hs
+
+
+def run_exits(model: CalibratedModel, cfg: SimRunConfig, strategy: Strategy,
+              paths, ladder: np.ndarray, entry: EntryState,
+              sl_multiplier: Optional[float] = None) -> List[TrialResult]:
+    n, steps = paths.spots.shape
+    bar_secs = BAR_SECONDS_GET(cfg)
+    if sl_multiplier is None:
+        sl = strategy.exit_rules.stop_loss
+        mult = float(sl.multiplier) if sl is not None else float("inf")
+    else:
+        mult = float(sl_multiplier)
+    tp = strategy.exit_rules.take_profit
+    tp_pct = float(tp.value) if (tp is not None and tp.mode == "pct_credit") else None
+
+    out: List[TrialResult] = []
+    rows = np.arange(n)
+    for p in range(n):
+        if not entry.entered[p]:
+            out.append(TrialResult(entered=False, entry_minute=-1, exit_minute=-1,
+                                   exit_reason="never", short_strike=0.0, long_strike=0.0,
+                                   width=0.0, qty=0, fill_credit=0.0, exit_debit=0.0, pnl=0.0))
+            continue
+        si, li = int(entry.short_idx[p]), int(entry.long_idx[p])
+        fc = float(entry.fill_credit[p])
+        qty = int(entry.qty[p])
+        stop_level = fc * mult
+        tp_price = fc * tp_pct if tp_pct is not None else None
+        t0 = int(entry.entry_minute[p])
+        mtm = np.full(steps, np.nan)
+        exit_t, exit_reason, exit_debit = -1, "expired", 0.0
+        active = True
+        for t in range(t0, steps):
+            T = (steps - 1 - t) * bar_year_frac(bar_secs)
+            m = (ladder - paths.spots[p, t]) / paths.spots[p, t]
+            iv_t = smile_iv(m, model.smile, np.array([[paths.sigmas[p, t]]]), model.sigma0,
+                            cfg.vol_beta, cfg.flat_iv, float(model.smile.iv(0.0)))[0]
+            put = bsm_put(paths.spots[p, t], ladder, T, RISK_FREE_RATE, iv_t)
+            hs = half_spread(m, model.smile.half_spread_atm)
+            mark = float(put[si] - put[li])                    # mid mark of the spread
+            mtm[t] = (fc - mark) * qty * 100.0
+            if t == t0:
+                continue                                       # no exit on the entry bar
+            if stop_level < float("inf") and mark >= stop_level:
+                exit_t, exit_reason = t, "stop"
+                exit_debit = stop_level + cfg.stop_extra       # trigger + 0.10, exactly
+                break
+            if tp_price is not None and mark <= tp_price:
+                exit_t, exit_reason = t, "take_profit"
+                exit_debit = tp_price
+                break
+            if t == steps - 1:
+                Ks, Kl = float(ladder[si]), float(ladder[li])
+                exit_debit = max(Ks - paths.spots[p, t], 0.0) - max(Kl - paths.spots[p, t], 0.0)
+                exit_t = t
+                break
+        pnl = (fc - exit_debit) * qty * 100.0
+        if exit_reason == "expired" and exit_t == -1:
+            exit_t, exit_debit = steps - 1, 0.0                # single-bar edge: expiry, OTM
+        out.append(TrialResult(entered=True, entry_minute=t0, exit_minute=exit_t,
+                               exit_reason=exit_reason, short_strike=float(ladder[si]),
+                               long_strike=float(ladder[li]), width=float(entry.width[p]),
+                               qty=qty, fill_credit=fc, exit_debit=exit_debit, pnl=pnl, mtm=mtm))
+    return out
+
+
+def run_cell(model: CalibratedModel, cfg: SimRunConfig, strategy: Strategy,
+             paths, ladder: np.ndarray, sl_multiplier: Optional[float] = None,
+             k: Optional[float] = None) -> List[TrialResult]:
+    entry = run_entry(model, cfg, strategy, paths, ladder, k=k)
+    return run_exits(model, cfg, strategy, paths, ladder, entry, sl_multiplier=sl_multiplier)
