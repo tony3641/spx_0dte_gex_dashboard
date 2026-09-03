@@ -14,6 +14,7 @@
         const account = document.getElementById('accountTab');
         const strategies = document.getElementById('strategiesTab');
         const log = document.getElementById('logTab');
+        const sim = document.getElementById('simTab');
         // Hide all first
         dashboard.style.display = 'none';
         dashboard.classList.remove('active');
@@ -22,6 +23,7 @@
         strategies.style.display = 'none';
         strategies.classList.remove('active');
         if (log) { log.style.display = 'none'; log.classList.remove('active'); }
+        if (sim) { sim.style.display = 'none'; sim.classList.remove('active'); }
 
         if (tab === 'dashboard') {
             dashboard.style.display = '';
@@ -46,6 +48,10 @@
             // set_tab:log is already sent above on every switch; the server
             // replies with log_history (the current backlog).
             if (log) log.classList.add('active');
+        } else if (tab === 'sim') {
+            if (sim) sim.classList.add('active');
+            if (ws && ws.readyState === WebSocket.OPEN) ws.send('set_tab:sim');
+            if (window.SimTab) window.SimTab.onShow();
         }
     }
 

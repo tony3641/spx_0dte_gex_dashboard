@@ -284,6 +284,9 @@ async def websocket_endpoint(ws: WebSocket, ib, state, broadcast_fn):
                     # Push current log backlog so a freshly-opened console fills up.
                     await ws.send_text(json.dumps({"type": "log_history", "data": list(state.log_buffer)}))
 
+                elif msg == "set_tab:sim":
+                    state.active_tab = "sim"
+
                 elif msg.startswith("strategy_save:"):
                     try:
                         body = json.loads(msg.split(":", 1)[1])

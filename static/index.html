@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="/static/css/logs.css">
     <link rel="stylesheet" href="/static/css/settings.css">
     <link rel="stylesheet" href="/static/css/mobile.css">
+    <link rel="stylesheet" href="/static/css/sim.css">
 </head>
 <body>
     <!-- Header -->
@@ -82,6 +83,7 @@
         <button class="tab-btn" data-tab="chain" onclick="switchTab('chain')">Option Chain</button>
         <button class="tab-btn" data-tab="account" onclick="switchTab('account')">Account</button>
         <button class="tab-btn" data-tab="strategies" onclick="switchTab('strategies')">Strategies</button>
+        <button class="tab-btn" data-tab="sim" onclick="switchTab('sim')">Simulation</button>
         <button class="tab-btn" data-tab="log" onclick="switchTab('log')">Log</button>
     </div>
 
@@ -380,6 +382,82 @@
         </div>
     </div>
 
+    <!-- Simulation Tab -->
+    <div class="tab-panel" id="simTab" style="display:none;">
+      <div class="sim-layout">
+        <div class="sim-panel">
+          <h3>Simulation run</h3>
+          <label>Strategy root
+            <select id="simStrategy"></select>
+          </label>
+          <label>Mode
+            <select id="simMode">
+              <option value="single">Single strategy</option>
+              <option value="family">Family (parent + children)</option>
+            </select>
+          </label>
+          <label>Data source
+            <select id="simSource">
+              <option value="auto">Auto (CSV → yfinance → IB)</option>
+              <option value="csv">CSV</option>
+              <option value="yfinance">yfinance</option>
+              <option value="ib">IB</option>
+            </select>
+          </label>
+          <label>CSV path <input id="simCsvPath" placeholder="tests/fixtures/sim_bars_5m.csv"></label>
+          <label>Bar size
+            <select id="simBarSize">
+              <option value="5m">5 min</option>
+              <option value="1m">1 min</option>
+              <option value="30s">30 sec</option>
+              <option value="15s">15 sec</option>
+              <option value="5s">5 sec</option>
+            </select>
+          </label>
+          <label>Lookback days <input id="simLookback" type="number" value="60" min="5"></label>
+          <label>Paths <input id="simPaths" type="number" value="10000" min="10" step="100"></label>
+          <label>Seed <input id="simSeed" type="number" value="42"></label>
+          <label>Spot (blank = live/last) <input id="simSpot" type="number" step="0.01"></label>
+          <label>Account equity <input id="simEquity" type="number" value="100000"></label>
+          <label>Ruin threshold % <input id="simRuinPct" type="number" value="20" step="1"></label>
+          <label>Stop slippage (pts) <input id="simStopExtra" type="number" value="0.10" step="0.05"></label>
+          <h4>Stress dials</h4>
+          <label>ν override (blank = fitted) <input id="simNu" type="number" step="0.5" min="2.5"></label>
+          <label>γ × <input id="simGammaMult" type="number" value="1.0" step="0.1"></label>
+          <label>λ (vol-beta) <input id="simVolBeta" type="number" value="0.75" step="0.05"></label>
+          <label class="sim-check"><input id="simFlatIv" type="checkbox"> Flat IV (sanity mode)</label>
+          <h4>Experiments</h4>
+          <label>SL multipliers (comma-sep, 'inf' = hold) <input id="simSlList" placeholder="2, 4, 6, inf"></label>
+          <label>Strike mode
+            <select id="simStrikeMode">
+              <option value="engine">Engine (JSON conditions)</option>
+              <option value="dynamic_k">Dynamic k·σ distance</option>
+            </select>
+          </label>
+          <label>k values (comma-sep) <input id="simKList" placeholder="0.4, 0.6, 0.8"></label>
+          <div class="sim-actions">
+            <button id="simRun" class="sim-run-btn">Run</button>
+            <button id="simCancel" disabled>Cancel</button>
+          </div>
+          <div class="sim-progress-wrap"><div id="simProgress"></div></div>
+          <div id="simStatus" class="sim-status"></div>
+          <div id="simDataInfo" class="sim-datainfo"></div>
+        </div>
+        <div class="sim-results">
+          <div id="simTiles" class="sim-tiles"></div>
+          <table class="sim-sweep" id="simSweep"></table>
+          <div class="sim-chart" id="simHist"></div>
+          <div class="sim-chart" id="simFan"></div>
+          <div class="sim-chart" id="simDD"></div>
+          <div class="sim-actions">
+            <button id="simExport" disabled>Export CSV</button>
+            <button id="simCaptureSmile">Capture live smile</button>
+            <span id="simSmileInfo" class="sim-datainfo"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Order Confirmation Modal -->
     <div class="order-modal-backdrop hidden" id="orderModalBackdrop">
         <div class="order-modal">
@@ -476,6 +554,7 @@
     <script src="/static/js/strategy-builder.js"></script>
     <script src="/static/js/strategy-ui.js"></script>
     <script src="/static/js/log-console.js"></script>
+    <script src="/static/js/sim-tab.js"></script>
     <script src="/static/js/main.js"></script>
     <script src="/static/js/settings.js"></script>
 </body>
