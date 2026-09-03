@@ -48,7 +48,7 @@ adds an **intraday high-frequency Monte Carlo engine** plus a dashboard **Simula
 | 1 | Calibration data source | **Layered:** user CSV (any resolution) → yfinance → IB live client. UI exposes a bar-length selector (1m / 5m / 5s…); 5s is only satisfiable from CSV. Result header always states source + resolution actually used. |
 | 2 | Simulated scope | **Both, phased:** single-strategy runs first; family mode (parent + children re-entry) second, same feature. |
 | 3 | Intraday spread marking | **Vol-linked smile:** quadratic IV(m) fit from a real chain snapshot (sticky-moneyness), level shifted by λ·(σ_path − σ₀). λ=0 degenerates to static smile; flat-IV mode available as a sanity checkbox. |
-| 4 | Entry fill | Theoretical credit mid **rounded down to the 0.05 tick grid** (adverse): 0.27→0.25, 0.23→0.20. Candidate credit uses the conservative combo side (S_bid − L_ask of the synthetic chain). |
+| 4 | Entry fill | Candidate selection masks and ranks on **credit mid** (live `generate_candidates` semantics, so the reference harness agrees). The **fill** = min(tick-floor(mid), conservative side S_bid − L_ask): theo 0.27 with a 0.25 natural → 0.25; theo 0.23 → 0.20. Never better than the natural. |
 | 5 | Stop-loss fill | Market order: exit debit = **trigger price + 0.10** credit points, exactly. Take-profit (if configured): fill at the TP limit when the mark crosses it. Expiry: intrinsic at the 16:00 SPXW PM settle × 100. |
 | 6 | Engine style | **Hybrid, chunked:** numpy for paths + pricing tensors; tensor scans for entry/stop; per-path Python loop only for family-trigger events. Approach-1 MockState loop kept as a *test* to pin semantics. |
 | 7 | Testing | Three tiers: unit, API-level end-to-end, UI-level end-to-end (Playwright). Hermetic via a committed fixture CSV. |
@@ -165,13 +165,13 @@ trigger is invisible at 5m. Finer bars shrink this blind spot (the reason 5s CSV
 
 - **Entry scan** (vectorized over the strategy's entry window, e.g. minutes 120–210 for `Main`):
   - Conditions evaluated verbatim from the JSON strategy: `entry_window`, `short_delta` band (ladder
-    deltas), `spread_width` band (ladder geometry), `credit` band (synthetic combo credit,
-    conservative side S_bid − L_ask), `volatility` (mapped VIX), `trend` (RSI / pmove on the synthetic
+    deltas), `spread_width` band (ladder geometry), `credit` band (synthetic combo credit mid — same
+    masking field as the live engine), `volatility` (mapped VIX), `trend` (RSI / pmove on the synthetic
     price matrix).
   - Valid (short, long) pairs per (path, minute) → mask → argmax credit = "best candidate first", the
     live engine's ordering. Size = `floor(budget / (width × 100))` — same as `_position_size`.
   - First valid minute wins; one entry per strategy per simulated day (mirrors the one-shot cycle).
-- **Fill rules:** entry credit = tick-floor of the candidate's theo mid (0.05 grid, adverse). Stop:
+- **Fill rules:** entry credit = min(tick-floor(mid), S_bid − L_ask natural), floor 0.05. Stop:
   exit debit = trigger + 0.10. TP: limit fill at the TP price on crossing. Expiry: intrinsic × 100.
 - **Exit scan:** mark of the held spread per bar; stop when mark ≥ |fill_credit| × multiplier;
   per-trial record: entry/exit minutes, exit reason, filled prices, per-minute MTM series.
