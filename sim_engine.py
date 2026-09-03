@@ -68,7 +68,7 @@ def window_minutes(strategy: Strategy, steps: int, bar_seconds: int) -> Tuple[in
     bar_min = bar_seconds // 60
     cond = {c.kind: c for c in strategy.conditions if c.enabled}
     if "entry_window" not in cond:
-        return DEFAULT_WINDOW
+        return DEFAULT_WINDOW[0], max(DEFAULT_WINDOW[0], min(DEFAULT_WINDOW[1], steps - 1))
     p = cond["entry_window"].params
 
     def to_idx(hm: str) -> int:
@@ -347,3 +347,72 @@ def run_cell(model: CalibratedModel, cfg: SimRunConfig, strategy: Strategy,
              k: Optional[float] = None) -> List[TrialResult]:
     entry = run_entry(model, cfg, strategy, paths, ladder, k=k)
     return run_exits(model, cfg, strategy, paths, ladder, entry, sl_multiplier=sl_multiplier)
+
+
+def _parse_hhmm_to_bar(hm: str, bar_seconds: int) -> int:
+    h, m = hm.split(":")
+    return max(0, int((int(h) * 60 + int(m) - RTH_START_MIN) // (bar_seconds // 60)) - 1)
+
+
+def trigger_minutes(parent_results: List[TrialResult], child: Strategy,
+                    steps: int, bar_seconds: int = 300) -> np.ndarray:
+    """Per-path earliest child entry minute (-1 = never). Mirrors strategy_engine triggers."""
+    if child.trigger_logic != "any":
+        raise ValueError(f"trigger_logic '{child.trigger_logic}' unsupported (use 'any')")
+    n = len(parent_results)
+    fired = np.full(n, -1, dtype=np.int32)
+    for trig in child.subsequent_triggers:
+        if not trig.enabled:
+            continue
+        for p, res in enumerate(parent_results):
+            if not res.entered:
+                continue
+            if trig.kind == "parent_exit_reason":
+                reason = trig.params.get("reason", "")
+                if reason == "stop_loss":                       # K-a: live close_reason -> sim "stop"
+                    reason = "stop"
+                if res.exit_reason == reason and res.exit_minute >= 0:
+                    cand = res.exit_minute + 1
+                    if fired[p] < 0 or cand < fired[p]:
+                        fired[p] = cand
+            elif trig.kind == "parent_unrealized_pnl":
+                mult = float(trig.params.get("loss_multiple", 1.0))
+                threshold = -mult * res.fill_credit * 100.0
+                mtm = res.mtm
+                if mtm is None:
+                    continue
+                upto = res.exit_minute if res.exit_minute > 0 else steps   # only while the parent is OPEN
+                active = np.nonzero(~np.isnan(mtm[:upto]))[0]
+                for t in active:
+                    if t > res.entry_minute and mtm[t] <= threshold:
+                        if fired[p] < 0 or t + 1 < fired[p]:
+                            fired[p] = t + 1
+                        break
+            elif trig.kind == "time_of_day":
+                latch = _parse_hhmm_to_bar(trig.params.get("time", "12:00"), bar_seconds)
+                if res.entry_minute <= latch:
+                    if fired[p] < 0 or latch + 1 < fired[p]:
+                        fired[p] = latch + 1
+    return fired
+
+
+def run_family(model: CalibratedModel, cfg: SimRunConfig, root: Strategy,
+               children: List[Strategy], paths, ladder: np.ndarray):
+    """Root with its sweep multiplier; children re-enter per their own triggers/rules."""
+    root_results = run_cell(model, cfg, root, paths, ladder)     # sweep applies to root only
+    results = {root.name: root_results}
+    total = np.array([r.pnl for r in root_results])
+    bar_secs = BAR_SECONDS_GET(cfg)
+    for child in children:
+        if child.parent_name != root.name:
+            continue
+        starts = trigger_minutes(root_results, child, paths.spots.shape[1], bar_secs)
+        eligible = starts >= 0
+        starts_c = np.where(eligible, starts, paths.spots.shape[1])   # never-eligible -> out of range
+        child_results = run_exits(
+            model, cfg, child, paths, ladder,
+            run_entry(model, cfg, child, paths, ladder, per_path_start=starts_c),
+            sl_multiplier=None)                                        # child keeps its own stop
+        results[child.name] = child_results
+        total = total + np.array([r.pnl if r.entered else 0.0 for r in child_results])
+    return results, total
