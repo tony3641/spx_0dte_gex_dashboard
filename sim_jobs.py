@@ -25,6 +25,8 @@ _CALIB_CACHE: Dict[tuple, CalibratedModel] = {}
 _registry: Dict[str, dict] = {}
 _busy: Optional[str] = None
 _lock = threading.Lock()
+_REGISTRY_MAX_KEPT = 10          # spec §7: keep the last ~10 finished results in memory
+_TERMINAL_STATES = ("done", "error", "cancelled")
 
 
 def reset_registry() -> None:
@@ -32,6 +34,22 @@ def reset_registry() -> None:
     with _lock:
         _registry.clear()
         _busy = None
+
+
+def _prune_registry(max_keep: int = _REGISTRY_MAX_KEPT) -> None:
+    """Drop the oldest COMPLETED jobs beyond the most recent ``max_keep``.
+
+    Never drops a job that is still active (queued/loading/calibrating/simulating)
+    or whose thread may yet write to it; only terminal states are candidates.
+    """
+    if max_keep < 1:
+        return
+    with _lock:
+        finished = sorted(
+            (job["created"], jid) for jid, job in _registry.items()
+            if job.get("state") in _TERMINAL_STATES)
+        for _, jid in finished[:-max_keep]:
+            _registry.pop(jid, None)
 
 
 def get_status(job_id: str) -> dict:
@@ -75,12 +93,24 @@ def start_run(cfg_dict: dict, state=None, ib=None) -> dict:
             job["broadcast_fn"] = None
     except RuntimeError:
         pass  # no running loop (scripts): job still runs detached; WS push stays disabled
+    # Keep the in-memory registry bounded (spec §7): finished jobs beyond the most
+    # recent ~10 are dropped before a new run is admitted. Active jobs are untouched.
+    _prune_registry()
     # Run the job on a dedicated daemon thread, NOT as an asyncio task on the caller's loop.
     # A loop-tied task (asyncio.to_thread) is drained by the request's event loop, so a
     # request that starts a job would block until the job finishes and the busy-guard in
     # the API layer could never observe a second run while the first is in flight
     # (TestClient closes each request's portal and waits on its pending tasks).
-    threading.Thread(target=_execute, args=(job_id, state, ib), daemon=True).start()
+    try:
+        threading.Thread(target=_execute, args=(job_id, state, ib), daemon=True).start()
+    except Exception as e:
+        # A failed start would strand `_busy` (nothing reaches _execute's finally to
+        # clear it) and leave a queued job that can never finish. Reset and error it.
+        with _lock:
+            if _busy == job_id:
+                _busy = None
+        job["state"] = "error"
+        job["message"] = f"failed to start sim worker thread: {e}"
     return {"job_id": job_id}
 
 
@@ -167,21 +197,33 @@ def execute_pipeline(cfg: SimRunConfig, bars: BarSeries, progress_cb: Callable,
     return dict(meta=meta, cells=results)
 
 
-def _execute(job_id: str, state, ib) -> None:
+def _execute(job_id: str, state, ib=None) -> None:
+    """Run a job on the worker thread.
+
+    ``ib`` is UNUSED / reserved: the simulator rejects ``source='ib'`` in
+    SimRunConfig.validate(), so bar data here always comes from csv/yfinance.
+    """
     global _busy
     job = _registry[job_id]
     cfg: SimRunConfig = job["cfg"]
 
     def progress(p, msg):
         job["progress"], job["message"] = float(p), msg
+        # Spec §7 state machine: expose the pipeline's "calibrating" phase (the loader
+        # already sets loading; the sweep loop maps to simulating) instead of only ever
+        # reporting loading/simulating while the message text says calibrating.
+        if msg == "calibrating":
+            job["state"] = "calibrating"
+        elif msg.startswith("cell "):
+            job["state"] = "simulating"
         _push_ws(job, p, msg)
 
     try:
         job["state"] = "loading"
         bars = _load_bars_for(cfg)
         if bars is None:
-            # server path resolves IB here on the caller's loop; thread falls back to
-            # csv/yfinance only (no event loop in this thread).
+            # No IB path exists on the worker thread; only the sync layered loader
+            # (csv/yfinance) is reachable here.
             bars = load_bars(cfg)
             _BARS_CACHE[(cfg.source, cfg.csv_path, cfg.bar_size, cfg.lookback_days)] = bars
         spot0 = float(cfg.spot0) if cfg.spot0 else float(bars.closes[-1])

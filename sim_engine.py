@@ -18,7 +18,10 @@ from sim_pricing import (RISK_FREE_RATE, bar_year_frac, bsm_put, bsm_put_delta,
 from strategy_models import Condition, Strategy
 
 RTH_START_MIN = 570          # 09:30
-DEFAULT_WINDOW = (0, 360)    # 09:30 -> 15:30 bar-index window (live engine default)
+# Live-engine default entry window end is 15:30 = 360 MINUTES after 09:30. window_minutes
+# treats the tuple as a bar-index range and grid-clamps it (min(360, steps-1)), so for bars
+# finer than 1m the clamp (not this constant) sets the true end bar.
+DEFAULT_WINDOW = (0, 360)
 
 
 @dataclass
@@ -40,8 +43,42 @@ def _num(params: dict, key: str) -> Optional[float]:
     return float(v)
 
 
+def _reject_unsupported_strategy(strategy: Strategy) -> None:
+    """Spec honesty rule (§3): never silently skip a gate the sim can't faithfully evaluate.
+
+    Raises ValueError instead of mis-simulating a strategy the engine does not support:
+    - direction other than ``bull_put`` (the geometry — short high put / long low put —
+      is bull-put-only, so a bear_call would otherwise be silently simulated as a bull put);
+    - an enabled ``trend`` entry condition (live pmove/RSI trend params use a schema the
+      sim does not port — wilder_rsi / per-minute trend state are not evaluated, so refuse);
+    - a ``volatility`` condition with ``atm_iv_enabled`` (only ``vix_enabled`` is simulated).
+    Disabled conditions are inert and never raise.
+    """
+    if strategy.direction != "bull_put":
+        raise ValueError(
+            f"strategy '{strategy.name}' has direction '{strategy.direction}'; the simulator "
+            f"only implements bull_put verticals and will not mis-simulate it as one")
+    for c in strategy.conditions:
+        if not c.enabled:
+            continue
+        if c.kind == "trend":
+            raise ValueError(
+                f"strategy '{strategy.name}' enables a '{c.kind}' (pmove/RSI) entry gate, "
+                f"which the simulator cannot faithfully evaluate; it is not silently skipped")
+        if c.kind == "volatility" and c.params.get("atm_iv_enabled"):
+            raise ValueError(
+                f"strategy '{strategy.name}' enables an atm_iv volatility gate, which the "
+                f"simulator cannot faithfully evaluate (only vix_enabled is supported); "
+                f"it is not silently skipped")
+
+
 def extract_conditions(strategy: Strategy) -> dict:
-    """Same unset-bound semantics as strategy_engine._lo/_hi."""
+    """Same unset-bound semantics as strategy_engine._lo/_hi.
+
+    Raises ValueError for enabled unsupported conditions (see _reject_unsupported_strategy)
+    so a gate the sim cannot faithfully evaluate is a loud refusal, never a silent skip.
+    """
+    _reject_unsupported_strategy(strategy)
     cond = {c.kind: c for c in strategy.conditions if c.enabled}
     out = dict(dmin=0.05, dmax=0.35, wmin=5.0, wmax=50.0, cmin=0.0, cmax=float("inf"),
                vix=None, trend=None)
@@ -59,7 +96,6 @@ def extract_conditions(strategy: Strategy) -> dict:
         out["cmax"] = _num(p, "max") if _num(p, "max") is not None else float("inf")
     if "volatility" in cond and cond["volatility"].params.get("vix_enabled"):
         out["vix"] = cond["volatility"].params
-    out["trend"] = cond.get("trend")
     return out
 
 
@@ -148,26 +184,9 @@ def run_entry(model: CalibratedModel, cfg: SimRunConfig, strategy: Strategy,
         return EntryState(entered, entry_minute, short_idx, long_idx, width, qty, fill, theo)
 
     # ---- engine mode: per-minute scan over the window, same semantics as generate_candidates ----
+    # Enabled trend/pmove/RSI gates are rejected up front in _reject_unsupported_strategy,
+    # so no trend series is computed here (nothing is silently skipped).
     widths_all = np.arange(int(np.ceil(cond["wmin"] / step)) * step, cond["wmax"] + step / 2, step)
-    trend = cond["trend"]
-    if trend is not None:
-        # inline trend-series computation (binding note): pmove + Wilder-seeded RSI per window minute
-        closes = paths.spots                                  # (n, steps)
-        pm_n = int(trend.params.get("minutes", 5))
-        pmove = np.full((n, steps), np.nan)
-        if steps > pm_n:
-            pmove[:, pm_n:] = (closes[:, pm_n:] / closes[:, :-pm_n] - 1.0) * 100.0
-        rsi = np.full((n, steps), np.nan)
-        period = int(trend.params.get("period", 14))
-        for t2 in range(w0, w1 + 1):
-            if t2 < period:
-                continue
-            win = closes[:, t2 - period:t2 + 1]               # (n, period+1)
-            diffs = np.diff(win, axis=1)
-            gains = np.where(diffs > 0, diffs, 0.0)
-            losses = np.where(diffs < 0, -diffs, 0.0)
-            ag, al = gains.mean(axis=1), losses.mean(axis=1)  # Wilder seeding is the
-            rsi[:, t2] = np.where(al == 0, 100.0, 100.0 - 100.0 / (1.0 + ag / np.maximum(al, 1e-12)))
     best_cm = np.full(n, -np.inf)
     best_cc = np.zeros(n)
     best_s = np.full(n, -1, dtype=np.int32)
@@ -192,15 +211,6 @@ def run_entry(model: CalibratedModel, cfg: SimRunConfig, strategy: Strategy,
             vok = _passes_bucket(v, op, lo, hi)
         else:
             vok = np.ones(n, dtype=bool)
-        if trend is not None:
-            p = trend.params
-            from strategy_engine import _passes_bucket, _bucket_params
-            if p.get("pmove_enabled"):
-                op, lo, hi = _bucket_params(p, "pmove")
-                vok &= _passes_bucket(pmove[:, t], op, lo, hi)
-            if p.get("rsi_enabled"):
-                op, lo, hi = _bucket_params(p, "rsi")
-                vok &= _passes_bucket(rsi[:, t], op, lo, hi)
         cand = todo & vok
         if not cand.any():
             continue
@@ -398,8 +408,9 @@ def trigger_minutes(parent_results: List[TrialResult], child: Strategy,
 
 def run_family(model: CalibratedModel, cfg: SimRunConfig, root: Strategy,
                children: List[Strategy], paths, ladder: np.ndarray):
-    """Root with its sweep multiplier; children re-enter per their own triggers/rules."""
-    root_results = run_cell(model, cfg, root, paths, ladder)     # sweep applies to root only
+    """Root cell (its own stop multiplier — SL/k sweeps are rejected in family mode);
+    children re-enter per their own triggers/rules."""
+    root_results = run_cell(model, cfg, root, paths, ladder)
     results = {root.name: root_results}
     total = np.array([r.pnl for r in root_results])
     bar_secs = BAR_SECONDS_GET(cfg)

@@ -99,6 +99,32 @@ def test_snapshot_round_trip(tmp_path, monkeypatch):
     assert src2 == "builtin" and smile2 == sc.DEFAULT_SMILE
 
 
+def _two_day_series_with_overnight_gap():
+    from sim_data import BarSeries
+    rng = np.random.default_rng(21)
+    bars = 78
+    mods = 570 + 5 * (np.arange(bars) + 1)                # 575..960 = one RTH day at 5m
+    day0 = 6000.0 * np.exp(0.0004 * np.cumsum(rng.standard_normal(bars)))
+    # +50% overnight gap: day1's first close is 1.5x day0's last close. The cross-day
+    # log-diff (~0.405) is a prior-16:00 -> next-09:3x move, NOT part of 0DTE intraday
+    # dynamics. If it were folded in it would land in the opening U-shape bucket + inflate sigma0.
+    day1 = (float(day0[-1]) * 1.5) * np.exp(0.0004 * np.cumsum(rng.standard_normal(bars)))
+    return BarSeries(closes=np.concatenate([day0, day1]),
+                     minute_of_day=np.concatenate([mods, mods]),
+                     bar_seconds=300, source="csv")
+
+
+def test_calibrate_excludes_overnight_cross_day_return():
+    from sim_calibrate import calibrate
+    from sim_config import SimRunConfig
+    bars = _two_day_series_with_overnight_gap()
+    model = calibrate(bars, SimRunConfig(strategy_name="Main"))
+    # The overnight log-diff (~0.405) would land in the opening minute bucket and blow it out
+    # (pre-fix ushape[:3] clips at the 4.0 cap). Excluding cross-day diffs keeps the opening
+    # U-shape at the intraday scale (~1.0) instead of an inflated 4.0.
+    assert model.ushape[:3].mean() < 3.0
+
+
 def test_calibrate_end_to_end():
     from sim_config import SimRunConfig
     from sim_calibrate import calibrate

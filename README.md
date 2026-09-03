@@ -75,6 +75,30 @@ The exact URLs are printed to the console when the server starts. You can overri
 - **Simulation** — run intraday MC stress tests, sweep stop-loss multipliers and dynamic strike distances, A/B stress dials, export results to CSV.
 - **Log** — real-time framework log.
 
+## Simulation
+
+The Simulation tab runs an intraday Monte Carlo stress test of a saved strategy (or a
+parent + children family) against synthetic GJR-GARCH + Student-t paths. It only **reads**
+`Strategy` objects — it never places orders or touches live trading state.
+
+### Known limitations
+
+- **Family mode** uses placeholder per-path stats (`mtm=None`) and does **not** support
+  SL/k sweeps — a family-mode config with `sl_multipliers` or `dynamic_k_values` is rejected.
+- **IB live bars are not yet implemented** in the simulator — use `csv` or `yfinance`
+  (`source="ib"` is rejected).
+- **trend / pmove / RSI / atm_iv entry gates are not supported.** A strategy that enables one
+  is rejected with a validation error rather than silently simulated without the gate
+  (`vix_enabled` volatility conditions are supported).
+- **`bear_call` is not simulated** — a non-`bull_put` strategy is rejected rather than
+  mis-simulated with bull-put geometry.
+- **Single-mode day-PnL stats count entered days only**; family-mode totals include zero-PnL
+  days for never-entered children paths (a definition mismatch between the two modes).
+- **Engine-mode exit scans are per-path Python loops**; "~10k paths in seconds" is optimistic
+  for large sweeps with many cells.
+- **Sweep cells use independent RNG streams** (no common random numbers), so cross-cell
+  differences include sampling noise — an experiment-quality tradeoff, not a paired A/B.
+
 ## Charts
 
 ### 1. SPX Intraday (top)

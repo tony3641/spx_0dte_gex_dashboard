@@ -46,6 +46,12 @@ class SimRunConfig:
             raise ValueError(f"mode must be one of {_MODES}")
         if self.source not in _SOURCES:
             raise ValueError(f"source must be one of {_SOURCES}")
+        if self.source == "ib":
+            raise ValueError("IB live bar ingestion is not implemented in the simulator — "
+                             "use 'csv' or 'yfinance'")
+        if self.mode == "family" and (self.sl_multipliers or self.dynamic_k_values):
+            raise ValueError("SL/k sweep is not supported in family mode; leave "
+                             "sl_multipliers and dynamic_k_values empty")
         if self.bar_size not in BAR_SECONDS:
             raise ValueError(f"bar_size must be one of {sorted(BAR_SECONDS)}")
         if self.n_paths <= 0:

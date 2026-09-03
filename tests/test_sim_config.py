@@ -26,6 +26,27 @@ def test_validate_rejects_bad_inputs():
     SimRunConfig(strategy_name="X", sl_multipliers=[1.5, float("inf")]).validate()
 
 
+def test_validate_rejects_ib_source():
+    with pytest.raises(ValueError, match="[Ii][Bb]"):
+        SimRunConfig(strategy_name="X", source="ib").validate()
+
+
+def test_validate_rejects_family_with_sweep_params():
+    with pytest.raises(ValueError, match="family mode"):
+        SimRunConfig(strategy_name="X", mode="family", sl_multipliers=[2.0, 6.0]).validate()
+    with pytest.raises(ValueError, match="family mode"):
+        SimRunConfig(strategy_name="X", mode="family", strike_mode="dynamic_k",
+                     dynamic_k_values=[0.3, 0.6]).validate()
+    # single mode may sweep — only the family-mode combination is rejected
+    SimRunConfig(strategy_name="X", mode="single", sl_multipliers=[2.0, 6.0]).validate()
+    SimRunConfig(strategy_name="X", mode="single", strike_mode="dynamic_k",
+                 dynamic_k_values=[0.3, 0.6]).validate()
+
+
+def test_validate_family_without_sweep_passes():
+    SimRunConfig(strategy_name="X", mode="family").validate()
+
+
 def test_json_round_trip():
     cfg = SimRunConfig(strategy_name="Main", n_paths=99, sl_multipliers=[2.0, float("inf")])
     d = cfg.to_dict()

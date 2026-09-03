@@ -93,3 +93,57 @@ def test_smile_endpoint_reports_source(client):
     assert r.status_code == 200
     assert r.json()["source"] in ("captured", "default", "builtin")
     assert {"a", "b", "c", "half_spread_atm"} <= set(r.json()["smile"])
+
+
+def test_result_returns_409_when_job_not_finished(client, monkeypatch):
+    """GET /api/sim/result/{id} must 409 (not 200/500) while the job is still running."""
+    import threading
+
+    import sim_jobs
+
+    release, started = threading.Event(), threading.Event()
+
+    def slow_pipeline(cfg, bars, cb, spot0, cancel_check=None, state=None):
+        started.set()
+        release.wait(10)
+        return {"meta": {"strategy": cfg.strategy_name}, "cells": []}
+
+    monkeypatch.setattr(sim_jobs, "execute_pipeline", slow_pipeline)
+    body = {"strategy_name": "T", "source": "csv", "csv_path": FIXTURE, "n_paths": 10}
+    r = client.post("/api/sim/run", json=body)
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    assert started.wait(5), "background job never started"
+    rr = client.get(f"/api/sim/result/{job_id}")
+    assert rr.status_code == 409
+    assert rr.json()["detail"] == "job not finished"
+    assert client.post(f"/api/sim/cancel/{job_id}").json()["cancelled"] is True
+    release.set()
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if client.get(f"/api/sim/status/{job_id}").json()["state"] in ("done", "cancelled"):
+            break
+        time.sleep(0.05)
+
+
+def test_smile_capture_succeeds_when_chain_seeded(client, monkeypatch, tmp_path):
+    """POST /api/sim/smile/capture fits + saves a smile when a live chain is present."""
+    import sim_calibrate
+    old_cache = server.state.chain_quotes_cache
+    old_spot = server.state.spx_price
+    monkeypatch.setattr(sim_calibrate, "SMILE_CAPTURE_PATH", str(tmp_path / "sim_smile.json"))
+    # chain rows mirror chain_manager.build_chain_quotes: strike + put_iv in percent.
+    strikes = [{"strike": float(s), "put_iv": 20.0} for s in (5700, 5800, 5900, 5950,
+                                                               6000, 6050, 6100)]
+    server.state.chain_quotes_cache = {"strikes": strikes}
+    server.state.spx_price = 6000.0
+    try:
+        r = client.post("/api/sim/smile/capture")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["source"] == "captured"
+        assert body["points"] >= 5
+        assert {"a", "b", "c", "half_spread_atm"} <= set(body["smile"])
+    finally:
+        server.state.chain_quotes_cache = old_cache
+        server.state.spx_price = old_spot

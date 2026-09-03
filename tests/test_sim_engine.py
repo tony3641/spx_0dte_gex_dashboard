@@ -1,5 +1,6 @@
 # tests/test_sim_engine.py
 import numpy as np
+import pytest
 
 from sim_calibrate import CalibratedModel, DEFAULT_SMILE, GarchParams
 from sim_config import SimRunConfig
@@ -36,6 +37,48 @@ def _paths(spot=6000.0, n=30, steps=78):
 def test_window_minutes_maps_bars():
     cfg = SimRunConfig(strategy_name="T", bar_size="5m")
     assert window_minutes(_strategy(), 78, 300) == (0, 5)   # 09:35..10:00 closes = bars 0..5
+
+
+def _strategy_with(*conds):
+    s = _strategy()
+    s.conditions = list(s.conditions) + [Condition(kind=k, params=p) for k, p in conds]
+    return s
+
+
+def _ladder():
+    return np.arange(5100.0, 6900.0 + 2.5, 5.0)
+
+
+def test_enabled_trend_condition_raises_not_silently_skipped():
+    cfg = SimRunConfig(strategy_name="T", bar_size="5m")
+    strat = _strategy_with(("trend", {"indicator": "rsi", "period": 14, "op": "below",
+                                      "value": 30.0}))
+    with pytest.raises(ValueError, match="trend"):
+        run_entry(_model(), cfg, strat, _paths(), _ladder())
+
+
+def test_enabled_atm_iv_volatility_condition_raises():
+    cfg = SimRunConfig(strategy_name="T", bar_size="5m")
+    strat = _strategy_with(("volatility", {"atm_iv_enabled": True, "atm_iv_op": "below",
+                                           "atm_iv_value": 25.0}))
+    with pytest.raises(ValueError, match="atm_iv"):
+        run_entry(_model(), cfg, strat, _paths(), _ladder())
+
+
+def test_vix_only_volatility_condition_still_validates():
+    cfg = SimRunConfig(strategy_name="T", bar_size="5m")
+    strat = _strategy_with(("volatility", {"vix_enabled": True, "vix_op": "below",
+                                           "vix_value": 25.0}))
+    es = run_entry(_model(), cfg, strat, _paths(), _ladder())   # must NOT raise
+    assert es.entered.shape == (30,)
+
+
+def test_bear_call_direction_rejected():
+    cfg = SimRunConfig(strategy_name="T", bar_size="5m")
+    strat = _strategy()
+    strat.direction = "bear_call"                    # geometry is bull-put-only; reject loudly
+    with pytest.raises(ValueError, match="bull_put"):
+        run_entry(_model(), cfg, strat, _paths(), _ladder())
 
 
 def test_extract_conditions_defaults():

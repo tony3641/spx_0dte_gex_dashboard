@@ -59,6 +59,12 @@ def fan_quantiles(mtms: List[np.ndarray]) -> dict:
 
 
 def histogram(pnls: np.ndarray, bins: int = 40) -> dict:
+    """Binned PnL distribution.
+
+    Note: the empty/near-empty-array result (edges/counts for a zero-length input) is
+    numpy-version dependent; callers with no entered paths guard on ``stats.entered == 0``
+    (the sim-tab UI skips the hist chart in that case) rather than parsing the edges.
+    """
     p = np.asarray(pnls, dtype=float)
     p = p[np.isfinite(p)]
     counts, edges = np.histogram(p, bins=bins)

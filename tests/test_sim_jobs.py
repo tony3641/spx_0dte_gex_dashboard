@@ -90,3 +90,25 @@ def test_start_run_lifecycle_with_stub_engine(monkeypatch):
 def test_start_run_validates_and_blocks_concurrency():
     with pytest.raises(ValueError):
         sim_jobs.start_run({"strategy_name": "", "n_paths": 10})
+
+
+def test_registry_pruned_to_last_ten_keeping_active():
+    sim_jobs.reset_registry()
+    for i in range(12):                                    # 12 finished jobs, oldest first
+        sim_jobs._registry[f"done{i}"] = dict(id=f"done{i}", state="done", progress=1.0,
+                                              message="", result={"cells": []},
+                                              cancelled=False, created=float(i))
+    sim_jobs._registry["act_run"] = dict(id="act_run", state="simulating", progress=0.4,
+                                         message="", result=None, cancelled=False, created=100.0)
+    sim_jobs._registry["queued_run"] = dict(id="queued_run", state="queued", progress=0.0,
+                                            message="", result=None, cancelled=False,
+                                            created=101.0)
+    sim_jobs._prune_registry()
+    # oldest two finished jobs dropped; the newest ten finished survive
+    assert "done0" not in sim_jobs._registry and "done1" not in sim_jobs._registry
+    assert "done2" in sim_jobs._registry and "done11" in sim_jobs._registry
+    # active jobs are never dropped
+    assert sim_jobs._registry["act_run"]["state"] == "simulating"
+    assert sim_jobs._registry["queued_run"]["state"] == "queued"
+    terminal = [jid for jid, j in sim_jobs._registry.items() if j["state"] == "done"]
+    assert len(terminal) == 10

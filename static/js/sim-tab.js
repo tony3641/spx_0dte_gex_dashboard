@@ -4,6 +4,7 @@
     let currentResult = null;
     let selectedCell = 0;
     let pollTimer = null;
+    let pollFailures = 0;   // consecutive status-fetch failures (bounded retry in poll())
     let activeJobId = null;
 
     const $ = (id) => document.getElementById(id);
@@ -79,27 +80,39 @@
 
     function poll(jobId) {
         clearInterval(pollTimer);
+        pollFailures = 0;
         pollTimer = setInterval(async () => {
+            let state = null;
+            let terminal = false;
             try {
-                const s = await (await fetch(`/api/sim/status/${jobId}`)).json();
-                $('simProgress').style.width = `${Math.round((s.progress || 0) * 100)}%`;
-                $('simStatus').textContent = `${s.state} — ${s.message || ''}`;
-                if (['done', 'error', 'cancelled'].includes(s.state)) {
-                    clearInterval(pollTimer);
-                    $('simRun').disabled = false;
-                    $('simCancel').disabled = true;
-                    if (s.state === 'error') {
-                        $('simStatus').className = 'sim-status error';
-                    } else if (s.state === 'done') {
-                        currentResult = await (await fetch(`/api/sim/result/${jobId}`)).json();
-                        selectedCell = 0;
-                        render();
-                    }
+                const resp = await fetch(`/api/sim/status/${jobId}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                state = await resp.json();
+                pollFailures = 0;
+                $('simProgress').style.width = `${Math.round((state.progress || 0) * 100)}%`;
+                $('simStatus').textContent = `${state.state} — ${state.message || ''}`;
+                if (state.state === 'done') {
+                    const r = await fetch(`/api/sim/result/${jobId}`);
+                    if (!r.ok) throw new Error(`result HTTP ${r.status}`);
+                    currentResult = await r.json();
+                    selectedCell = 0;
+                    render();
                 }
+                terminal = ['done', 'error', 'cancelled'].includes(state.state);
             } catch (err) {
+                pollFailures += 1;
+                // Bounded retry: one transient status-fetch failure must not permanently stop
+                // the timer while the job keeps running. Only give up after a few consecutive
+                // failures (the fetch failures are transient, not a terminal job state).
+                terminal = pollFailures >= 3;
+                if (terminal) $('simStatus').textContent = `poll failed: ${err}`;
+            }
+            if (terminal) {
                 clearInterval(pollTimer);
+                pollTimer = null;
                 $('simRun').disabled = false;
-                $('simStatus').textContent = `poll failed: ${err}`;
+                $('simCancel').disabled = true;
+                if (state && state.state === 'error') $('simStatus').className = 'sim-status error';
             }
         }, 500);
     }
@@ -155,12 +168,16 @@
     function charts(cell) {
         const dark = { paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
                        font: { color: '#c9cdd4' } };
-        // Day-PnL histogram
-        Plotly.newPlot('simHist', [{
-            type: 'bar', x: cell.hist.edges.slice(1).map((e, i) => (e + cell.hist.edges[i]) / 2),
-            y: cell.hist.counts, marker: { color: '#4a89dc' },
-        }], Object.assign({ title: 'Day PnL distribution ($)', bargap: 0.02 }, dark),
-            { responsive: true, displayModeBar: false });
+        const stats = cell.stats || {};
+        // Day-PnL histogram — mirror the fan/max-DD guards: a cell with zero entered paths
+        // has a degenerate/empty binning, so skip the chart instead of plotting nothing.
+        if (stats.entered > 0 && cell.hist && cell.hist.edges && cell.hist.edges.length > 1) {
+            Plotly.newPlot('simHist', [{
+                type: 'bar', x: cell.hist.edges.slice(1).map((e, i) => (e + cell.hist.edges[i]) / 2),
+                y: cell.hist.counts, marker: { color: '#4a89dc' },
+            }], Object.assign({ title: 'Day PnL distribution ($)', bargap: 0.02 }, dark),
+                { responsive: true, displayModeBar: false });
+        }
         // MTM quantile fan
         const f = cell.fan;
         if (f && f.minutes && f.minutes.length) {
@@ -237,10 +254,15 @@
     }
 
     async function captureSmile() {
-        const r = await fetch('/api/sim/smile/capture', { method: 'POST' });
-        const body = await r.json().catch(() => ({}));
-        $('simSmileInfo').textContent = r.ok
-            ? `smile: captured (${body.points} pts)` : `capture failed: ${body.detail || r.status}`;
+        try {
+            const r = await fetch('/api/sim/smile/capture', { method: 'POST' });
+            const body = await r.json().catch(() => ({}));
+            $('simSmileInfo').textContent = r.ok
+                ? `smile: captured (${body.points} pts)` : `capture failed: ${body.detail || r.status}`;
+        } catch (err) {
+            // A network error must show inline, not surface as an unhandled rejection.
+            $('simSmileInfo').textContent = `capture failed: ${err.message || err}`;
+        }
     }
 
     function init() {

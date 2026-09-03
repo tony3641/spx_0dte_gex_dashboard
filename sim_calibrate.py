@@ -204,12 +204,30 @@ def save_smile_snapshot(smile: SmileParams) -> None:
         json.dump(smile.to_dict(), f, indent=2)
 
 
+def _drop_overnight_returns(closes: np.ndarray, minute_of_day: np.ndarray):
+    """Exclude cross-day diffs from an intraday return series.
+
+    ``rets[i]`` spans bar ``i`` -> bar ``i+1``; a new RTH day is signalled by a
+    ``minute_of_day`` decrease at the transition (intraday times ascend within a day,
+    then drop back to the 09:30 open). The prior-16:00 -> next-09:3x close diff is an
+    overnight gap that is NOT part of 0DTE intraday dynamics — folding it into the
+    return series would inflate the opening U-shape bucket and skew sigma0 — so it is
+    dropped before GJR fitting and U-shape bucketing.
+    """
+    closes = np.asarray(closes, dtype=float)
+    mods = np.asarray(minute_of_day, dtype=float)
+    rets = np.diff(np.log(closes))
+    if len(closes) < 2 or len(mods) != len(closes):
+        # Degenerate/unexpected bar metadata: keep the historical un-filtered series.
+        return rets, mods[1:]
+    same_day = mods[1:] > mods[:-1]          # True where the closing bar is later in the day
+    return rets[same_day], mods[1:][same_day]
+
+
 def calibrate(bars: BarSeries, cfg: SimRunConfig) -> CalibratedModel:
     """Full calibration: returns -> GJR-t MLE -> U-shape -> smile snapshot -> VIX mapping."""
     warnings: List[str] = list(bars.warnings)
-    closes = bars.closes
-    rets = np.diff(np.log(closes))
-    mods = bars.minute_of_day[1:]
+    rets, mods = _drop_overnight_returns(bars.closes, bars.minute_of_day)
     garch, w = fit_gjr_t(rets)
     warnings += w
     ushape = fit_ushape(rets, mods, cfg.steps_per_day())
