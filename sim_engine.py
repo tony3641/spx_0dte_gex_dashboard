@@ -229,17 +229,20 @@ def run_entry(model: CalibratedModel, cfg: SimRunConfig, strategy: Strategy,
         newly &= ~entered
         if newly.any():
             r = np.nonzero(newly)[0]
-            entered[r] = True
-            entry_minute[r] = t
-            offs = np.round(best_w[r] / step).astype(np.int32)          # width in ladder indices
-            short_idx[r] = best_s[r] + offs                            # SHORT at high strike
-            long_idx[r] = best_s[r]                                    # LONG at low strike (best_s)
-            width[r] = best_w[r]
-            qty[r] = _qty_for(strategy.budget, best_w[r] * 100.0)
-            for j in r:
-                fill[j] = combo_fill_credit(float(best_cm[j]), float(best_cc[j]), cfg.tick_size)
-            theo[r] = best_cm[r]
-            best_cm[r] = -np.inf
+            q_r = _qty_for(strategy.budget, best_w[r] * 100.0)
+            r_ok = r[q_r > 0]                                   # only spreads the path can afford
+            if r_ok.size:
+                entered[r_ok] = True
+                entry_minute[r_ok] = t
+                offs = np.round(best_w[r_ok] / step).astype(np.int32)   # width in ladder indices
+                short_idx[r_ok] = best_s[r_ok] + offs                   # SHORT at high strike
+                long_idx[r_ok] = best_s[r_ok]                           # LONG at low strike (best_s)
+                width[r_ok] = best_w[r_ok]
+                qty[r_ok] = q_r[q_r > 0]
+                for j in r_ok:
+                    fill[j] = combo_fill_credit(float(best_cm[j]), float(best_cc[j]), cfg.tick_size)
+                theo[r_ok] = best_cm[r_ok]
+            best_cm[r] = -np.inf   # clear per-minute best (entered + unaffordable alike)
         # (best_* state is reused next minute only for still-unentered paths)
     return EntryState(entered, entry_minute, short_idx, long_idx, width, qty, fill, theo)
 

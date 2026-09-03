@@ -86,3 +86,13 @@ def test_run_entry_respects_per_path_start():
     es = run_entry(model, cfg, strat, paths, ladder, per_path_start=start)
     ent = es.entered.astype(bool)
     assert ent.sum() > 0 and (es.entry_minute[ent] >= 4).all()
+
+
+def test_run_entry_engine_mode_budget_gates_qty():
+    cfg = SimRunConfig(strategy_name="T", bar_size="5m")
+    strat, model, paths = _strategy(), _model(), _paths()
+    strat.budget = 100.0                                       # below every spread margin (>= 40*100)
+    ladder = np.arange(5100.0, 6900.0 + 2.5, 5.0)
+    es = run_entry(model, cfg, strat, paths, ladder)
+    assert es.entered.sum() == 0                               # cannot afford -> never marked entered
+    assert (es.qty == 0).all()                                 # no qty==0 "entered" records
