@@ -39,3 +39,4 @@ docs/superpowers/
 
 # Superpowers SDD workspace (scratch)
 .superpowers/
+config/sim_smile.json
