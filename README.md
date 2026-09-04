@@ -81,6 +81,12 @@ The Simulation tab runs an intraday Monte Carlo stress test of a saved strategy 
 parent + children family) against synthetic GJR-GARCH + Student-t paths. It only **reads**
 `Strategy` objects — it never places orders or touches live trading state.
 
+Here's what the report it produces looks like:
+
+![Simulated SPX percentile fan, run tiles, and sweep table](docs/simulation1.png)
+![Day PnL distribution and spread mark-to-market through the day](docs/simulation2.png)
+![Bootstrap max-drawdown histogram over 60-day sequences](docs/simulation3.png)
+
 ### Known limitations
 
 - **Family mode** uses placeholder per-path stats (`mtm=None`) and does **not** support
