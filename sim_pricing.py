@@ -60,6 +60,9 @@ def build_ladder(s0: float, range_pct: float, step: float = 5.0) -> np.ndarray:
 def tick_floor(x, tick: float = 0.05):
     a = np.asarray(x, dtype=float)
     out = np.floor((a + 1e-9) / tick) * tick
+    # round off binary-FP drift (e.g. 3 * 0.05 -> 0.15000000000000002) so results sit
+    # cleanly on the tick grid in reports.
+    out = np.round(out, 6)
     return float(out) if out.ndim == 0 else out
 
 
@@ -67,5 +70,8 @@ def combo_fill_credit(mid_credit: float, cons_credit: float, tick: float) -> flo
     """Entry fill: never better than the natural, rounded down to the tick grid.
 
     Spec: fill = min(tick-floor(mid), conservative side), floored at one tick.
+    The RESULT is itself on the tick grid too — the conservative side
+    (bid_short - ask_long) is an arbitrary float, so it is floored as well.
     """
-    return float(max(tick, min(tick_floor(mid_credit, tick), cons_credit)))
+    raw = min(tick_floor(mid_credit, tick), cons_credit)
+    return float(max(tick, tick_floor(raw, tick)))

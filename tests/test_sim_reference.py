@@ -43,7 +43,7 @@ def test_vectorized_entry_matches_generate_candidates():
             continue
         t = int(es.entry_minute[p])
         spot = float(spots[p, t])
-        m = (ladder - spot) / spot
+        m = np.log(ladder / spot)
         T = (steps - 1 - t) * bar_year_frac(300)
         # same smile as the engine; vol-link term is 0 because path sigma == sigma0 here
         iv = DEFAULT_SMILE.iv(m)

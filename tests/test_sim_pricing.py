@@ -36,7 +36,7 @@ def test_put_delta_matches_gex_calculator():
 
 
 def test_smile_iv_vol_link_and_flat():
-    smile = SmileParams(a=0.20, b=-0.35, c=1.2, half_spread_atm=0.05)
+    smile = SmileParams(a=0.04, b=1.8, rho=-0.75, m0=0.03, sigma=0.06, half_spread_atm=0.05)
     m = np.array([-0.03, 0.0])
     # row 0 = higher path vol, row 1 = lower path vol (matrix: rows=vol state, cols=moneyness)
     iv = smile_iv(m, smile, sigma_col=np.array([[0.0007], [0.0004]]), sigma0=0.0005,
@@ -61,6 +61,11 @@ def test_tick_floor_and_combo_fill():
     assert combo_fill_credit(0.27, 0.25, 0.05) == 0.25   # natural 0.25 is not the constraint
     assert combo_fill_credit(0.23, 0.20, 0.05) == 0.20
     assert combo_fill_credit(0.07, 0.02, 0.05) == 0.05   # floored at one tick
+    # off-grid NATURAL must also be floored onto the 0.05 grid (regression: the old
+    # implementation returns the raw natural when it binds, e.g. 0.187 / 0.54 / 0.69).
+    assert combo_fill_credit(0.30, 0.187, 0.05) == 0.15
+    assert combo_fill_credit(0.187, 0.54, 0.05) == 0.15
+    assert combo_fill_credit(0.30, 0.02, 0.05) == 0.05
 
 
 def test_build_ladder():

@@ -478,11 +478,16 @@ async def api_sim_smile_capture():
     pts_m, pts_iv = [], []
     for row in strikes:
         iv = row.get("put_iv")
-        if iv and spot and row.get("strike"):
-            m = math.log(float(row["strike"]) / spot)
-            if abs(m) < 0.15:
-                pts_m.append(m)
-                pts_iv.append(float(iv) / 100.0)
+        k = row.get("strike")
+        if not iv or not spot or not k:
+            continue
+        oi = row.get("put_oi")
+        if oi is not None and oi <= 0:            # 0-OI rows are untradeable; absent key passes
+            continue
+        m = math.log(float(k) / spot)             # log-moneyness (matches the pricer)
+        if -0.15 <= m <= 0.02:                    # put wing + ATM anchor; exclude far-ITM puts
+            pts_m.append(m)
+            pts_iv.append(float(iv) / 100.0)
     if len(pts_m) < 5:
         return JSONResponse(status_code=409, content={"detail": "live chain not available"})
     from sim_calibrate import fit_smile, DEFAULT_SMILE, save_smile_snapshot

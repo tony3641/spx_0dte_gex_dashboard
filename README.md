@@ -115,9 +115,10 @@ Here's what the report it produces looks like:
 
 - Every contract is a **0DTE put** expiring at the 16:00 close; time-to-expiry decays bar
   by bar (`bar_seconds / (252 × 6.5h)` per bar).
-- **IV** = quadratic smile in log-moneyness, loaded from the captured smile snapshot
-  (`config/sim_smile.json`; else `sim_smile_default.json`, ATM IV 20%), plus a small
-  vol-level link term.
+- **IV** = SVI smile in log-moneyness, loaded from the captured smile snapshot
+  (`config/sim_smile.json`; else `sim_smile_default.json`, ATM IV ~20%), plus a small
+  vol-level link term. The SVI shape keeps far-OTM put IV bounded (the legacy
+  quadratic fit exploded to >100% IV and produced arbitrage-invalid credits).
 - **Spread mark** = Black-Scholes put mid difference; the **entry fill** is the
   tick-floored conservative side (never better than the natural); **expiry settles at
   intrinsic value**. Stops trigger at mark ≥ multiplier × collected credit (+ slippage).

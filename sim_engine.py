@@ -166,11 +166,11 @@ def run_entry(model: CalibratedModel, cfg: SimRunConfig, strategy: Strategy,
         w_pts = float(cfg.width_points)
         l_idx = np.clip(s_idx - int(round(w_pts / step)), 0, len(ladder) - 1)
         ok = active & (s_idx > l_idx)
-        iv_t = smile_iv((ladder - s_entry[:, None]) / s_entry[:, None], model.smile,
-                        paths.sigmas[:, t:t + 1], model.sigma0, cfg.vol_beta, cfg.flat_iv,
-                        float(model.smile.iv(0.0)))
+        m = np.log(ladder / s_entry[:, None])                      # (n, M) log-moneyness
+        iv_t = smile_iv(m, model.smile, paths.sigmas[:, t:t + 1], model.sigma0,
+                        cfg.vol_beta, cfg.flat_iv, float(model.smile.iv(0.0)))
         put = bsm_put(paths.spots[:, t:t + 1], ladder[None, :], T_left[t], RISK_FREE_RATE, iv_t)
-        hs = half_spread((ladder - s_entry[:, None]) / s_entry[:, None], model.smile.half_spread_atm)
+        hs = half_spread(m, model.smile.half_spread_atm)
         rows = np.arange(n)
         cm = put[rows, s_idx] - put[rows, l_idx]              # mid
         cc = (put[rows, s_idx] - hs[rows, s_idx]) - (put[rows, l_idx] + hs[rows, l_idx])
@@ -196,7 +196,7 @@ def run_entry(model: CalibratedModel, cfg: SimRunConfig, strategy: Strategy,
         todo = (~entered) & (starts <= t)
         if not todo.any():
             continue
-        m = (ladder - paths.spots[:, t:t + 1]) / paths.spots[:, t:t + 1]   # (n, M) log-moneyness
+        m = np.log(ladder / paths.spots[:, t:t + 1])               # (n, M) log-moneyness
         iv_t = smile_iv(m, model.smile, paths.sigmas[:, t:t + 1], model.sigma0,
                         cfg.vol_beta, cfg.flat_iv, float(model.smile.iv(0.0)))
         put = bsm_put(paths.spots[:, t:t + 1], ladder[None, :], T_left[t], RISK_FREE_RATE, iv_t)
@@ -281,7 +281,7 @@ class TrialResult:
 
 def _spread_rows(model, cfg, paths, ladder, t):
     """Put mids + half-spreads for every path at bar t -> (mid, bid, ask) each (n, M)."""
-    m = (ladder - paths.spots[:, t:t + 1]) / paths.spots[:, t:t + 1]
+    m = np.log(ladder / paths.spots[:, t:t + 1])
     iv_t = smile_iv(m, model.smile, paths.sigmas[:, t:t + 1], model.sigma0,
                     cfg.vol_beta, cfg.flat_iv, float(model.smile.iv(0.0)))
     put = bsm_put(paths.spots[:, t:t + 1], ladder[None, :], t, RISK_FREE_RATE, iv_t)
@@ -321,7 +321,7 @@ def run_exits(model: CalibratedModel, cfg: SimRunConfig, strategy: Strategy,
         active = True
         for t in range(t0, steps):
             T = (steps - 1 - t) * bar_year_frac(bar_secs)
-            m = (ladder - paths.spots[p, t]) / paths.spots[p, t]
+            m = np.log(ladder / paths.spots[p, t])
             iv_t = smile_iv(m, model.smile, np.array([[paths.sigmas[p, t]]]), model.sigma0,
                             cfg.vol_beta, cfg.flat_iv, float(model.smile.iv(0.0)))[0]
             put = bsm_put(paths.spots[p, t], ladder, T, RISK_FREE_RATE, iv_t)

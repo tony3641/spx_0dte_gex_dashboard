@@ -122,7 +122,7 @@ def test_smile_endpoint_reports_source(client):
     r = client.get("/api/sim/smile")
     assert r.status_code == 200
     assert r.json()["source"] in ("captured", "default", "builtin")
-    assert {"a", "b", "c", "half_spread_atm"} <= set(r.json()["smile"])
+    assert {"a", "b", "rho", "m0", "sigma", "half_spread_atm"} <= set(r.json()["smile"])
 
 
 def test_result_returns_409_when_job_not_finished(client, monkeypatch):
@@ -173,7 +173,51 @@ def test_smile_capture_succeeds_when_chain_seeded(client, monkeypatch, tmp_path)
         body = r.json()
         assert body["source"] == "captured"
         assert body["points"] >= 5
-        assert {"a", "b", "c", "half_spread_atm"} <= set(body["smile"])
+        assert {"a", "b", "rho", "m0", "sigma", "half_spread_atm"} <= set(body["smile"])
+    finally:
+        server.state.chain_quotes_cache = old_cache
+        server.state.spx_price = old_spot
+
+
+def test_smile_capture_skewed_chain_bounded(client, monkeypatch, tmp_path):
+    """A skewed put chain that only spans ~6% OTM must still fit/extrapolate a smile
+    that is finite and < 100% IV at the sim's +/-15% ladder edge."""
+    import sim_calibrate
+    from sim_calibrate import SmileParams
+    old_cache = server.state.chain_quotes_cache
+    old_spot = server.state.spx_price
+    monkeypatch.setattr(sim_calibrate, "SMILE_CAPTURE_PATH", str(tmp_path / "sim_smile.json"))
+    strikes = [{"strike": float(s), "put_iv": p} for s, p in (
+        (5650, 45.0), (5700, 40.0), (5800, 32.0), (5900, 26.0),
+        (5950, 22.0), (6000, 20.0), (6050, 19.0))]
+    server.state.chain_quotes_cache = {"strikes": strikes}
+    server.state.spx_price = 6000.0
+    try:
+        r = client.post("/api/sim/smile/capture")
+        assert r.status_code == 200, r.text
+        smile = SmileParams.from_dict(r.json()["smile"])
+        for m in (-0.15, 0.0, 0.15):
+            v = float(smile.iv(np.array([m]))[0])
+            assert np.isfinite(v) and 0.0 < v < 1.0
+    finally:
+        server.state.chain_quotes_cache = old_cache
+        server.state.spx_price = old_spot
+
+
+def test_smile_capture_stray_outlier_409(client, monkeypatch, tmp_path):
+    """A degenerate far-OTM put IV outlier must fail the guards and return 409."""
+    import sim_calibrate
+    old_cache = server.state.chain_quotes_cache
+    old_spot = server.state.spx_price
+    monkeypatch.setattr(sim_calibrate, "SMILE_CAPTURE_PATH", str(tmp_path / "sim_smile.json"))
+    strikes = [{"strike": float(s), "put_iv": p} for s, p in (
+        (5700, 180.0), (5800, 32.0), (5900, 26.0), (5950, 22.0),
+        (6000, 20.0), (6050, 19.0))]
+    server.state.chain_quotes_cache = {"strikes": strikes}
+    server.state.spx_price = 6000.0
+    try:
+        r = client.post("/api/sim/smile/capture")
+        assert r.status_code == 409, r.text
     finally:
         server.state.chain_quotes_cache = old_cache
         server.state.spx_price = old_spot
