@@ -1,7 +1,8 @@
-// Simulation tab: run form, job polling, Plotly rendering, CSV export.
+// Simulation tab: run form, job polling, Plotly rendering, JSON report export.
 (function () {
     'use strict';
     let currentResult = null;
+    let currentConfig = null;   // exact form config the current result came from (export)
     let selectedCell = 0;
     let pollTimer = null;
     let pollFailures = 0;   // consecutive status-fetch failures (bounded retry in poll())
@@ -54,6 +55,8 @@
 
     async function run() {
         const cfg = buildConfig();
+        clearReport();          // every run starts from a blank report — no stale charts
+        currentConfig = cfg;
         $('simStatus').className = 'sim-status';
         $('simStatus').textContent = 'starting…';
         $('simRun').disabled = true;
@@ -125,6 +128,40 @@
         $('simRun').disabled = false;
         $('simCancel').disabled = true;
         if (activeJobId) await fetch(`/api/sim/cancel/${activeJobId}`, { method: 'POST' });
+    }
+
+    const CHART_IDS = ['simSpotFan', 'simHist', 'simFan', 'simDD'];
+
+    function purgeCharts() {
+        CHART_IDS.forEach(id => {
+            const el = $(id);
+            if (!el) return;
+            if (window.Plotly && el._fullData) Plotly.purge(el);
+            el.innerHTML = '';
+        });
+    }
+
+    // Force-reset the report to its initial blank state. Form inputs are kept; a run
+    // already in flight keeps running server-side (the next Run re-reports busy).
+    function clearReport() {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        pollFailures = 0;
+        activeJobId = null;
+        currentResult = null;
+        currentConfig = null;
+        selectedCell = 0;
+        purgeCharts();
+        $('simTiles').innerHTML = '';
+        $('simSweep').innerHTML = '';
+        $('simDataInfo').textContent = '';
+        $('simDDSub').textContent = '';
+        $('simProgress').style.width = '0%';
+        $('simStatus').className = 'sim-status';
+        $('simStatus').textContent = '';
+        $('simExport').disabled = true;
+        $('simRun').disabled = false;
+        $('simCancel').disabled = true;
     }
 
     // -------- rendering --------
@@ -215,14 +252,16 @@
         return ticks;
     }
 
+    // Shared Plotly styling for every sim chart (was chart-local; the SPX fan needs it too).
+    const SIM_DARK = { paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+                       font: { color: '#c9cdd4' } };
+    const SIM_MARGIN = { l: 64, r: 20, t: 8, b: 46 };
+    const simAxis = (label) => ({ title: { text: label, font: { size: 11, color: '#9aa0aa' } },
+                                  gridcolor: 'rgba(255,255,255,0.06)' });
+
     function charts(cell, meta) {
         const stats = cell.stats || {};
         const bar_secs = _bar_seconds((meta && meta.bar_size) || '5m');
-        const dark = { paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
-                       font: { color: '#c9cdd4' } };
-        const axis = (label) => ({ title: { text: label, font: { size: 11, color: '#9aa0aa' } },
-                                   gridcolor: 'rgba(255,255,255,0.06)' });
-        const margin = { l: 64, r: 20, t: 8, b: 46 };
 
         // Day-PnL histogram — mirror the fan/max-DD guards: a cell with zero entered paths
         // has a degenerate/empty binning, so skip the chart instead of plotting nothing.
@@ -231,8 +270,8 @@
                 type: 'bar', x: cell.hist.edges.slice(1).map((e, i) => (e + cell.hist.edges[i]) / 2),
                 y: cell.hist.counts, marker: { color: '#4a89dc' }, name: 'Paths',
             }], Object.assign({ bargap: 0.02, showlegend: false,
-                    xaxis: axis('Day PnL ($)'), yaxis: axis('Number of paths (binned)'),
-                    margin }, dark),
+                    xaxis: simAxis('Day PnL ($)'), yaxis: simAxis('Number of paths (binned)'),
+                    margin: SIM_MARGIN }, SIM_DARK),
                 { responsive: true, displayModeBar: false });
         }
 
@@ -252,13 +291,13 @@
                     showlegend: true,
                     legend: { orientation: 'h', y: -0.16, x: 0.5, xanchor: 'center',
                               font: { size: 10, color: '#c9cdd4' } },
-                    xaxis: Object.assign(axis('Time of day (ET)'), {
+                    xaxis: Object.assign(simAxis('Time of day (ET)'), {
                         tickvals: ticks.map(t => t.val), ticktext: ticks.map(t => t.text),
                         range: [Math.min(...x), Math.max(...x)] }),
-                    yaxis: Object.assign(axis('Spread PnL ($)'), {
+                    yaxis: Object.assign(simAxis('Spread PnL ($)'), {
                         zeroline: true, zerolinecolor: 'rgba(255,255,255,0.18)', zerolinewidth: 1 }),
-                    margin },
-                dark), { responsive: true, displayModeBar: false });
+                    margin: SIM_MARGIN },
+                SIM_DARK), { responsive: true, displayModeBar: false });
         }
 
         // Bootstrap max-DD distribution
@@ -271,10 +310,44 @@
                 type: 'histogram', x: ddh.max_dd, marker: { color: '#8a6fc8' }, nbinsx: 40,
                 name: 'Paths',
             }], Object.assign({ showlegend: false,
-                    xaxis: axis(`Max drawdown ($ over ${length}d curves)`),
-                    yaxis: axis('Count of bootstrap runs'), margin },
-                dark), { responsive: true, displayModeBar: false });
+                    xaxis: simAxis(`Max drawdown ($ over ${length}d curves)`),
+                    yaxis: simAxis('Count of bootstrap runs'), margin: SIM_MARGIN },
+                SIM_DARK), { responsive: true, displayModeBar: false });
         }
+    }
+
+    // Percentile -> line color: red shades below the median, gold at 50, green above —
+    // the same cold/hot semantics as the MTM fan's edge lines.
+    function _fanColor(p) {
+        const lerp = (a, b, t) => [0, 1, 2].map(i => Math.round(a[i] + (b[i] - a[i]) * t));
+        const red = [224, 108, 96], gold = [232, 193, 90], green = [63, 143, 95];
+        const rgb = p === 50 ? gold : p < 50 ? lerp(red, gold, p / 50)
+                                             : lerp(gold, green, (p - 50) / 45);
+        return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+    }
+
+    // Top-of-report fan: the simulated SPX index itself at every 5th percentile (p0..p95).
+    // A property of the market simulation — spot dynamics ignore the sweep cell — so it is
+    // rendered once per run from the result root, not per selected cell.
+    function spotFanChart(meta) {
+        const sf = currentResult && currentResult.spx_fan;
+        if (!sf || !sf.minutes || !sf.minutes.length || !sf.values || !sf.values.length) return;
+        const bar_secs = _bar_seconds((meta && meta.bar_size) || '5m');
+        const x = sf.minutes.map(i => _minute_of_day(i, bar_secs));
+        const ticks = _clock_ticks(x);
+        Plotly.newPlot('simSpotFan', sf.quantiles.map((q, i) => ({
+            x, y: sf.values[i], mode: 'lines',
+            line: { width: q === 50 ? 2 : 1, color: _fanColor(q) }, name: `p${q}`,
+        })), Object.assign({
+                showlegend: true,
+                legend: { orientation: 'h', y: -0.18, x: 0.5, xanchor: 'center',
+                          font: { size: 9, color: '#c9cdd4' } },
+                xaxis: Object.assign(simAxis('Time of day (ET)'), {
+                    tickvals: ticks.map(t => t.val), ticktext: ticks.map(t => t.text),
+                    range: [Math.min(...x), Math.max(...x)] }),
+                yaxis: simAxis('SPX level'),
+                margin: SIM_MARGIN },
+            SIM_DARK), { responsive: true, displayModeBar: false });
     }
 
     function render() {
@@ -283,6 +356,7 @@
         tiles(cell);
         sweepTable();
         charts(cell, currentResult.meta);
+        spotFanChart(currentResult.meta);
         const m = currentResult.meta;
         $('simDataInfo').textContent =
             `source: ${m.source} · ${m.bar_size} · ${m.steps_per_day} bars/day · ` +
@@ -291,20 +365,56 @@
         $('simExport').disabled = false;
     }
 
-    function exportCsv() {
+    function glossary() {
+        // Reuse the live page's help text so the exported JSON is self-explanatory to an
+        // AI agent (or human) that never sees the UI. Read at export time so the notes
+        // can never drift from what the page actually says.
+        const g = { tiles: {}, charts: {}, fields: {} };
+        document.querySelectorAll('.sim-tile').forEach(t => {
+            const label = t.querySelector('.k'), tip = t.querySelector('.tooltip');
+            if (label && tip) g.tiles[label.childNodes[0].textContent.trim()] =
+                tip.textContent.trim();
+        });
+        document.querySelectorAll('.sim-chart-block').forEach(b => {
+            const head = b.querySelector('.sim-chart-head'), tip = b.querySelector('.tooltip');
+            if (head && tip) g.charts[head.childNodes[0].textContent.trim()] =
+                tip.textContent.trim();
+        });
+        g.fields = {
+            run_config: 'The exact run-form values used for this simulation (captured at run time).',
+            meta: 'Run context: strategy, data source, bar size, GARCH fit (with warnings), smile, dials, seed.',
+            spx_fan: 'Simulated SPX price quantiles per bar: minutes are minute-of-day offsets from RTH open, quantiles are percentiles p0..p95, values[i] is the price curve for quantiles[i].',
+            cells: 'One entry per (SL ×, k) sweep configuration; the webpage charts/tiles reflect the selected cell.',
+            sl_multiplier: 'Stop-loss multiplier applied to the spread credit; "inf" means hold to expiry.',
+            k: 'Short-strike distance in standard deviations of the simulated day (dynamic-k mode).',
+            stats: 'Per-cell day-PnL distribution: mean/median/std, win rate, CVaR 5%/1%, worst day, path counts.',
+            breakdown: 'Exit-reason counts: expired, stop, take_profit, never (entry never fired).',
+            hist: 'Day-PnL histogram exactly as plotted: bin edges ($) and path counts.',
+            dd: 'Intraday max-drawdown stats across entered paths (mean / p95 / worst).',
+            dd_hist: 'Bootstrap resample: per-sequence max drawdowns, their mean/p95 and the ruin probability.',
+            fan: 'MTM quantile fan of the open spread through the day (entered paths).',
+        };
+        return g;
+    }
+
+    // Full-page report as one self-contained JSON: everything the page visualizes plus
+    // the run config and a glossary, sized for an AI agent to analyze later.
+    function exportReport() {
         if (!currentResult) return;
-        const rows = [['sl_multiplier', 'k', 'mean', 'median', 'std', 'win_rate', 'cvar5',
-            'cvar1', 'worst_day', 'dd_mean', 'dd_p95', 'dd_worst', 'ruin_prob',
-            'expired', 'stop', 'take_profit', 'never']];
-        currentResult.cells.forEach(c => rows.push([
-            c.sl_multiplier, c.k, c.stats.mean, c.stats.median, c.stats.std, c.stats.win_rate,
-            c.stats.cvar5, c.stats.cvar1, c.stats.worst_day, c.dd.mean, c.dd.p95, c.dd.worst,
-            c.ruin_prob, c.breakdown.expired, c.breakdown.stop, c.breakdown.take_profit,
-            c.breakdown.never]));
-        const csv = rows.map(r => r.join(',')).join('\n');
+        const report = {
+            schema_version: 1,
+            report_kind: 'spx_0dte_sim',
+            exported_at: new Date().toISOString(),
+            run_config: currentConfig || {},
+            meta: currentResult.meta || {},
+            spx_fan: currentResult.spx_fan || null,
+            cells: currentResult.cells || [],
+            glossary: glossary(),
+        };
         const a = document.createElement('a');
-        a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-        a.download = 'sim_results.csv';
+        a.href = URL.createObjectURL(
+            new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
+        a.download = 'sim_report.json';
         a.click();
         URL.revokeObjectURL(a.href);
     }
@@ -343,7 +453,8 @@
     function init() {
         $('simRun').addEventListener('click', run);
         $('simCancel').addEventListener('click', cancel);
-        $('simExport').addEventListener('click', exportCsv);
+        $('simClear').addEventListener('click', clearReport);
+        $('simExport').addEventListener('click', exportReport);
         $('simCaptureSmile').addEventListener('click', captureSmile);
     }
 

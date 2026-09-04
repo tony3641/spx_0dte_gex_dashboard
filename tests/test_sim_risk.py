@@ -5,7 +5,7 @@ import numpy as np
 
 from sim_engine import TrialResult
 from sim_risk import (bootstrap_ruin, breakdown, build_cell_payload, histogram,
-                      intraday_max_dd, summarize)
+                      intraday_max_dd, spot_fan_quantiles, summarize)
 
 
 def test_summarize_matches_hand_computed():
@@ -84,6 +84,25 @@ def test_fan_gaps_are_null_not_nan_json_compliant():
     assert payload["fan"]["q50"][3] == -5.0
     assert payload["fan"]["q50"][4] is None           # trailing gap (all exited)
     assert payload["fan"]["q50"][5] is None
+
+
+def test_spot_fan_quantiles_shape_and_order():
+    rng = np.random.default_rng(0)
+    spots = 6000.0 * np.exp(rng.normal(0.0, 0.01, size=(200, 12)))
+    sf = spot_fan_quantiles(spots)
+    assert sf["quantiles"] == [5.0 * i for i in range(20)]   # 0 .. 95, median (50) included
+    assert sf["minutes"] == list(range(12))
+    assert len(sf["values"]) == 20
+    assert all(len(row) == 12 for row in sf["values"])
+    json.dumps(sf, allow_nan=False)                   # wire-safe: no NaN/inf
+    lo, mid, hi = sf["values"][0], sf["values"][10], sf["values"][-1]
+    assert all(l <= m <= h for l, m, h in zip(lo, mid, hi))        # curves never cross
+
+
+def test_spot_fan_quantiles_empty_input():
+    sf = spot_fan_quantiles(np.zeros((0, 0)))
+    assert len(sf["quantiles"]) == 20
+    assert sf["minutes"] == [] and sf["values"] == []
 
 
 def test_bootstrap_ruin_counts_first_bar_loss():

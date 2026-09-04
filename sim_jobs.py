@@ -14,7 +14,7 @@ from sim_data import BarSeries, load_bars
 from sim_engine import run_cell, run_family
 from sim_paths import simulate_chunk
 from sim_pricing import build_ladder
-from sim_risk import build_cell_payload
+from sim_risk import build_cell_payload, spot_fan_quantiles
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,7 @@ def execute_pipeline(cfg: SimRunConfig, bars: BarSeries, progress_cb: Callable,
     ladder = build_ladder(spot0, cfg.ladder_range_pct)
     cells = sweep_cells(cfg)
     results = []
+    spx_chunks = []     # first cell's market paths -> SPX fan (see note below the loop)
     n_chunks = (cfg.n_paths + cfg.chunk_size - 1) // cfg.chunk_size
     for ci, cell in enumerate(cells):
         pnls_all, trials_all, mtms_all = [], [], []
@@ -164,6 +165,8 @@ def execute_pipeline(cfg: SimRunConfig, bars: BarSeries, progress_cb: Callable,
             n_here = min(cfg.chunk_size, cfg.n_paths - ch * cfg.chunk_size)
             seed_seq = np.random.SeedSequence(entropy=cfg.seed, spawn_key=(ci, ch))
             paths = simulate_chunk(model, cfg, spot0, n_here, seed_seq)
+            if ci == 0:
+                spx_chunks.append(paths.spots)
             if cfg.mode == "family" and children:
                 _, total = run_family(model, cfg, strat, children, paths, ladder)
                 from sim_engine import TrialResult
@@ -193,8 +196,12 @@ def execute_pipeline(cfg: SimRunConfig, bars: BarSeries, progress_cb: Callable,
                                                     gamma_mult=cfg.gamma_mult,
                                                     vol_beta=cfg.vol_beta, flat_iv=cfg.flat_iv),
                 cancelled=cancelled)
+    # SPX path fan: a property of the market simulation, not of any sweep cell (spot
+    # dynamics ignore SL/k), so the first cell's full path set represents the run. A
+    # cancelled run keeps whatever chunks completed before the cancel.
+    spx_mat = np.vstack(spx_chunks) if spx_chunks else np.zeros((0, 0))
     progress_cb(1.0, "done" if not cancelled else "cancelled")
-    return dict(meta=meta, cells=results)
+    return dict(meta=meta, cells=results, spx_fan=spot_fan_quantiles(spx_mat))
 
 
 def _execute(job_id: str, state, ib=None) -> None:

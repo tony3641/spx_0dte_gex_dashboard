@@ -58,6 +58,23 @@ def fan_quantiles(mtms: List[np.ndarray]) -> dict:
                 q50=_quantile(0.50), q75=_quantile(0.75), q95=_quantile(0.95))
 
 
+def spot_fan_quantiles(spots: np.ndarray) -> dict:
+    """Per-step SPX price quantiles for the report's top fan (market paths, strategy-agnostic).
+
+    Quantiles span 0%..95% in 5% steps -> exactly 20 curves including the median (50%).
+    p100 (the max) is dropped as single-path noise; p0 (the min) is kept as the worst-path
+    envelope. Spots are finite by construction (sim_paths clips to the guard band), so no
+    NaN-to-null mapping is needed.
+    """
+    qs = [5.0 * i for i in range(20)]
+    mat = np.asarray(spots, dtype=float)
+    if mat.size == 0:
+        return dict(minutes=[], quantiles=qs, values=[])
+    vals = np.quantile(mat, [q / 100.0 for q in qs], axis=0)
+    return dict(minutes=list(range(mat.shape[1])), quantiles=qs,
+                values=[[float(v) for v in row] for row in vals])
+
+
 def histogram(pnls: np.ndarray, bins: int = 40) -> dict:
     """Binned PnL distribution.
 

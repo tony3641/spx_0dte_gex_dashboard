@@ -72,7 +72,7 @@ The exact URLs are printed to the console when the server starts. You can overri
 - **Option Chain** — full streaming chain table with greeks and order entry.
 - **Account** — account summary, positions, executions, order placement.
 - **Strategies** — strategy list/editor, live candidates, triggers, and arm/disarm controls.
-- **Simulation** — run intraday MC stress tests, sweep stop-loss multipliers and dynamic strike distances, A/B stress dials, export results to CSV.
+- **Simulation** — run intraday MC stress tests, sweep stop-loss multipliers and dynamic strike distances, A/B stress dials, read the report (SPX percentile fan + per-cell charts), force-clear it between runs, and export a full AI-readable JSON report.
 - **Log** — real-time framework log.
 
 ## Simulation
@@ -145,6 +145,22 @@ tests, but absolute win rates can still mislead:
 Every run-form control also carries an inline “?” tooltip in the UI with the same
 guidance.
 
+### Reading the report
+
+- **Simulated SPX paths (percentile fan, top)** — the market simulation itself: twenty
+  SPX price curves at every 5th percentile (p0…p95, gold median) through the session.
+  Strategy-independent, so it is identical for every sweep row.
+- **Tiles, sweep table, per-cell charts** — the selected row's outcome distribution:
+  day-PnL histogram, spread MTM quantile fan, and bootstrap max-drawdown.
+- **Clear** — wipes the report back to its initial blank state (form inputs are kept; a
+  run in flight keeps running server-side). Every new Run also starts from a blank
+  report automatically, so a re-run can never mix with the previous result.
+- **Export report** — downloads `sim_report.json`, a self-contained, AI-agent-readable
+  snapshot of everything the page shows: the exact run config, run meta (source, bar
+  size, GARCH fit + warnings, smile, dials), all per-cell stats and plotted series
+  (histograms, MTM fan, bootstrap DDs, SPX fan), and a glossary reusing the UI's "?"
+  explanations.
+
 ## Charts
 
 ### 1. SPX Intraday (top)
@@ -215,7 +231,7 @@ Key strike prices and conditions:
 | `sim_paths.py` | Chunked vectorized path generation (stress dials: ν, γ×) |
 | `sim_pricing.py` | Vectorized BSM, vol-linked smile, spreads, tick fill rules |
 | `sim_engine.py` | Entry/exit scans, single + family simulation, experiment modes |
-| `sim_risk.py` | CVaR/exit breakdown/max-DD/bootstrap ruin metrics |
+| `sim_risk.py` | CVaR/exit breakdown/max-DD/bootstrap ruin metrics, SPX path fan |
 | `sim_jobs.py` | Background job registry, progress, cancel, memoized calibration |
 | `static/` | Browser app: `index.html`, `css/`, `js/` (charts, chain table, order entry, strategy UI, tabs, WS) |
 | `tests/` | Pytest suite + `run_tests.py` structured runner |

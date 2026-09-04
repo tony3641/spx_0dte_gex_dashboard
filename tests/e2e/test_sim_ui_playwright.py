@@ -141,7 +141,8 @@ def test_simulation_tab_runs_and_renders(server_url):
     try:
         with pw.sync_playwright() as p:
             browser = p.chromium.launch()
-            page = browser.new_page()
+            context = browser.new_context(accept_downloads=True)
+            page = context.new_page()
             page.goto(f"{server_url}/#sim")
             page.click('button[data-tab="sim"]')
             # strategy_list is pushed on WS connect; wait for it to populate the dropdown
@@ -165,10 +166,11 @@ def test_simulation_tab_runs_and_renders(server_url):
 
             # --- report readability: per-metric help chips, chart headers, chart anatomy ---
             assert page.locator(".sim-tile .help").count() >= 6     # "?" chip on each tile
-            assert page.locator(".sim-chart-head").count() == 3     # header above each chart
+            assert page.locator(".sim-chart-head").count() == 4     # header above each chart
             hist = _plot_info(page, "simHist")
             fan = _plot_info(page, "simFan")
             dd = _plot_info(page, "simDD")
+            spot = _plot_info(page, "simSpotFan")
             # axis titles on every chart
             assert hist and hist["xaxis_title"] and hist["yaxis_title"]
             assert dd and dd["xaxis_title"] and dd["yaxis_title"]
@@ -177,8 +179,35 @@ def test_simulation_tab_runs_and_renders(server_url):
             assert len(fan["names"]) == 5
             assert fan["showlegend"] is True
             assert fan["ticktext"] and any(":" in t for t in fan["ticktext"])
+            # SPX fan (top): 20 every-5% percentile curves p0..p95, median anchored, legended
+            assert spot and spot["xaxis_title"] and spot["yaxis_title"]
+            assert len(spot["names"]) == 20
+            assert spot["names"][10] == "p50"
+            assert spot["showlegend"] is True
+            assert spot["ticktext"] and any(":" in t for t in spot["ticktext"])
 
             page.screenshot(path=os.path.join(ROOT, "docs", "screenshot_sim.png"), full_page=False)
+
+            # --- export report: one AI-readable JSON holding everything on the page ---
+            with page.expect_download() as dl_info:
+                page.click("#simExport")
+            with open(dl_info.value.path(), encoding="utf-8") as f:
+                report = json.load(f)
+            assert report["report_kind"] == "spx_0dte_sim"
+            for key in ("schema_version", "exported_at", "run_config", "meta",
+                        "spx_fan", "cells", "glossary"):
+                assert key in report, f"missing report key: {key}"
+            assert report["run_config"]["n_paths"] == 40            # config captured at run time
+            assert len(report["cells"]) >= 1
+            assert len(report["spx_fan"]["values"]) == 20
+            assert report["glossary"]["tiles"]                      # tile help text captured
+
+            # --- force clear: report back to its initial blank state ---
+            page.click("#simClear")
+            assert page.locator(".sim-tile").count() == 0
+            assert page.locator("#simHist .main-svg").count() == 0
+            assert page.locator("#simSpotFan .main-svg").count() == 0
+            assert page.locator("#simExport[disabled]").count() == 1
             browser.close()
     finally:
         if prev_policy is not None:

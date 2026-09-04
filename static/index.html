@@ -499,6 +499,10 @@
           <div class="sim-actions">
             <button id="simRun" class="sim-run-btn">Run</button>
             <button id="simCancel" disabled>Cancel</button>
+            <button id="simClear">Clear</button>
+            <span class="help" tabindex="0" aria-label="Clear report explanation">?
+              <span class="tooltip" role="tooltip">Wipes the report back to its initial blank state &mdash; charts, tiles, sweep table, status. Your form inputs are kept. A run already in flight keeps running on the server; every new Run also starts from a blank report automatically.</span>
+            </span>
           </div>
           <div class="sim-progress-wrap"><div id="simProgress"></div></div>
           <div id="simStatus" class="sim-status"></div>
@@ -507,8 +511,18 @@
         <div class="sim-results">
           <div class="sim-report-head">
             <h3>Simulation report</h3>
-            <p class="sim-report-note">Each row in the sweep table is one (SL&nbsp;&times;,&nbsp;k) configuration; the charts below show the selected row's outcome distribution. Hover the “?” circles — next to every control and chart — for plain-language explanations.</p>
+            <p class="sim-report-note">Each row in the sweep table is one (SL&nbsp;&times;,&nbsp;k) configuration; the SPX fan at the top shows the simulated market for the whole run, and the charts below show the selected row's outcome distribution. Hover the “?” circles — next to every control and chart — for plain-language explanations.</p>
           </div>
+
+          <div class="sim-chart-block">
+            <div class="sim-chart-head">Simulated SPX paths (percentile fan)
+              <span class="help" tabindex="0" aria-label="Simulated SPX paths explanation">?
+                <span class="tooltip" role="tooltip">Twenty lines tracing the simulated SPX index itself at every 5th percentile (p0 through p95), minute by minute &mdash; the market paths the strategy trades on, before any options P&amp;L. The gold line is the median day; the wider the spread between the outer lines, the more variable the day's range can be. This chart is identical for every sweep row: it describes the market, not the strategy.</span>
+              </span>
+            </div>
+            <div class="sim-chart" id="simSpotFan"></div>
+          </div>
+
           <div id="simTiles" class="sim-tiles"></div>
           <table class="sim-sweep" id="simSweep"></table>
 
@@ -541,7 +555,7 @@
           </div>
 
           <div class="sim-actions">
-            <button id="simExport" disabled>Export CSV</button>
+            <button id="simExport" disabled>Export report</button>
             <button id="simCaptureSmile">Capture live smile</button>
             <span id="simSmileInfo" class="sim-datainfo"></span>
           </div>
