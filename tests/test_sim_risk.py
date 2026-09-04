@@ -1,4 +1,6 @@
 # tests/test_sim_risk.py
+import json
+
 import numpy as np
 
 from sim_engine import TrialResult
@@ -58,6 +60,30 @@ def test_build_cell_payload_shape():
     assert len(payload["hist"]["edges"]) >= 2
     assert payload["fan"]["q50"][1] == 0.0            # minute 1: every entered path marks 0
     assert 0.0 <= payload["ruin_prob"] <= 1.0
+
+
+def test_fan_gaps_are_null_not_nan_json_compliant():
+    # run_exits fills mtm only on [entry_minute, exit_minute], so minutes before the
+    # earliest entry (entry window starting after bar 0, or no entry on bar 0) and after
+    # the latest exit are all-NaN fan columns. The API layer serializes results with
+    # allow_nan=False, so a NaN there is a 500 on GET /api/sim/result; data-less minutes
+    # must cross the wire as null (JSON), which Plotly renders as a line gap.
+    def r(entry, exit_):
+        mtm = np.full(6, np.nan)
+        mtm[entry:exit_ + 1] = [10.0, -5.0]
+        return TrialResult(entered=True, entry_minute=entry, exit_minute=exit_,
+                           exit_reason="stop", short_strike=5900, long_strike=5850,
+                           width=50, qty=1, fill_credit=0.3, exit_debit=0, pnl=-5.0,
+                           mtm=mtm)
+    payload = build_cell_payload([r(2, 3)] * 4,
+                                 __import__("sim_config").SimRunConfig(strategy_name="T"))
+    json.dumps(payload, allow_nan=False)              # must not raise
+    assert payload["fan"]["q50"][0] is None           # leading gap (no entry yet)
+    assert payload["fan"]["q50"][1] is None
+    assert payload["fan"]["q50"][2] == 10.0
+    assert payload["fan"]["q50"][3] == -5.0
+    assert payload["fan"]["q50"][4] is None           # trailing gap (all exited)
+    assert payload["fan"]["q50"][5] is None
 
 
 def test_bootstrap_ruin_counts_first_bar_loss():

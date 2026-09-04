@@ -44,14 +44,14 @@ def fan_quantiles(mtms: List[np.ndarray]) -> dict:
     mat = np.vstack(mtms)
 
     def _quantile(q) -> list:
-        # Controller correction (Conflict L): a column can be entirely NaN (bars before an
-        # entered path's entry minute; the brief's own fixture makes minute 0 all-NaN).
-        # np.nanquantile warns "All-NaN slice encountered" on such a column, which pollutes
-        # pristine test output. Guard per column -> NaN for a column with no data.
+        # A column can be entirely NaN (minutes before an entered path's entry minute /
+        # after the latest exit — e.g. an entry window starting after bar 0). Emit None
+        # for such columns: np.nan would raise ValueError in the API layer's JSON
+        # serialization (allow_nan=False), while JSON null is a Plotly line gap.
         out = []
         for c in range(mat.shape[1]):
             col = mat[:, c]
-            out.append(np.nan if np.all(np.isnan(col)) else float(np.nanquantile(col, q)))
+            out.append(None if np.all(np.isnan(col)) else float(np.nanquantile(col, q)))
         return out
 
     return dict(minutes=list(range(mat.shape[1])), q05=_quantile(0.05), q25=_quantile(0.25),
