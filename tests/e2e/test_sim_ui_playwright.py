@@ -17,6 +17,27 @@ FIXTURE = os.path.join(ROOT, "tests", "fixtures", "sim_bars_5m.csv")
 STRAT_PATH = os.path.join(ROOT, "config", "strategies.json")
 
 
+def _plot_info(page, chart_id):
+    """Read Plotly's full-data/layout for a chart div via the page's own Plotly object."""
+    return page.evaluate(
+        """(cid) => {
+            const gd = document.getElementById(cid);
+            if (!gd || !gd._fullData) return null;
+            const xt = gd.layout.xaxis, yt = gd.layout.yaxis;
+            return {
+                n: gd._fullData.length,
+                showlegend: !!(gd.layout.showlegend === true
+                               || (gd.layout.showlegend === undefined && gd._fullData.length > 1)),
+                names: gd._fullData.map(d => d.name),
+                xaxis_title: xt && xt.title ? (xt.title.text || null) : null,
+                yaxis_title: yt && yt.title ? (yt.title.text || null) : null,
+                ticktext: xt && xt.ticktext ? xt.ticktext : null,
+            };
+        }""",
+        chart_id,
+    )
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -68,6 +89,13 @@ def server_url():
         for k in list(env):
             if k.startswith("DISCORD_"):
                 env.pop(k, None)
+        # Keep the boot hermetic against a live IB gateway too: server.py gates its HTTP
+        # listener behind the IB setup (connect_ib + a full chain prefetch), and in an
+        # environment where IB is actually reachable that prefetch can blow the 30s deadline.
+        # Point IB at a closed port so the connect fails fast (ECONNREFUSED) and the server
+        # comes up exactly as it does in CI.
+        env["IB_HOST"] = "127.0.0.1"
+        env["IB_PORT"] = str(port + 1)
         proc = subprocess.Popen([sys.executable, "server.py"], cwd=ROOT, env=env,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
         url = f"http://127.0.0.1:{port}"
@@ -113,7 +141,8 @@ def test_simulation_tab_runs_and_renders(server_url):
     try:
         with pw.sync_playwright() as p:
             browser = p.chromium.launch()
-            page = browser.new_page()
+            context = browser.new_context(accept_downloads=True)
+            page = context.new_page()
             page.goto(f"{server_url}/#sim")
             page.click('button[data-tab="sim"]')
             # strategy_list is pushed on WS connect; wait for it to populate the dropdown
@@ -134,7 +163,51 @@ def test_simulation_tab_runs_and_renders(server_url):
             # Plotly emits more than one .main-svg per chart in the bundled version, so
             # just assert the histogram actually drew (>=1) rather than an exact count.
             assert page.locator("#simHist .main-svg").count() >= 1
+
+            # --- report readability: per-metric help chips, chart headers, chart anatomy ---
+            assert page.locator(".sim-tile .help").count() >= 6     # "?" chip on each tile
+            assert page.locator(".sim-chart-head").count() == 4     # header above each chart
+            hist = _plot_info(page, "simHist")
+            fan = _plot_info(page, "simFan")
+            dd = _plot_info(page, "simDD")
+            spot = _plot_info(page, "simSpotFan")
+            # axis titles on every chart
+            assert hist and hist["xaxis_title"] and hist["yaxis_title"]
+            assert dd and dd["xaxis_title"] and dd["yaxis_title"]
+            assert fan and fan["xaxis_title"] and fan["yaxis_title"]
+            # fan: named percentile traces + a legend + clock-tick labels (time of day)
+            assert len(fan["names"]) == 5
+            assert fan["showlegend"] is True
+            assert fan["ticktext"] and any(":" in t for t in fan["ticktext"])
+            # SPX fan (top): 20 every-5% percentile curves p0..p95, median anchored, legended
+            assert spot and spot["xaxis_title"] and spot["yaxis_title"]
+            assert len(spot["names"]) == 20
+            assert spot["names"][10] == "p50"
+            assert spot["showlegend"] is True
+            assert spot["ticktext"] and any(":" in t for t in spot["ticktext"])
+
             page.screenshot(path=os.path.join(ROOT, "docs", "screenshot_sim.png"), full_page=False)
+
+            # --- export report: one AI-readable JSON holding everything on the page ---
+            with page.expect_download() as dl_info:
+                page.click("#simExport")
+            with open(dl_info.value.path(), encoding="utf-8") as f:
+                report = json.load(f)
+            assert report["report_kind"] == "spx_0dte_sim"
+            for key in ("schema_version", "exported_at", "run_config", "meta",
+                        "spx_fan", "cells", "glossary"):
+                assert key in report, f"missing report key: {key}"
+            assert report["run_config"]["n_paths"] == 40            # config captured at run time
+            assert len(report["cells"]) >= 1
+            assert len(report["spx_fan"]["values"]) == 20
+            assert report["glossary"]["tiles"]                      # tile help text captured
+
+            # --- force clear: report back to its initial blank state ---
+            page.click("#simClear")
+            assert page.locator(".sim-tile").count() == 0
+            assert page.locator("#simHist .main-svg").count() == 0
+            assert page.locator("#simSpotFan .main-svg").count() == 0
+            assert page.locator("#simExport[disabled]").count() == 1
             browser.close()
     finally:
         if prev_policy is not None:

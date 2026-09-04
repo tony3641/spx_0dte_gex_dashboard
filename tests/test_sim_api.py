@@ -52,6 +52,36 @@ def test_full_run_lifecycle_over_http(client):
     assert client.get("/api/sim/status/unknown").status_code == 404
 
 
+def test_result_200_when_entry_window_starts_after_first_bar(client):
+    """Regression: GET /api/sim/result 500'd with 'ValueError: Out of range float values
+    are not JSON compliant' whenever a fan column has no finite marks. An entry window
+    starting at 09:40 maps to bar index 1 on 5m bars (window_minutes), so minute 0 is
+    all-NaN across entered paths and used to reach the JSON layer as NaN."""
+    import sim_jobs
+
+    from tests.test_sim_engine import _strategy
+    sim_jobs._STRATEGY_CACHE["T"] = _strategy(window=("09:40", "10:00"))
+    body = {"strategy_name": "T", "source": "csv", "csv_path": FIXTURE,
+            "n_paths": 12, "chunk_size": 12, "bar_size": "5m", "equity": 100000}
+    r = client.post("/api/sim/run", json=body)
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    deadline = time.time() + 120
+    status = None
+    while time.time() < deadline:
+        status = client.get(f"/api/sim/status/{job_id}").json()
+        if status["state"] in ("done", "error", "cancelled"):
+            break
+        time.sleep(0.05)
+    assert status["state"] == "done", status
+    resp = client.get(f"/api/sim/result/{job_id}")
+    assert resp.status_code == 200, resp.text
+    cell = resp.json()["cells"][0]
+    assert cell["stats"]["entered"] > 0            # a real fan, not the empty-mtm degenerate
+    assert cell["fan"]["minutes"][0] == 0
+    assert cell["fan"]["q50"][0] is None           # no entry possible at bar 0 -> gap
+
+
 def test_run_rejects_bad_config(client):
     r = client.post("/api/sim/run", json={"strategy_name": "", "n_paths": 10})
     assert r.status_code == 400

@@ -101,7 +101,6 @@ def extract_conditions(strategy: Strategy) -> dict:
 
 def window_minutes(strategy: Strategy, steps: int, bar_seconds: int) -> Tuple[int, int]:
     """Entry window as bar-index range [w0, w1] inclusive."""
-    bar_min = bar_seconds // 60
     cond = {c.kind: c for c in strategy.conditions if c.enabled}
     if "entry_window" not in cond:
         return DEFAULT_WINDOW[0], max(DEFAULT_WINDOW[0], min(DEFAULT_WINDOW[1], steps - 1))
@@ -110,7 +109,9 @@ def window_minutes(strategy: Strategy, steps: int, bar_seconds: int) -> Tuple[in
     def to_idx(hm: str) -> int:
         h, m = hm.split(":")
         minutes = int(h) * 60 + int(m)
-        return int((minutes - RTH_START_MIN) // bar_min) - 1   # bar that CLOSES at/after hm
+        # seconds-offset // bar_seconds gives the bar closing at/after hm at ANY granularity
+        # (the old minutes-based formula divided by bar_seconds//60, which is 0 on sub-minute bars).
+        return int((minutes - RTH_START_MIN) * 60 // bar_seconds) - 1
 
     w0 = max(to_idx(p.get("start", "09:30")), 0)
     w1 = min(to_idx(p.get("end", "15:30")), steps - 1)

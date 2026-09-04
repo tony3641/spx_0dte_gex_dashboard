@@ -24,6 +24,13 @@ def test_validate_rejects_bad_inputs():
     with pytest.raises(ValueError):
         SimRunConfig(strategy_name="X", sl_multipliers=[0.0]).validate()
     SimRunConfig(strategy_name="X", sl_multipliers=[1.5, float("inf")]).validate()
+    with pytest.raises(ValueError):
+        SimRunConfig(strategy_name="X", atm_iv=-0.05).validate()
+    with pytest.raises(ValueError):
+        SimRunConfig(strategy_name="X", atm_iv=0.0).validate()
+    with pytest.raises(ValueError):
+        SimRunConfig(strategy_name="X", vol_cap_mult=0.0).validate()
+    SimRunConfig(strategy_name="X", atm_iv=0.167, vol_cap_mult=2.0).validate()
 
 
 def test_validate_rejects_ib_source():

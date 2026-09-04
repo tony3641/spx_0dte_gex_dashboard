@@ -23,7 +23,7 @@ A real-time Gamma Exposure (GEX) dashboard for SPX 0DTE options, powered by Inte
   - **Take-profit** (idempotent close loop, per-leg limit prices) and **stop-loss** as a single credit multiplier.
   - One-shot eval loop with re-entry guards, margin checks, and a kill switch.
   - **Subsequent strategies** — trigger children off a parent trade's state (parent close / time window), with acyclic tree validation.
-- **Simulation tab** — intraday Monte Carlo stress-testing for 0DTE strategies: GJR-GARCH + Student-t paths with U-shape volatility, BSM smile marking, tick-rule fills, family re-entry, SL/strike sweeps and stress dials (ν, γ, λ), PnL/CVaR/max-DD/ruin analytics.
+- **Simulation tab** — intraday Monte Carlo stress-testing for 0DTE strategies: GJR-GARCH + Student-t paths with U-shape volatility, BSM smile marking, tick-rule fills, family re-entry, SL/strike sweeps and stress dials (ν, γ, λ, ATM-IV anchor), PnL/CVaR/max-DD/ruin analytics.
 - **Logging tab** — server-side framework log streamed to the browser.
 
 ## Quick Start
@@ -72,7 +72,7 @@ The exact URLs are printed to the console when the server starts. You can overri
 - **Option Chain** — full streaming chain table with greeks and order entry.
 - **Account** — account summary, positions, executions, order placement.
 - **Strategies** — strategy list/editor, live candidates, triggers, and arm/disarm controls.
-- **Simulation** — run intraday MC stress tests, sweep stop-loss multipliers and dynamic strike distances, A/B stress dials, export results to CSV.
+- **Simulation** — run intraday MC stress tests, sweep stop-loss multipliers and dynamic strike distances, A/B stress dials, read the report (SPX percentile fan + per-cell charts), force-clear it between runs, and export a full AI-readable JSON report.
 - **Log** — real-time framework log.
 
 ## Simulation
@@ -80,6 +80,12 @@ The exact URLs are printed to the console when the server starts. You can overri
 The Simulation tab runs an intraday Monte Carlo stress test of a saved strategy (or a
 parent + children family) against synthetic GJR-GARCH + Student-t paths. It only **reads**
 `Strategy` objects — it never places orders or touches live trading state.
+
+Here's what the report it produces looks like:
+
+![Simulated SPX percentile fan, run tiles, and sweep table](docs/simulation1.png)
+![Day PnL distribution and spread mark-to-market through the day](docs/simulation2.png)
+![Bootstrap max-drawdown histogram over 60-day sequences](docs/simulation3.png)
 
 ### Known limitations
 
@@ -98,6 +104,76 @@ parent + children family) against synthetic GJR-GARCH + Student-t paths. It only
   for large sweeps with many cells.
 - **Sweep cells use independent RNG streams** (no common random numbers), so cross-cell
   differences include sampling noise — an experiment-quality tradeoff, not a paired A/B.
+- **Bars and the fitted model are cached per `(source, csv_path, bar size, lookback)`** —
+  *not* per file content. If you replace a CSV's contents on disk, restart the server or
+  the sim keeps simulating the previously loaded bars.
+- **Implied vs realized vol are not tied together.** Options are priced at the smile
+  snapshot (ATM IV 20% by default) while the underlying moves at the *data's* realized
+  vol; see "Reading results: win-rate sanity" below before trusting absolute win rates.
+
+### How the pricer marks options
+
+- Every contract is a **0DTE put** expiring at the 16:00 close; time-to-expiry decays bar
+  by bar (`bar_seconds / (252 × 6.5h)` per bar).
+- **IV** = quadratic smile in log-moneyness, loaded from the captured smile snapshot
+  (`config/sim_smile.json`; else `sim_smile_default.json`, ATM IV 20%), plus a small
+  vol-level link term.
+- **Spread mark** = Black-Scholes put mid difference; the **entry fill** is the
+  tick-floored conservative side (never better than the natural); **expiry settles at
+  intrinsic value**. Stops trigger at mark ≥ multiplier × collected credit (+ slippage).
+
+### Reading results: win-rate sanity
+
+The engine is deterministic (same seed + same inputs = identical results) and covered by
+tests, but absolute win rates can still mislead:
+
+- **Stale calibration** (above) silently simulates old data after a file change — restart
+  the server when in doubt.
+- **A calm CSV + a high smile** makes far-OTM strikes unreachable: a 0.03-delta short put
+  sits ~2–2.5% OTM at 20% IV, but data moving only ~0.4%/day rarely gets there, producing
+  near-100% win rates that reflect the vol-world mismatch, not strategy edge.
+- Mitigations: **capture a live smile** (matches the IV level you actually trade), use
+  data whose realized vol is realistic, and compare sweep rows *relatively* rather than
+  trusting absolute levels.
+- **Set the ATM IV % dial** to anchor the SPX fan to the market's current implied vol.
+  A GARCH fit on calm data has low *conditional* vol but can be *near-integrated*
+  (`α + γ/2 + β ≈ 0.99`), which lets a small subset of simulated paths ratchet up to
+  5–10× the fitted vol — a 1-day fan that closes p0 at −25% or worse. The ATM IV anchor
+  caps each per-bar move so the median session still resembles your data while the tails
+  match what the options market prices.
+
+### Stress dials & experiments reference
+
+| Control | Meaning |
+| --- | --- |
+| ν override | Student-t dof for per-bar shocks (blank = fitted; lower = fatter tails; must be > 2) |
+| γ × | GJR leverage multiplier — extra vol after *negative* returns (1.0 = as fitted) |
+| λ (vol-beta) | IV↔path-vol link; currently a subtle nudge — the smile *level* comes from the snapshot |
+| Flat IV | Sanity mode: price everything at ATM IV, ignoring skew |
+| ATM IV % | Anchor the SPX path vol to today's at-the-money IV (annual %). Blank = the GARCH level fitted from your data, which can diverge from the live market — see below |
+| Vol-cap × | Per-bar sigma cap as a multiple of the IV-implied per-bar vol (default 2). Effective only when ATM IV is set |
+| SL multipliers | Sweep stop-loss = mult × credit, one table row per value; `inf` holds past the stop |
+| Strike mode | `engine` = strategy's delta/width/credit gates; `dynamic_k` = short strike at k·σ below spot |
+| k values | Short-strike distance in daily σ (`dynamic_k` mode only) |
+
+Every run-form control also carries an inline “?” tooltip in the UI with the same
+guidance.
+
+### Reading the report
+
+- **Simulated SPX paths (percentile fan, top)** — the market simulation itself: twenty
+  SPX price curves at every 5th percentile (p0…p95, gold median) through the session.
+  Strategy-independent, so it is identical for every sweep row.
+- **Tiles, sweep table, per-cell charts** — the selected row's outcome distribution:
+  day-PnL histogram, spread MTM quantile fan, and bootstrap max-drawdown.
+- **Clear** — wipes the report back to its initial blank state (form inputs are kept; a
+  run in flight keeps running server-side). Every new Run also starts from a blank
+  report automatically, so a re-run can never mix with the previous result.
+- **Export report** — downloads `sim_report.json`, a self-contained, AI-agent-readable
+  snapshot of everything the page shows: the exact run config, run meta (source, bar
+  size, GARCH fit + warnings, smile, dials), all per-cell stats and plotted series
+  (histograms, MTM fan, bootstrap DDs, SPX fan), and a glossary reusing the UI's "?"
+  explanations.
 
 ## Charts
 
@@ -166,10 +242,10 @@ Key strike prices and conditions:
 | `sim_config.py` | Simulation run config: validation, JSON round-trip, sweep cells |
 | `sim_data.py` | Layered intraday bar loaders: CSV → yfinance → IB |
 | `sim_calibrate.py` | GJR-GARCH(1,1)-t MLE, U-shape profile, smile snapshot, VIX mapping |
-| `sim_paths.py` | Chunked vectorized path generation (stress dials: ν, γ×) |
+| `sim_paths.py` | Chunked vectorized path generation (stress dials: ν, γ×; ATM-IV anchored per-bar sigma cap) |
 | `sim_pricing.py` | Vectorized BSM, vol-linked smile, spreads, tick fill rules |
 | `sim_engine.py` | Entry/exit scans, single + family simulation, experiment modes |
-| `sim_risk.py` | CVaR/exit breakdown/max-DD/bootstrap ruin metrics |
+| `sim_risk.py` | CVaR/exit breakdown/max-DD/bootstrap ruin metrics, SPX path fan |
 | `sim_jobs.py` | Background job registry, progress, cancel, memoized calibration |
 | `static/` | Browser app: `index.html`, `css/`, `js/` (charts, chain table, order entry, strategy UI, tabs, WS) |
 | `tests/` | Pytest suite + `run_tests.py` structured runner |

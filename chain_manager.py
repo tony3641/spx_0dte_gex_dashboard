@@ -15,6 +15,7 @@ from order_manager import _option_contract
 
 from config import (
     CHAIN_STREAM_MAX_LINES, CHAIN_STREAM_UPDATE_INTERVAL,
+    CHAIN_STREAM_UNKNOWN_RETRY_SECS,
     SNAPSHOT_REFRESH_SECONDS, MONTHLY_CACHE_TTL,
 )
 from market_hours import (
@@ -27,6 +28,34 @@ from gex_calculator import compute_gex, gex_result_to_dict, GEXResult, OptionDat
 from price_bars import compute_annual_vol, fetch_historical_bars
 
 logger = logging.getLogger(__name__)
+
+
+def unknown_retry_due(unknown: dict, now: float,
+                      cooldown: float = CHAIN_STREAM_UNKNOWN_RETRY_SECS) -> set:
+    """Return stream keys whose failed-qualification retry is due.
+
+    The unknown map holds (strike, right) -> monotonic timestamp of the last
+    failed qualification attempt. Retrying after a cooldown lets the stream
+    recover from transient sec-def farm outages (IB error 2157) instead of
+    staying blacklisted until the expiration rolls over.
+    """
+    return {k for k, ts in unknown.items() if now - ts >= cooldown}
+
+
+def chain_stream_status_line(contracts: int, quotes_present: int,
+                             active_subs: int) -> str:
+    """Build the periodic chain-stream status log line.
+
+    When subscriptions are active but no quote data has arrived, append a
+    hint at the usual causes so an all-zero chain is not mistaken for a
+    broken data path.
+    """
+    line = (f"Chain stream ticks: {contracts} contracts, "
+            f"quotes_present={quotes_present}, active_subs={active_subs}")
+    if quotes_present == 0 and active_subs > 0:
+        line += (" (no quote data flowing - check IB secdef farm errors "
+                 "such as 2157, or overnight GTH liquidity)")
+    return line
 
 
 def _cancel_stream_subs(ib, state):
@@ -442,7 +471,13 @@ async def chain_stream_loop(ib, state, broadcast_fn):
 
             if available_pairs:
                 desired_keys = {k for k in desired_keys if k in available_pairs}
-            desired_keys = {k for k in desired_keys if k not in state.chain_stream_unknown_keys}
+            # Unknown keys are a cooldown, not permanent: retry them so a
+            # transient sec-def farm outage (2157) self-heals.
+            retryable = unknown_retry_due(state.chain_stream_unknown_keys,
+                                           asyncio.get_event_loop().time())
+            desired_keys = {k for k in desired_keys
+                            if k not in state.chain_stream_unknown_keys
+                            or k in retryable}
 
             for key in current_keys - desired_keys:
                 stream = state.chain_stream_tickers.pop(key, None)
@@ -477,11 +512,12 @@ async def chain_stream_loop(ib, state, broadcast_fn):
                         for (key, _), res in zip(batch, results):
                             qc = res[0].contract if res and res[0].contract.conId > 0 else None
                             if qc is None:
-                                state.chain_stream_unknown_keys.add(key)
+                                state.chain_stream_unknown_keys[key] = asyncio.get_event_loop().time()
                                 continue
                             stream = ib.subscribe_tick(qc, "101")
                             state.chain_stream_tickers[key] = stream
                             state.chain_stream_contracts[key] = qc
+                            state.chain_stream_unknown_keys.pop(key, None)
                             qualified_count += 1
 
                         if qualified_count:
@@ -570,10 +606,8 @@ async def chain_stream_loop(ib, state, broadcast_fn):
                 if now_monotonic - last_tick_log_ts >= 10.0:
                     last_tick_log_ts = now_monotonic
                     with_quotes = sum(1 for t in ticks if t.get("bid") is not None or t.get("ask") is not None or t.get("last") is not None)
-                    logger.info(
-                        f"Chain stream ticks: {len(ticks)} contracts, "
-                        f"quotes_present={with_quotes}, active_subs={len(state.chain_stream_tickers)}"
-                    )
+                    logger.info(chain_stream_status_line(
+                        len(ticks), with_quotes, len(state.chain_stream_tickers)))
 
                 logger.debug(
                     f"Broadcasting stream chain_quotes: rows={len(live_quotes.get('strikes', []))}, "

@@ -39,6 +39,30 @@ def test_window_minutes_maps_bars():
     assert window_minutes(_strategy(), 78, 300) == (0, 5)   # 09:35..10:00 closes = bars 0..5
 
 
+@pytest.mark.parametrize("bar_size,bar_secs,steps,w0,w1", [
+    ("5s", 5, 4680, 59, 359),
+    ("15s", 15, 1560, 19, 119),
+    ("30s", 30, 780, 9, 59),
+])
+def test_window_minutes_sub_minute_bar_sizes(bar_size, bar_secs, steps, w0, w1):
+    """window_minutes must not divide by zero on sub-minute bars (5s/15s/30s).
+
+    window (09:35, 10:00); w0 = first bar closing at 09:35, w1 = bar closing at 10:00.
+    """
+    cfg = SimRunConfig(strategy_name="T", bar_size=bar_size)
+    assert window_minutes(_strategy(), steps, bar_secs) == (w0, w1)
+
+
+def test_run_entry_sub_minute_respects_window():
+    cfg = SimRunConfig(strategy_name="T", bar_size="30s")
+    strat, model, paths = _strategy(), _model(), _paths(n=20, steps=780)
+    ladder = np.arange(5100.0, 6900.0 + 2.5, 5.0)
+    es = run_entry(model, cfg, strat, paths, ladder)
+    ent = es.entered.astype(bool)
+    assert ent.sum() > 0
+    assert (es.entry_minute[ent] >= 9).all() and (es.entry_minute[ent] <= 59).all()
+
+
 def _strategy_with(*conds):
     s = _strategy()
     s.conditions = list(s.conditions) + [Condition(kind=k, params=p) for k, p in conds]

@@ -45,6 +45,23 @@ def test_execute_pipeline_produces_payload():
     assert np.isfinite(cell["hist"]["edges"]).all()
 
 
+def test_execute_pipeline_attaches_spx_fan():
+    # The SPX path fan is a property of the market simulation (spot dynamics do not
+    # depend on the sweep cell), so it is computed once from the first cell's paths
+    # and attached at the result root for the UI's top graph + report export.
+    cfg = _cfg()
+    bars = load_bars(cfg)
+    payload = sim_jobs.execute_pipeline(cfg, bars, lambda p, m: None, spot0=6000.0)
+    sf = payload["spx_fan"]
+    assert len(sf["quantiles"]) == 20
+    assert len(sf["values"]) == 20
+    steps = cfg.steps_per_day()
+    assert sf["minutes"] == list(range(steps))
+    assert all(len(row) == steps for row in sf["values"])
+    lo, mid, hi = sf["values"][0], sf["values"][10], sf["values"][-1]
+    assert all(l <= m <= h for l, m, h in zip(lo, mid, hi))
+
+
 def test_execute_pipeline_sweep_grid():
     cfg = _cfg(sl_multipliers=[2.0, 6.0, float("inf")], strike_mode="dynamic_k",
                dynamic_k_values=[0.3, 0.6])

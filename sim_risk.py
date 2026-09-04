@@ -44,18 +44,35 @@ def fan_quantiles(mtms: List[np.ndarray]) -> dict:
     mat = np.vstack(mtms)
 
     def _quantile(q) -> list:
-        # Controller correction (Conflict L): a column can be entirely NaN (bars before an
-        # entered path's entry minute; the brief's own fixture makes minute 0 all-NaN).
-        # np.nanquantile warns "All-NaN slice encountered" on such a column, which pollutes
-        # pristine test output. Guard per column -> NaN for a column with no data.
+        # A column can be entirely NaN (minutes before an entered path's entry minute /
+        # after the latest exit — e.g. an entry window starting after bar 0). Emit None
+        # for such columns: np.nan would raise ValueError in the API layer's JSON
+        # serialization (allow_nan=False), while JSON null is a Plotly line gap.
         out = []
         for c in range(mat.shape[1]):
             col = mat[:, c]
-            out.append(np.nan if np.all(np.isnan(col)) else float(np.nanquantile(col, q)))
+            out.append(None if np.all(np.isnan(col)) else float(np.nanquantile(col, q)))
         return out
 
     return dict(minutes=list(range(mat.shape[1])), q05=_quantile(0.05), q25=_quantile(0.25),
                 q50=_quantile(0.50), q75=_quantile(0.75), q95=_quantile(0.95))
+
+
+def spot_fan_quantiles(spots: np.ndarray) -> dict:
+    """Per-step SPX price quantiles for the report's top fan (market paths, strategy-agnostic).
+
+    Quantiles span 0%..95% in 5% steps -> exactly 20 curves including the median (50%).
+    p100 (the max) is dropped as single-path noise; p0 (the min) is kept as the worst-path
+    envelope. Spots are finite by construction (sim_paths clips to the guard band), so no
+    NaN-to-null mapping is needed.
+    """
+    qs = [5.0 * i for i in range(20)]
+    mat = np.asarray(spots, dtype=float)
+    if mat.size == 0:
+        return dict(minutes=[], quantiles=qs, values=[])
+    vals = np.quantile(mat, [q / 100.0 for q in qs], axis=0)
+    return dict(minutes=list(range(mat.shape[1])), quantiles=qs,
+                values=[[float(v) for v in row] for row in vals])
 
 
 def histogram(pnls: np.ndarray, bins: int = 40) -> dict:
