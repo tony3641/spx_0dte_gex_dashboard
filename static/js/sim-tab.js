@@ -47,6 +47,8 @@
             gamma_mult: num('simGammaMult', 1.0),
             vol_beta: num('simVolBeta', 0.75),
             flat_iv: $('simFlatIv').checked,
+            // ATM IV entered as annual percent -> decimal; blank = data-fitted GARCH level
+            atm_iv: (v => v === null ? null : v / 100.0)(num('simAtmIv')),
             sl_multipliers: list('simSlList'),
             strike_mode: $('simStrikeMode').value,
             dynamic_k_values: list('simKList'),

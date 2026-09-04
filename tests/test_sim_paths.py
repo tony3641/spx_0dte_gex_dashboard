@@ -47,3 +47,38 @@ def test_stress_nu_3_fatter_tails():
     kurt6 = float(((rets6 - rets6.mean()) ** 4).mean() / rets6.var() ** 2)
     assert kurt > kurt6                   # nu=3 heavier tails than nu=6
     assert (np.abs(sp.spots / 6000.0 - 1) < 0.5).all()   # guard rail: within ±50%
+
+
+def test_atm_iv_caps_conditional_sigma():
+    # Near-integrated GJR-GARCH: beta=0.92 shrinks the stability margin to 0.985, so
+    # the vol-ratchet can run a subset of paths up to 5-10x the calibrated sigma0. The
+    # atm_iv anchor hard-caps each per-bar sigma at cap_mult * IV-implied per-bar vol.
+    m = CalibratedModel(
+        garch=GarchParams(omega=1.25e-8, alpha=0.06, gamma=0.01, beta=0.92, nu=7.0, converged=True),
+        ushape=np.ones(78), sigma0=0.0005, smile=DEFAULT_SMILE, vix0=15.0, source="test")
+    cfg = SimRunConfig(strategy_name="Main", bar_size="5m", atm_iv=0.167, vol_cap_mult=2.0)
+    steps = cfg.steps_per_day()            # 78
+    cap = 2.0 * (0.167 / np.sqrt(252.0)) / np.sqrt(steps)
+    sp = simulate_chunk(m, cfg, 6000.0, 4000, np.random.SeedSequence([5, 0, 0]))
+    assert sp.sigmas.max() <= cap * (1 + 1e-9)          # cap is enforced
+    # the same seed without the anchor runs far wider (the cap is binding)
+    sp_u = simulate_chunk(m, SimRunConfig(strategy_name="Main", bar_size="5m"),
+                          6000.0, 4000, np.random.SeedSequence([5, 0, 0]))
+    assert sp_u.sigmas.max() > cap
+
+
+def test_atm_iv_anchors_terminal_breadth():
+    # Anchored at 16.7% IV the terminal fan should be ~1.05%/day, NOT the fat left tail
+    # the near-integrated GARCH produces on its own.
+    m = CalibratedModel(
+        garch=GarchParams(omega=1.25e-8, alpha=0.06, gamma=0.01, beta=0.92, nu=7.0, converged=True),
+        ushape=np.ones(78), sigma0=0.0005, smile=DEFAULT_SMILE, vix0=15.0, source="test")
+    img_cfg = SimRunConfig(strategy_name="Main", bar_size="5m", atm_iv=0.167)
+    sp = simulate_chunk(m, img_cfg, 6000.0, 8000, np.random.SeedSequence([5, 0, 0]))
+    lr = np.log(sp.spots[:, -1] / sp.spots[:, 0])
+    target = 0.167 / np.sqrt(252.0)
+    assert abs(lr.std() - target) / target < 0.45       # ~1.05% daily, not 3-6%
+    sp_u = simulate_chunk(m, SimRunConfig(strategy_name="Main", bar_size="5m"),
+                          6000.0, 8000, np.random.SeedSequence([5, 0, 0]))
+    lr_u = np.log(sp_u.spots[:, -1] / sp_u.spots[:, 0])
+    assert lr.min() > lr_u.min()          # worst-case path is (far less) extreme when capped

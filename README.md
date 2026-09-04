@@ -23,7 +23,7 @@ A real-time Gamma Exposure (GEX) dashboard for SPX 0DTE options, powered by Inte
   - **Take-profit** (idempotent close loop, per-leg limit prices) and **stop-loss** as a single credit multiplier.
   - One-shot eval loop with re-entry guards, margin checks, and a kill switch.
   - **Subsequent strategies** — trigger children off a parent trade's state (parent close / time window), with acyclic tree validation.
-- **Simulation tab** — intraday Monte Carlo stress-testing for 0DTE strategies: GJR-GARCH + Student-t paths with U-shape volatility, BSM smile marking, tick-rule fills, family re-entry, SL/strike sweeps and stress dials (ν, γ, λ), PnL/CVaR/max-DD/ruin analytics.
+- **Simulation tab** — intraday Monte Carlo stress-testing for 0DTE strategies: GJR-GARCH + Student-t paths with U-shape volatility, BSM smile marking, tick-rule fills, family re-entry, SL/strike sweeps and stress dials (ν, γ, λ, ATM-IV anchor), PnL/CVaR/max-DD/ruin analytics.
 - **Logging tab** — server-side framework log streamed to the browser.
 
 ## Quick Start
@@ -129,6 +129,12 @@ tests, but absolute win rates can still mislead:
 - Mitigations: **capture a live smile** (matches the IV level you actually trade), use
   data whose realized vol is realistic, and compare sweep rows *relatively* rather than
   trusting absolute levels.
+- **Set the ATM IV % dial** to anchor the SPX fan to the market's current implied vol.
+  A GARCH fit on calm data has low *conditional* vol but can be *near-integrated*
+  (`α + γ/2 + β ≈ 0.99`), which lets a small subset of simulated paths ratchet up to
+  5–10× the fitted vol — a 1-day fan that closes p0 at −25% or worse. The ATM IV anchor
+  caps each per-bar move so the median session still resembles your data while the tails
+  match what the options market prices.
 
 ### Stress dials & experiments reference
 
@@ -138,6 +144,8 @@ tests, but absolute win rates can still mislead:
 | γ × | GJR leverage multiplier — extra vol after *negative* returns (1.0 = as fitted) |
 | λ (vol-beta) | IV↔path-vol link; currently a subtle nudge — the smile *level* comes from the snapshot |
 | Flat IV | Sanity mode: price everything at ATM IV, ignoring skew |
+| ATM IV % | Anchor the SPX path vol to today's at-the-money IV (annual %). Blank = the GARCH level fitted from your data, which can diverge from the live market — see below |
+| Vol-cap × | Per-bar sigma cap as a multiple of the IV-implied per-bar vol (default 2). Effective only when ATM IV is set |
 | SL multipliers | Sweep stop-loss = mult × credit, one table row per value; `inf` holds past the stop |
 | Strike mode | `engine` = strategy's delta/width/credit gates; `dynamic_k` = short strike at k·σ below spot |
 | k values | Short-strike distance in daily σ (`dynamic_k` mode only) |
@@ -228,7 +236,7 @@ Key strike prices and conditions:
 | `sim_config.py` | Simulation run config: validation, JSON round-trip, sweep cells |
 | `sim_data.py` | Layered intraday bar loaders: CSV → yfinance → IB |
 | `sim_calibrate.py` | GJR-GARCH(1,1)-t MLE, U-shape profile, smile snapshot, VIX mapping |
-| `sim_paths.py` | Chunked vectorized path generation (stress dials: ν, γ×) |
+| `sim_paths.py` | Chunked vectorized path generation (stress dials: ν, γ×; ATM-IV anchored per-bar sigma cap) |
 | `sim_pricing.py` | Vectorized BSM, vol-linked smile, spreads, tick fill rules |
 | `sim_engine.py` | Entry/exit scans, single + family simulation, experiment modes |
 | `sim_risk.py` | CVaR/exit breakdown/max-DD/bootstrap ruin metrics, SPX path fan |

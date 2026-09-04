@@ -24,12 +24,22 @@ def simulate_chunk(model: CalibratedModel, cfg: SimRunConfig, s0: float,
     z /= np.sqrt(nu / (nu - 2.0))                     # standardized: E[z^2] = 1
     ushape = model.ushape
 
+    # ATM-IV anchor: a near-integrated GJR-GARCH fit (alpha+gamma/2+beta ~ 0.99) lets the
+    # volatility ratchet a small subset of paths up to 5-10x the calibrated sigma0, which
+    # blows out the terminal fan's tails (1-day p0 of -25%+). Capping each per-bar sigma
+    # at vol_cap_mult * (IV-implied 1-day vol) / sqrt(steps) keeps the fan consistent with
+    # the market's own implied distribution. None -> historical GARCH level, uncapped.
+    cap = float("inf")
+    if cfg.atm_iv is not None:
+        target_daily_vol = cfg.atm_iv / float(np.sqrt(252.0))
+        cap = cfg.vol_cap_mult * target_daily_vol / float(np.sqrt(steps))
+
     spots = np.empty((n_paths, steps))
     sig_out = np.empty((n_paths, steps))
     s = np.full(n_paths, float(s0))
     sigma2 = np.full(n_paths, max(p.omega / max(1e-12, (1 - p.alpha - gamma / 2 - p.beta)), 1e-16))
     for t in range(steps):
-        sig_t = np.sqrt(sigma2) * ushape[t]
+        sig_t = np.minimum(np.sqrt(sigma2) * ushape[t], cap)
         eps = sig_t * z[:, t]
         s = s * np.exp(eps)
         spots[:, t] = s
