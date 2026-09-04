@@ -110,6 +110,7 @@ SERVER_PORT = _get_setting("SERVER_PORT", 8000, int)
 # ---------------------------------------------------------------------------
 CHAIN_STREAM_MAX_LINES = _get_setting("CHAIN_STREAM_MAX_LINES", 96, int)
 CHAIN_STREAM_UPDATE_INTERVAL = _get_setting("CHAIN_STREAM_UPDATE_INTERVAL", 0.5, float)
+CHAIN_STREAM_UNKNOWN_RETRY_SECS = _get_setting("CHAIN_STREAM_UNKNOWN_RETRY_SECS", 120.0, float)
 VIEWPORT_CENTER_MIN_INTERVAL = _get_setting("VIEWPORT_CENTER_MIN_INTERVAL", 0.2, float)
 
 # ---------------------------------------------------------------------------

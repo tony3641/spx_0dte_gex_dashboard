@@ -66,7 +66,7 @@ class AppState:
         self.chain_fetch_active: Optional[asyncio.Event] = None
         self.chain_stream_tickers: dict = {}
         self.chain_stream_contracts: dict = {}
-        self.chain_stream_unknown_keys: set = set()
+        self.chain_stream_unknown_keys: dict = {}  # (strike, right) -> monotonic ts of last failed qualification
         self.force_chain_fetch_event: Optional[asyncio.Event] = None
         self.active_tab: str = "dashboard"
         self.manual_refresh_requested: bool = False
