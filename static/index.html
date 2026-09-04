@@ -404,8 +404,15 @@
               <option value="ib">IB</option>
             </select>
           </label>
-          <label>CSV path <input id="simCsvPath" placeholder="tests/fixtures/sim_bars_5m.csv"></label>
+          <label>CSV path
+            <span class="help" tabindex="0" aria-label="CSV path explanation">?
+              <span class="tooltip" role="tooltip">Timestamped OHLC file (ET). Calibration is cached per (source, path, bar size, lookback) &mdash; if you replace the file's contents, restart the server so the new data is actually used, or the sim keeps simulating the old bars.</span>
+            </span>
+            <input id="simCsvPath" placeholder="tests/fixtures/sim_bars_5m.csv"></label>
           <label>Bar size
+            <span class="help" tabindex="0" aria-label="Bar size explanation">?
+              <span class="tooltip" role="tooltip">Granularity of the simulated day (5m = 78 bars, 1m = 390). A CSV is read at its native timestamps, so pick the size that matches the file &mdash; a mismatch distorts both the volatility fit and time-to-expiry.</span>
+            </span>
             <select id="simBarSize">
               <option value="5m">5 min</option>
               <option value="1m">1 min</option>
@@ -414,27 +421,81 @@
               <option value="5s">5 sec</option>
             </select>
           </label>
-          <label>Lookback days <input id="simLookback" type="number" value="60" min="5"></label>
-          <label>Paths <input id="simPaths" type="number" value="10000" min="10" step="100"></label>
-          <label>Seed <input id="simSeed" type="number" value="42"></label>
-          <label>Spot (blank = live/last) <input id="simSpot" type="number" step="0.01"></label>
-          <label>Account equity <input id="simEquity" type="number" value="100000"></label>
-          <label>Ruin threshold % <input id="simRuinPct" type="number" value="20" step="1"></label>
-          <label>Stop slippage (pts) <input id="simStopExtra" type="number" value="0.10" step="0.05"></label>
+          <label>Lookback days
+            <span class="help" tabindex="0" aria-label="Lookback explanation">?
+              <span class="tooltip" role="tooltip">Days of history used to fit the path model (GARCH vol, U-shape, VIX anchor). Note: a CSV file is loaded as-is &mdash; this field only limits yfinance/IB downloads.</span>
+            </span>
+            <input id="simLookback" type="number" value="60" min="5"></label>
+          <label>Paths
+            <span class="help" tabindex="0" aria-label="Paths explanation">?
+              <span class="tooltip" role="tooltip">Monte Carlo paths per sweep cell. More paths = smoother percentile charts and tighter tail estimates, at linear runtime cost.</span>
+            </span>
+            <input id="simPaths" type="number" value="10000" min="10" step="100"></label>
+          <label>Seed
+            <span class="help" tabindex="0" aria-label="Seed explanation">?
+              <span class="tooltip" role="tooltip">Random seed. The same seed with the same inputs reproduces results exactly; change it to check a conclusion isn't seed luck.</span>
+            </span>
+            <input id="simSeed" type="number" value="42"></label>
+          <label>Spot (blank = live/last)
+            <span class="help" tabindex="0" aria-label="Spot explanation">?
+              <span class="tooltip" role="tooltip">Day-open index level for the paths and the strike ladder (&plusmn;15% range, $5 steps). Blank = last close of the data.</span>
+            </span>
+            <input id="simSpot" type="number" step="0.01"></label>
+          <label>Account equity
+            <span class="help" tabindex="0" aria-label="Account equity explanation">?
+              <span class="tooltip" role="tooltip">Account size used for the bootstrap ruin test &mdash; drawdowns are measured against this, not against per-trade risk.</span>
+            </span>
+            <input id="simEquity" type="number" value="100000"></label>
+          <label>Ruin threshold %
+            <span class="help" tabindex="0" aria-label="Ruin threshold explanation">?
+              <span class="tooltip" role="tooltip">A bootstrap equity curve counts as ruined if its max drawdown reaches equity &times; this %. Shown as the ruin probability next to the DD chart.</span>
+            </span>
+            <input id="simRuinPct" type="number" value="20" step="1"></label>
+          <label>Stop slippage (pts)
+            <span class="help" tabindex="0" aria-label="Stop slippage explanation">?
+              <span class="tooltip" role="tooltip">Added to the stop trigger price (you exit at trigger + this), modeling market-order slippage through the spread.</span>
+            </span>
+            <input id="simStopExtra" type="number" value="0.10" step="0.05"></label>
           <h4>Stress dials</h4>
-          <label>ν override (blank = fitted) <input id="simNu" type="number" step="0.5" min="2.5"></label>
-          <label>γ × <input id="simGammaMult" type="number" value="1.0" step="0.1"></label>
-          <label>λ (vol-beta) <input id="simVolBeta" type="number" value="0.75" step="0.05"></label>
-          <label class="sim-check"><input id="simFlatIv" type="checkbox"> Flat IV (sanity mode)</label>
+          <label>ν override (blank = fitted)
+            <span class="help" tabindex="0" aria-label="Nu override explanation">?
+              <span class="tooltip" role="tooltip">Student-t degrees of freedom for per-bar shocks. Blank = the value fitted from your data. Lower = fatter tails (more extreme intraday moves); must be &gt; 2; try 4&ndash;6 to stress tail risk, 10+ for near-normal moves.</span>
+            </span>
+            <input id="simNu" type="number" step="0.5" min="2.5"></label>
+          <label>γ ×
+            <span class="help" tabindex="0" aria-label="Gamma multiplier explanation">?
+              <span class="tooltip" role="tooltip">Multiplier on the leverage term &mdash; the extra volatility triggered by NEGATIVE returns. 1.0 = as fitted; 2.0 makes drawdowns hang heavier; 0 = symmetric up/down moves.</span>
+            </span>
+            <input id="simGammaMult" type="number" value="1.0" step="0.1"></label>
+          <label>λ (vol-beta)
+            <span class="help" tabindex="0" aria-label="Vol-beta explanation">?
+              <span class="tooltip" role="tooltip">Intended to link option IV to the path's live volatility. Currently the shift is tiny (per-bar vol units against a 0.20 IV), so options are effectively priced at the static smile &mdash; use &ldquo;Capture smile&rdquo; to set the IV level itself.</span>
+            </span>
+            <input id="simVolBeta" type="number" value="0.75" step="0.05"></label>
+          <label class="sim-check"><input id="simFlatIv" type="checkbox"> Flat IV (sanity mode)
+            <span class="help" tabindex="0" aria-label="Flat IV explanation">?
+              <span class="tooltip" role="tooltip">Sanity mode: every option priced at ATM IV, ignoring the smile's skew. Large differences vs the smile run mean the skew/level was driving the result.</span>
+            </span></label>
           <h4>Experiments</h4>
-          <label>SL multipliers (comma-sep, 'inf' = hold) <input id="simSlList" placeholder="2, 4, 6, inf"></label>
+          <label>SL multipliers (comma-sep, 'inf' = hold)
+            <span class="help" tabindex="0" aria-label="SL multipliers explanation">?
+              <span class="tooltip" role="tooltip">Stop-loss = multiplier &times; collected credit. One sweep-table row per value; 'inf' holds past the stop to expiry. Blank = your strategy's own stop.</span>
+            </span>
+            <input id="simSlList" placeholder="2, 4, 6, inf"></label>
           <label>Strike mode
+            <span class="help" tabindex="0" aria-label="Strike mode explanation">?
+              <span class="tooltip" role="tooltip">Engine = strikes chosen by the strategy's own delta/width/credit gates (best credit first). Dynamic k·σ = ignore the gates and place the short strike exactly k daily-&sigma; below spot (uses the width from the strategy's spread_width gate).</span>
+            </span>
             <select id="simStrikeMode">
               <option value="engine">Engine (JSON conditions)</option>
               <option value="dynamic_k">Dynamic k·σ distance</option>
             </select>
           </label>
-          <label>k values (comma-sep) <input id="simKList" placeholder="0.4, 0.6, 0.8"></label>
+          <label>k values (comma-sep)
+            <span class="help" tabindex="0" aria-label="k values explanation">?
+              <span class="tooltip" role="tooltip">Short-strike distance in standard deviations of the simulated day. One sweep row per value. The same k maps to very different deltas depending on the data's volatility &mdash; compare rows, not absolutes.</span>
+            </span>
+            <input id="simKList" placeholder="0.4, 0.6, 0.8"></label>
           <div class="sim-actions">
             <button id="simRun" class="sim-run-btn">Run</button>
             <button id="simCancel" disabled>Cancel</button>
@@ -446,7 +507,7 @@
         <div class="sim-results">
           <div class="sim-report-head">
             <h3>Simulation report</h3>
-            <p class="sim-report-note">Each row in the sweep table is one (SL&nbsp;&times;,&nbsp;k) configuration; the charts below show the selected row's outcome distribution. Hover the “?” circles for plain-language explanations.</p>
+            <p class="sim-report-note">Each row in the sweep table is one (SL&nbsp;&times;,&nbsp;k) configuration; the charts below show the selected row's outcome distribution. Hover the “?” circles — next to every control and chart — for plain-language explanations.</p>
           </div>
           <div id="simTiles" class="sim-tiles"></div>
           <table class="sim-sweep" id="simSweep"></table>

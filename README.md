@@ -98,6 +98,52 @@ parent + children family) against synthetic GJR-GARCH + Student-t paths. It only
   for large sweeps with many cells.
 - **Sweep cells use independent RNG streams** (no common random numbers), so cross-cell
   differences include sampling noise — an experiment-quality tradeoff, not a paired A/B.
+- **Bars and the fitted model are cached per `(source, csv_path, bar size, lookback)`** —
+  *not* per file content. If you replace a CSV's contents on disk, restart the server or
+  the sim keeps simulating the previously loaded bars.
+- **Implied vs realized vol are not tied together.** Options are priced at the smile
+  snapshot (ATM IV 20% by default) while the underlying moves at the *data's* realized
+  vol; see "Reading results: win-rate sanity" below before trusting absolute win rates.
+
+### How the pricer marks options
+
+- Every contract is a **0DTE put** expiring at the 16:00 close; time-to-expiry decays bar
+  by bar (`bar_seconds / (252 × 6.5h)` per bar).
+- **IV** = quadratic smile in log-moneyness, loaded from the captured smile snapshot
+  (`config/sim_smile.json`; else `sim_smile_default.json`, ATM IV 20%), plus a small
+  vol-level link term.
+- **Spread mark** = Black-Scholes put mid difference; the **entry fill** is the
+  tick-floored conservative side (never better than the natural); **expiry settles at
+  intrinsic value**. Stops trigger at mark ≥ multiplier × collected credit (+ slippage).
+
+### Reading results: win-rate sanity
+
+The engine is deterministic (same seed + same inputs = identical results) and covered by
+tests, but absolute win rates can still mislead:
+
+- **Stale calibration** (above) silently simulates old data after a file change — restart
+  the server when in doubt.
+- **A calm CSV + a high smile** makes far-OTM strikes unreachable: a 0.03-delta short put
+  sits ~2–2.5% OTM at 20% IV, but data moving only ~0.4%/day rarely gets there, producing
+  near-100% win rates that reflect the vol-world mismatch, not strategy edge.
+- Mitigations: **capture a live smile** (matches the IV level you actually trade), use
+  data whose realized vol is realistic, and compare sweep rows *relatively* rather than
+  trusting absolute levels.
+
+### Stress dials & experiments reference
+
+| Control | Meaning |
+| --- | --- |
+| ν override | Student-t dof for per-bar shocks (blank = fitted; lower = fatter tails; must be > 2) |
+| γ × | GJR leverage multiplier — extra vol after *negative* returns (1.0 = as fitted) |
+| λ (vol-beta) | IV↔path-vol link; currently a subtle nudge — the smile *level* comes from the snapshot |
+| Flat IV | Sanity mode: price everything at ATM IV, ignoring skew |
+| SL multipliers | Sweep stop-loss = mult × credit, one table row per value; `inf` holds past the stop |
+| Strike mode | `engine` = strategy's delta/width/credit gates; `dynamic_k` = short strike at k·σ below spot |
+| k values | Short-strike distance in daily σ (`dynamic_k` mode only) |
+
+Every run-form control also carries an inline “?” tooltip in the UI with the same
+guidance.
 
 ## Charts
 
