@@ -131,20 +131,30 @@
     const fmt = (v, d = 0) => (v == null || isNaN(v)) ? '—' :
         v.toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
 
-    function tiles(cell, meta) {
+    function tiles(cell) {
         const s = cell.stats;
         const items = [
-            ['Exp PnL / day', `$${fmt(s.mean, 0)}`],
-            ['Win rate', `${fmt(s.win_rate * 100, 1)}%`],
-            ['CVaR 1%', `$${fmt(s.cvar1, 0)}`],
-            ['Worst day', `$${fmt(s.worst_day, 0)}`],
-            ['Max DD p95', `$${fmt(cell.dd.p95, 0)}`],
-            ['Ruin prob', `${fmt(cell.ruin_prob * 100, 2)}%`],
-            ['Never entered', `${fmt(s.never_entered_pct * 100, 1)}%`],
-            ['Paths', fmt(s.n)],
+            ['Exp PnL / day', `$${fmt(s.mean, 0)}`,
+                'Average simulated profit or loss per trading day across all paths that entered. Positive is good; a small negative number means this configuration is expected to lose money on average.'],
+            ['Win rate', `${fmt(s.win_rate * 100, 1)}%`,
+                'Share of entered paths that finished with a positive PnL after the exit fills. Tells you how often the strategy is right, not how big the wins are.'],
+            ['CVaR 1%', `$${fmt(s.cvar1, 0)}`,
+                'Conditional Value-at-Risk: the average of the worst 1% of days. A big negative number here means the worst tail days are severe — a good companion to the mean.'],
+            ['Worst day', `$${fmt(s.worst_day, 0)}`,
+                'The single worst simulated day PnL across all paths. One extreme outlier — compare it to CVaR to see whether it is a one-off or a persistent tail.'],
+            ['Max DD p95', `$${fmt(cell.dd.p95, 0)}`,
+                '95th percentile of the biggest peak-to-trough equity drawdown seen within a single day. 95% of days draw down less than this; a large number means a rough intraday ride even when the day closes green.'],
+            ['Ruin prob', `${fmt(cell.ruin_prob * 100, 2)}%`,
+                'Probability that a 60-day sequence of these days ever draws down past your equity × ruin threshold. It is the chance the account hits the floor — the number that most defines survival.'],
+            ['Never entered', `${fmt(s.never_entered_pct * 100, 1)}%`,
+                'Share of paths where the entry conditions never fired, so no trade was taken. High means the conditions are too strict — few days qualify.'],
+            ['Paths', fmt(s.n),
+                'Total number of simulated paths this cell ran. Larger is more statistically stable; the confidence in every other tile scales with this.'],
         ];
-        $('simTiles').innerHTML = items.map(([k, v]) =>
-            `<div class="sim-tile"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
+        $('simTiles').innerHTML = items.map(([k, v, tip]) =>
+            `<div class="sim-tile"><div class="v">${v}</div>` +
+            `<div class="k">${k}<span class="help" tabindex="0" aria-label="${k}">?` +
+            `<span class="tooltip" role="tooltip">${tip}</span></span></div></div>`).join('');
     }
 
     function sweepTable() {
@@ -168,49 +178,111 @@
         }));
     }
 
-    function charts(cell) {
+    const RTH_START_MIN = 570;   // 09:30 ET — mirrors sim_engine / sim_data
+
+    function _bar_seconds(bar_size) {
+        const n = parseFloat(bar_size.replace(/[a-z]+$/i, ''));
+        return /m$/i.test(bar_size) ? n * 60 : n;
+    }
+
+    function _hm(min) {
+        const h = String(Math.floor(min / 60)).padStart(2, '0');
+        const m = String(min % 60).padStart(2, '0');
+        return `${h}:${m}`;
+    }
+
+    // X data (bar index) -> minute-of-day, so "bar 40" reads as a clock time on the fan.
+    function _minute_of_day(idx, bar_secs) {
+        return RTH_START_MIN + Math.round(idx * bar_secs / 60);
+    }
+
+    function _clock_ticks(x) {
+        const lo = Math.min(...x), hi = Math.max(...x);
+        const ticks = [];
+        // Hourly on-the-hour marks (10:00..16:00), then anchor the session start (09:30).
+        for (let m = Math.ceil(RTH_START_MIN / 60) * 60; m <= 960; m += 60) {
+            if (m >= lo - 1 && m <= hi + 1) ticks.push({ val: m, text: _hm(m) });
+        }
+        if (RTH_START_MIN >= lo - 1 && RTH_START_MIN <= hi + 1
+                && !ticks.some(t => t.val === RTH_START_MIN)) {
+            ticks.unshift({ val: RTH_START_MIN, text: _hm(RTH_START_MIN) });
+        }
+        if (ticks.length < 2) {                            // degenerate span: space evenly
+            const step = Math.max(60, Math.round((hi - lo) / 5 / 60) * 60);
+            for (let m = Math.ceil(lo / step) * step; m <= hi; m += step)
+                ticks.push({ val: m, text: _hm(m) });
+        }
+        return ticks;
+    }
+
+    function charts(cell, meta) {
+        const stats = cell.stats || {};
+        const bar_secs = _bar_seconds((meta && meta.bar_size) || '5m');
         const dark = { paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
                        font: { color: '#c9cdd4' } };
-        const stats = cell.stats || {};
+        const axis = (label) => ({ title: { text: label, font: { size: 11, color: '#9aa0aa' } },
+                                   gridcolor: 'rgba(255,255,255,0.06)' });
+        const margin = { l: 64, r: 20, t: 8, b: 46 };
+
         // Day-PnL histogram — mirror the fan/max-DD guards: a cell with zero entered paths
         // has a degenerate/empty binning, so skip the chart instead of plotting nothing.
         if (stats.entered > 0 && cell.hist && cell.hist.edges && cell.hist.edges.length > 1) {
             Plotly.newPlot('simHist', [{
                 type: 'bar', x: cell.hist.edges.slice(1).map((e, i) => (e + cell.hist.edges[i]) / 2),
-                y: cell.hist.counts, marker: { color: '#4a89dc' },
-            }], Object.assign({ title: 'Day PnL distribution ($)', bargap: 0.02 }, dark),
+                y: cell.hist.counts, marker: { color: '#4a89dc' }, name: 'Paths',
+            }], Object.assign({ bargap: 0.02, showlegend: false,
+                    xaxis: axis('Day PnL ($)'), yaxis: axis('Number of paths (binned)'),
+                    margin }, dark),
                 { responsive: true, displayModeBar: false });
         }
-        // MTM quantile fan
+
+        // MTM quantile fan — X mapped to clock time; percentiles named and legended.
         const f = cell.fan;
         if (f && f.minutes && f.minutes.length) {
-            const x = f.minutes;
+            const x = f.minutes.map(i => _minute_of_day(i, bar_secs));
+            const ticks = _clock_ticks(x);
             Plotly.newPlot('simFan', [
-                { x, y: f.q95, mode: 'lines', line: { width: 1, color: '#3f8f5f' } },
-                { x, y: f.q75, mode: 'lines', line: { width: 1, color: '#3f8f5f' } },
-                { x, y: f.q50, mode: 'lines', line: { width: 2, color: '#e8c15a' } },
-                { x, y: f.q25, mode: 'lines', line: { width: 1, color: '#e06c60' } },
+                { x, y: f.q95, mode: 'lines', line: { width: 1, color: '#3f8f5f' }, name: '95th pct' },
+                { x, y: f.q75, mode: 'lines', line: { width: 1, color: '#3f8f5f' }, name: '75th pct' },
+                { x, y: f.q50, mode: 'lines', line: { width: 2, color: '#e8c15a' }, name: 'Median' },
+                { x, y: f.q25, mode: 'lines', line: { width: 1, color: '#e06c60' }, name: '25th pct' },
                 { x, y: f.q05, mode: 'lines', line: { width: 1, color: '#e06c60' },
-                  fill: 'tonexty', fillcolor: 'rgba(224,108,96,0.12)' },
-            ], Object.assign({ title: 'Spread MTM quantile fan ($)', showlegend: false }, dark),
-                { responsive: true, displayModeBar: false });
+                  fill: 'tonexty', fillcolor: 'rgba(224,108,96,0.12)', name: '5th pct' },
+            ], Object.assign({
+                    showlegend: true,
+                    legend: { orientation: 'h', y: -0.16, x: 0.5, xanchor: 'center',
+                              font: { size: 10, color: '#c9cdd4' } },
+                    xaxis: Object.assign(axis('Time of day (ET)'), {
+                        tickvals: ticks.map(t => t.val), ticktext: ticks.map(t => t.text),
+                        range: [Math.min(...x), Math.max(...x)] }),
+                    yaxis: Object.assign(axis('Spread PnL ($)'), {
+                        zeroline: true, zerolinecolor: 'rgba(255,255,255,0.18)', zerolinewidth: 1 }),
+                    margin },
+                dark), { responsive: true, displayModeBar: false });
         }
+
         // Bootstrap max-DD distribution
         const ddh = cell.dd_hist || {};
         if (ddh.max_dd && ddh.max_dd.length) {
+            const length = (meta && meta.bootstrap_len) || 60;
+            $('simDDSub').textContent =
+                `${length}-d curves · ruin prob ${fmt(cell.ruin_prob * 100, 2)}%`;
             Plotly.newPlot('simDD', [{
                 type: 'histogram', x: ddh.max_dd, marker: { color: '#8a6fc8' }, nbinsx: 40,
-            }], Object.assign({ title: `Bootstrap max-DD ($ over ${'60'}d curves) — ruin prob ${fmt(cell.ruin_prob * 100, 2)}%` }, dark),
-                { responsive: true, displayModeBar: false });
+                name: 'Paths',
+            }], Object.assign({ showlegend: false,
+                    xaxis: axis(`Max drawdown ($ over ${length}d curves)`),
+                    yaxis: axis('Count of bootstrap runs'), margin },
+                dark), { responsive: true, displayModeBar: false });
         }
     }
 
     function render() {
         if (!currentResult || !currentResult.cells.length) return;
         const cell = currentResult.cells[selectedCell];
-        tiles(cell, currentResult.meta);
+        tiles(cell);
         sweepTable();
-        charts(cell);
+        charts(cell, currentResult.meta);
         const m = currentResult.meta;
         $('simDataInfo').textContent =
             `source: ${m.source} · ${m.bar_size} · ${m.steps_per_day} bars/day · ` +

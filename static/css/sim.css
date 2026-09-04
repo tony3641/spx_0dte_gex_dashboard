@@ -24,8 +24,35 @@
   border-radius: 8px; padding: 10px 14px; min-width: 130px; }
 .sim-tile .v { font-size: 20px; font-weight: 600; }
 .sim-tile .k { font-size: 11px; opacity: 0.65; }
-.sim-chart { height: 300px; margin-bottom: 10px; background: var(--panel-bg, #16181d);
+.sim-chart { height: 300px; background: var(--panel-bg, #16181d);
   border: 1px solid var(--border, #2a2d34); border-radius: 8px; }
+
+/* -------- Report readability: header, chart titles, inline "?" help chips -------- */
+.sim-report-head h3 { margin: 0 0 4px; font-size: 15px; }
+.sim-report-note { margin: 0 0 12px; font-size: 12px; opacity: 0.7; line-height: 1.4; }
+.sim-chart-block { margin-bottom: 10px; }
+.sim-chart-head { font-size: 13px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px; opacity: 0.92; }
+.sim-chart-sub { font-size: 11px; font-weight: 400; color: #64748b; margin-left: 6px; opacity: 0.85; }
+
+/* Inline "?" help chips + hover tooltip for the sim tiles and chart headers.
+   Mirrors the dashboard's existing .chart-title .help pattern (charts.css). */
+.sim-tile .help, .sim-chart-head .help {
+  pointer-events: auto; display: inline-block; margin-left: 8px; vertical-align: middle;
+  background: #1e293b; color: #94a3b8; border-radius: 50%; width: 18px; height: 18px;
+  line-height: 18px; text-align: center; font-size: 12px; cursor: default; position: relative;
+}
+.sim-tile .help:focus, .sim-chart-head .help:focus { outline: 2px solid #334155; }
+.sim-tile .help .tooltip, .sim-chart-head .help .tooltip {
+  display: none; position: absolute; top: 26px; left: 50%; transform: translateX(-50%);
+  background: #0b1220; color: #e2e8f0; padding: 8px 10px; border-radius: 6px; font-size: 12px;
+  width: 300px; z-index: 40; text-align: left; line-height: 1.25; white-space: normal;
+}
+.sim-tile .help .tooltip::after, .sim-chart-head .help .tooltip::after {
+  content: ''; position: absolute; top: -6px; left: 50%; transform: translateX(-50%);
+  border-width: 6px; border-style: solid; border-color: transparent transparent #0b1220 transparent;
+}
+.sim-tile .help:hover .tooltip, .sim-tile .help:focus .tooltip,
+.sim-chart-head .help:hover .tooltip, .sim-chart-head .help:focus .tooltip { display: block; }
 .sim-sweep { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 12px; }
 .sim-sweep th, .sim-sweep td { border-bottom: 1px solid var(--border, #2a2d34);
   padding: 5px 8px; text-align: right; }

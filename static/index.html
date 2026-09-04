@@ -444,11 +444,41 @@
           <div id="simDataInfo" class="sim-datainfo"></div>
         </div>
         <div class="sim-results">
+          <div class="sim-report-head">
+            <h3>Simulation report</h3>
+            <p class="sim-report-note">Each row in the sweep table is one (SL&nbsp;&times;,&nbsp;k) configuration; the charts below show the selected row's outcome distribution. Hover the “?” circles for plain-language explanations.</p>
+          </div>
           <div id="simTiles" class="sim-tiles"></div>
           <table class="sim-sweep" id="simSweep"></table>
-          <div class="sim-chart" id="simHist"></div>
-          <div class="sim-chart" id="simFan"></div>
-          <div class="sim-chart" id="simDD"></div>
+
+          <div class="sim-chart-block">
+            <div class="sim-chart-head">Day PnL distribution
+              <span class="help" tabindex="0" aria-label="Day PnL distribution explanation">?
+                <span class="tooltip" role="tooltip">The spread of simulated per-day profit &amp; loss across all paths. Each bar is a $ bucket; bars to the right of $0 are winning days, bars to the left are losing days. A long tail to the left means the strategy occasionally takes a big loss. The tiles above (mean, win rate, CVaR) read off this distribution.</span>
+              </span>
+            </div>
+            <div class="sim-chart" id="simHist"></div>
+          </div>
+
+          <div class="sim-chart-block">
+            <div class="sim-chart-head">Spread mark-to-market (MTM) through the day
+              <span class="help" tabindex="0" aria-label="Spread MTM explanation">?
+                <span class="tooltip" role="tooltip">Each line is a quantile of the open spread's unrealized P&amp;L at that time of day, across all paths. The shaded band is the 5th&ndash;95th percentile: 90% of paths sit between the two edges. The gold line is the median (a typical day). A band that dips well below $0 early on means the position is commonly in drawdown before it resolves — a sign of a stressful hold.</span>
+              </span>
+            </div>
+            <div class="sim-chart" id="simFan"></div>
+          </div>
+
+          <div class="sim-chart-block">
+            <div class="sim-chart-head">Bootstrap max drawdown
+              <span id="simDDSub" class="sim-chart-sub"></span>
+              <span class="help" tabindex="0" aria-label="Bootstrap max drawdown explanation">?
+                <span class="tooltip" role="tooltip">Drawdown is the biggest peak-to-trough loss on an equity curve. This chart resamples the simulated day PnLs into many 60-day sequences and plots each sequence's worst drawdown. Ruin probability is the share of sequences that ever draw down past your equity &times; threshold. A peak on the right means a real chance of a deep multi-day loss.</span>
+              </span>
+            </div>
+            <div class="sim-chart" id="simDD"></div>
+          </div>
+
           <div class="sim-actions">
             <button id="simExport" disabled>Export CSV</button>
             <button id="simCaptureSmile">Capture live smile</button>
