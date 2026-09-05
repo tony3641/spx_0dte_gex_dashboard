@@ -78,3 +78,17 @@ A_STATE = {"skew_beta": 1.0, "skew_t_gamma": 0.0, "atm_budget": False}
 def test_phase_A_activated_baseline_unchanged():
     """Gate A: skew_beta=1.0 outputs are pinned; Task 8 re-links to this npz."""
     _assert_cell_matches(_npz("A"), *_cell(A_STATE))
+
+
+AB_STATE = {"skew_beta": 1.0, "skew_t_gamma": 0.4, "atm_budget": False}
+
+
+def test_phase_B_gamma0_matches_phase_A():
+    """Gate B chain link: gamma=0 must reproduce the Phase-A baseline exactly."""
+    _assert_cell_matches(_npz("A"),
+                         *_cell({"skew_beta": 1.0, "skew_t_gamma": 0.0,
+                                 "atm_budget": False}))
+
+
+def test_phase_B_activated_baseline_unchanged():
+    _assert_cell_matches(_npz("AB"), *_cell(AB_STATE))

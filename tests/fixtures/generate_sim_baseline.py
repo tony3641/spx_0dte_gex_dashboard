@@ -53,6 +53,7 @@ def main() -> None:
     cfg = SimRunConfig(strategy_name="T", source="csv", csv_path=FIXTURE,
                        bar_size="5m", n_paths=60, seed=42)
     cfg.skew_beta = a.skew_beta    # apply the dial or the npz is silently the neutral capture
+    cfg.skew_t_gamma = a.t_gamma   # expiry-amplification dial (Phase B); apply or AB == A
     cfg.validate()
     bars = load_bars(cfg)
     model = calibrate(bars, cfg)

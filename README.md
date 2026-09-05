@@ -130,6 +130,7 @@ The simulated smile now responds to the path's own volatility state. With
 when a path's GARCH sigma deviates from its calibrated mean: put wings get richer,
 call wings cheaper, ATM unchanged (`iv_t(m) += -skew_beta * clamp(sigma_t/sigma0 - 1,
 -1, +3) * m`). The response is closed-form — the SVI is never refit at runtime.
+`skew_t_gamma` (0..1, literature anchor ~0.4) scales this tilt by `(T0/T)^gamma`, steepening wings toward expiry.
 
 ### Reading results: win-rate sanity
 

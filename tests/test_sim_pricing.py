@@ -132,3 +132,85 @@ def test_build_ladder():
     K = build_ladder(6000.0, 0.15)
     assert K[0] == 5100.0 and K[-1] == 6900.0
     assert (np.diff(K) == 5.0).all() and 6000.0 in K
+
+
+def test_strike_monotonicity_every_bar_at_gamma_04():
+    from sim_calibrate import CalibratedModel, GarchParams, build_dynamics
+    from sim_config import SimRunConfig
+    model = CalibratedModel(
+        garch=GarchParams(omega=2e-10, alpha=0.05, gamma=0.10, beta=0.85, nu=6.0,
+                          converged=True),
+        ushape=np.ones(78), sigma0=SIGMA0, smile=DEFAULT_SMILE, vix0=15.0, source="test")
+    cfg = SimRunConfig(strategy_name="T", bar_size="5m", skew_beta=1.0, skew_t_gamma=0.4)
+    dyn = build_dynamics(model, cfg)
+    ladder = np.arange(5700.0, 6300.0 + 2.5, 5.0)
+    m = np.log(ladder / 6000.0)
+    barf = 300 / (252 * 6.5 * 3600.0)
+    for t in range(78):
+        iv = smile_iv(m, DEFAULT_SMILE, np.array([[SIGMA0 * 1.8]]), dyn, t)
+        put = bsm_put(6000.0, ladder, barf * (77 - t), R, iv)
+        assert np.all(np.diff(put) >= -1e-12), f"butterfly flip at bar {t}"
+
+
+def run_entry_sim(model, cfg, spots, sigmas, ladder, dyn=None, per_path_start=None):
+    """Thin stand-in for sim_engine.run_entry on prebuilt paths (avoids the import)."""
+    from types import SimpleNamespace
+    from sim_engine import run_entry
+    return run_entry(model, cfg, _strategy_sim(), SimpleNamespace(spots=spots, sigmas=sigmas),
+                     ladder, per_path_start=per_path_start, dyn=dyn)
+
+
+def _strategy_sim():
+    from strategy_models import Condition, ExitRules, StopLoss, Strategy
+    return Strategy(
+        name="T", direction="bull_put",
+        conditions=[
+            Condition(kind="short_delta", params={"min": 0.05, "max": 0.60}),
+            Condition(kind="spread_width", params={"min": 5, "max": 50}),
+            Condition(kind="credit", params={"min": 0.05}),
+            Condition(kind="entry_window", params={"start": "09:35", "end": "14:00"}),
+        ],
+        exit_rules=ExitRules(stop_loss=StopLoss(multiplier=6.0)), budget=None)
+
+
+def test_late_window_credits_steeper_with_gamma():
+    """Gate B deliverable: quantify the last-window credit shift (spec §8).
+
+    Vol-SPIKE geometry (sigma = 1.8x SIGMA0 every bar): the smile tilt RICHENS the bought
+    deep-OTM wing put more than the near-ATM short put, so the bull-put net credit FALLS.
+    skew_t_gamma AMPLIFIES that tilt toward expiry (scales by (T0/T)^gamma), so the late
+    window (bars >= 47) mean credit at gamma=0.4 is BELOW gamma=0 — the brief's `>` was
+    backwards for a spike. Direction asserted below was confirmed empirically.
+
+    The permissive short-delta band qualifies at the window OPEN for every path, so no
+    path ever reaches the late window naturally (fixture captures are all bar 0). To make
+    the last-hour credit observable we gate eligibility with run_entry's per_path_start,
+    staggering starts across bars 47..53. Both gamma cohorts share identical starts, so
+    entry bars match and the fills differ only by the expiry amplification.
+    """
+    from sim_calibrate import CalibratedModel, GarchParams, build_dynamics
+    from sim_config import SimRunConfig
+    rng = np.random.default_rng(0)
+    n, steps = 60, 78
+    spots = np.full((n, steps), 6000.0) + rng.normal(0, 2.0, (n, steps)).cumsum(1) * 0.1
+    spots *= np.linspace(1.0, 0.97, steps)[None, :]          # down drift
+    sigmas = np.full((n, steps), SIGMA0 * 1.8)               # vol shock
+    model = CalibratedModel(
+        garch=GarchParams(omega=2e-10, alpha=0.05, gamma=0.10, beta=0.85, nu=6.0,
+                          converged=True),
+        ushape=np.ones(steps), sigma0=SIGMA0, smile=DEFAULT_SMILE, vix0=15.0,
+        source="test")
+    ladder = np.arange(5100.0, 6900.0 + 2.5, 5.0)
+    starts = 47 + np.arange(n) % 7                            # force eligibility into bars 47..53
+    fills, minutes = {}, {}
+    for tag, gamma in [("gamma0", 0.0), ("gamma04", 0.4)]:
+        cfg = SimRunConfig(strategy_name="T", bar_size="5m", skew_beta=1.0,
+                           skew_t_gamma=gamma)
+        es = run_entry_sim(model, cfg, spots, sigmas, ladder, dyn=build_dynamics(model, cfg),
+                           per_path_start=starts)
+        fills[tag], minutes[tag] = es.fill_credit, es.entry_minute
+    late = minutes["gamma0"] >= 47                            # last hour of the 09:35-14:00 window
+    assert late.all(), "forced-late cohort did not all enter in the late window"
+    print(f"late-window mean credit gamma=0: {fills['gamma0'][late].mean():.4f} "
+          f"gamma=0.4: {fills['gamma04'][late].mean():.4f}")
+    assert fills["gamma04"][late].mean() < fills["gamma0"][late].mean()
