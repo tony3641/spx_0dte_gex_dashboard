@@ -74,3 +74,20 @@ def test_sweep_cells_product():
 
 def test_sweep_cells_defaults():
     assert sweep_cells(SimRunConfig(strategy_name="M")) == [{"sl_multiplier": None, "k": None}]
+
+
+def _cfg(**kw):
+    return SimRunConfig(strategy_name="T", **kw)
+
+
+def test_skew_beta_default_is_neutral():
+    assert _cfg().skew_beta == 0.0
+
+
+def test_negative_skew_beta_rejected():
+    with pytest.raises(ValueError, match="skew_beta"):
+        _cfg(skew_beta=-0.1).validate()
+
+
+def test_positive_skew_beta_accepted():
+    _cfg(skew_beta=1.0).validate()   # must not raise

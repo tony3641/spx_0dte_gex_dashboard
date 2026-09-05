@@ -37,6 +37,7 @@ class SimRunConfig:
     stop_extra: float = 0.10            # market-order stop: trigger + this
     tick_size: float = 0.05
     ladder_range_pct: float = 0.15
+    skew_beta: float = 0.0              # smile tilt per unit vol-shock (>=0); 0 = legacy
 
     def steps_per_day(self) -> int:
         return (390 * 60) // BAR_SECONDS[self.bar_size]
@@ -72,6 +73,8 @@ class SimRunConfig:
                 raise ValueError(f"{name} must be > 2.0 (Student-t needs finite variance)")
         if self.gamma_mult <= 0 or self.vol_beta < 0:
             raise ValueError("gamma_mult must be > 0 and vol_beta >= 0")
+        if self.skew_beta < 0:
+            raise ValueError("skew_beta must be >= 0")
         if self.vol_cap_mult <= 0:
             raise ValueError("vol_cap_mult must be > 0")
         if self.atm_iv is not None and not (0 < self.atm_iv < 5.0):
