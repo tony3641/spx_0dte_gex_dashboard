@@ -74,17 +74,23 @@ regression baseline never drifts and every change is attributable to exactly one
 Final form after all three phases, for log-moneyness `m = log(K / S_t)` at bar `t`:
 
 ```
-ratio   = clamp(sigma_t / sigma0 - 1,  -1.0, +3.0)          # tail guard, tilt input only
-tilt    = -skew_beta * g(t) * ratio * m                      # Phase A x Phase B
-        g(t) = (T_ref / max(T_t, T_floor)) ** skew_t_gamma
+t_scale = T_ref / max(T_t, T_floor)                          # shared per-bar time factor
         T_ref = T_left[0],  T_floor = 0.5 * bar_year_frac(bar_secs)
-level   = atm_budget ? iv0 * ( sqrt( (A(t) + B(t) * sigma_tilde_t^2) / V0 ) - 1 )
+ratio   = clamp(sigma_t / sigma0 - 1,  -1.0, +3.0)          # tail guard, tilt input only
+tilt    = -skew_beta * t_scale ** skew_t_gamma * ratio * m   # Phase A x Phase B
+level   = atm_budget ? iv0 * ( sqrt( (A(t) + B(t) * sigma_tilde_t^2) / V0 * t_scale ) - 1 )
                      : vol_beta * (sigma_t - sigma0)         # Phase C' replaces legacy shift
         sigma_tilde_t^2 = v_bar + budget_beta * (sigma_t^2 - v_bar)
 IV_t(m) = clip( smile.iv(m) + level + tilt,  0.01, 5.0 )
 ```
 
 Properties:
+
+- **Annualization (budget branch).** The `t_scale` factor makes `L(t)` an *annualized*
+  IV ratio (remaining expected variance per unit of remaining time), not a total-variance
+  ratio — without it the anchor would double-count the theta BSM already applies via
+  `T_left`. With a flat U-shape, `S(t)/S(0) = T_t/T_ref` cancels `t_scale` exactly and
+  the quiet-path ATM IV is flat (the variance-budget baseline).
 
 - **Orthogonality.** `tilt` is exactly zero at `m = 0` — Phases A/B never move the ATM
   IV. `level` is independent of `m` — Phase C' never changes the shape. Each phase's
@@ -149,13 +155,15 @@ A(t) = v_bar * (S(t) - P(t));   B(t) = P(t)
 V(t, sigma_t) = A(t) + B(t) * sigma_tilde_t^2
 sigma_tilde_t^2 = v_bar + budget_beta * (sigma_t^2 - v_bar)
 V0 = v_bar * S(0)                                      # = V(0, initial state)
-L(t) = iv0 * sqrt(V(t) / V0)
+t_scale_t = T_ref / max(T_t, T_floor)                  # same table the tilt uses
+L(t) = iv0 * sqrt(V(t) / V0 * t_scale_t)               # annualized by remaining time
 ```
 
 - `iv0 = smile.iv(0.0)`. `V0` uses the path generator's own initial state
   (`sigma^2 = v_bar`), so `L(0) = iv0` holds **exactly** — the anchor reattaches to the
   market snapshot at t=0 with no level jump.
-- Quiet-path behavior (`sigma_t ~ sqrt(v_bar)`): `L(t) = iv0 * sqrt(S(t)/S(0))` — a pure
+- Quiet-path behavior (`sigma_t ~ sqrt(v_bar)`): `L(t) = iv0 * sqrt(S(t)/S(0) * t_scale_t)`
+  — a pure
   U-shape ratio: fast early burn-off, midday trough, late firm-up. The intraday decay
   shape is *estimated from bar history*, with zero free parameters.
 - Stress behavior: through `B(t) * budget_beta * (sigma_t^2 - v_bar)`, elevated path
@@ -167,7 +175,10 @@ L(t) = iv0 * sqrt(V(t) / V0)
 **Known residual (accepted, documented).** The anchor models expected *remaining*
 variance; it does not model variance-risk-premium burn-off. On quiet days it will still
 sit somewhat above the real market's late-day IV — bounded and far closer than the
-constant IV it replaces. Not modeled (see Non-goals).
+constant IV it replaces. Not modeled (see Non-goals). Additionally, the final few bars
+annualize a shrinking variance sample, so the model's ATM IV rises steeply in the last
+minutes (bounded by `T_floor`; prices there sit near intrinsic, so the impact is
+immaterial) — verify against panel snapshots in future work.
 
 **Implementation.**
 
@@ -204,7 +215,7 @@ Any link breaking `array_equal` is a release blocker.
 | File | Change |
 |---|---|
 | `sim_config.py` | 4 new fields (`skew_beta`, `skew_t_gamma`, `atm_budget`, `budget_beta`) + validation |
-| `sim_calibrate.py` | `SmileDynamics` dataclass + `build_dynamics(model, cfg)` (backward recursions, `g_vec`) |
+| `sim_calibrate.py` | `SmileDynamics` dataclass + `build_dynamics(model, cfg)` (backward recursions, shared `t_scale` table) |
 | `sim_pricing.py` | `smile_iv(m, smile, sigma_t, dyn, t)`; ratio clamp constants |
 | `sim_engine.py` | accept/thread `dyn`; update call sites `:170`, `:200`, `:285`, `:325` |
 | `sim_jobs.py` | build `dyn` per run in `execute_pipeline`; add new dials to the export meta (`:195`) |
@@ -215,8 +226,9 @@ Any link breaking `array_equal` is a release blocker.
 
 ## 10. Config, export, docs
 
-- New `SimRunConfig` fields with neutral defaults; `__post_init__` raises on negative
-  `skew_beta` / `budget_beta` and on `skew_t_gamma` outside `[0, 1]`.
+- New `SimRunConfig` fields with neutral defaults; `validate()` raises on negative
+  `skew_beta` / `budget_beta` and on `skew_t_gamma` outside `[0, 1]` (repo pattern:
+  explicit `validate()`, not `__post_init__`).
 - Export meta `dials` (`sim_jobs.py:195`) gains the four new fields so every report is
   self-describing.
 - README documents the model, the formula, each dial's meaning and its theory/legacy
