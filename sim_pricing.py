@@ -48,13 +48,21 @@ def smile_iv(m, smile, sigma_t, dyn, t):
     dyn is a sim_calibrate.SmileDynamics carrying the run's dials/tables; neutral dyn
     reproduces the legacy formula exactly:
         clip(smile.iv(m) + vol_beta*(sigma - sigma0), 0.01, 5.0)
+    With atm_budget the level is the variance-budget anchor: annualized remaining
+    expected variance conditioned on the path's sigma state, reattached to the
+    snapshot's iv0 at t=0.
     """
     m = np.asarray(m, dtype=float)
     sigma = np.asarray(sigma_t, dtype=float)
     if dyn.flat_iv:
         return np.full(np.broadcast_shapes(m.shape, sigma.shape), dyn.iv0)
     base = smile.iv(m)
-    level = dyn.vol_beta * (sigma - dyn.sigma0)
+    if dyn.atm_budget:
+        sig2t = dyn.v_bar + dyn.budget_beta * (sigma * sigma - dyn.v_bar)
+        v = dyn.a_tab[t] + dyn.b_tab[t] * sig2t
+        level = dyn.iv0 * (np.sqrt(v / dyn.v0 * float(dyn.t_scale[t])) - 1.0)
+    else:
+        level = dyn.vol_beta * (sigma - dyn.sigma0)
     ratio = np.clip(sigma / dyn.sigma0 - 1.0, _VOL_RATIO_MIN, _VOL_RATIO_MAX)
     tilt = -dyn.skew_beta * (float(dyn.t_scale[t]) ** dyn.skew_t_gamma) * ratio * m
     return np.clip(base + level + tilt, 0.01, 5.0)

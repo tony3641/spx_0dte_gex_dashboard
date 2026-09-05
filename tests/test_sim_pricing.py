@@ -3,11 +3,12 @@
 import math
 
 import numpy as np
+import pytest
 
 from gex_calculator import _bsm_delta
 from sim_pricing import (bsm_put, bsm_put_delta, bar_year_frac, build_ladder,
                          combo_fill_credit, half_spread, smile_iv, tick_floor)
-from sim_calibrate import DEFAULT_SMILE, SmileParams, SmileDynamics
+from sim_calibrate import DEFAULT_SMILE, CalibratedModel, GarchParams, SmileDynamics
 
 SIGMA0 = 0.0005
 R = 0.043
@@ -214,3 +215,71 @@ def test_late_window_credits_steeper_with_gamma():
     print(f"late-window mean credit gamma=0: {fills['gamma0'][late].mean():.4f} "
           f"gamma=0.4: {fills['gamma04'][late].mean():.4f}")
     assert fills["gamma04"][late].mean() < fills["gamma0"][late].mean()
+
+
+# --- variance-budget ATM anchor level branch (Task 11, Phase C', spec §7) ---
+
+
+def _budget_model(ushape):
+    return CalibratedModel(
+        garch=GarchParams(omega=2e-10, alpha=0.05, gamma=0.10, beta=0.85, nu=6.0,
+                          converged=True),
+        ushape=ushape, sigma0=SIGMA0, smile=DEFAULT_SMILE, vix0=15.0, source="test")
+
+
+def _ubars(**kw):
+    """Budget dyn over a 78-bar 5-min day with the given ATM sigma path."""
+    from sim_calibrate import build_dynamics
+    from sim_config import SimRunConfig
+    u = np.interp(np.arange(78), [0, 6, 39, 72, 77], [2.0, 0.7, 0.6, 1.6, 2.4])
+    u /= u.mean()
+    model = _budget_model(u if kw.pop("u_shape", True) else np.ones(78))
+    cfg = SimRunConfig(strategy_name="T", bar_size="5m", atm_budget=True, **kw)
+    return build_dynamics(model, cfg), model
+
+
+def test_budget_quiet_flat_ushape_gives_flat_atm_iv():
+    """Flat U-shape: S(t)/S(0) == T_t/T_ref cancels t_scale -> level == 0."""
+    dyn, model = _ubars(u_shape=False)
+    ivs = np.array([smile_iv(np.array([0.0]), model.smile,
+                             np.array([[np.sqrt(dyn.v_bar)]]), dyn, t)[0, 0]
+                    for t in range(77)])
+    assert np.allclose(ivs, dyn.iv0, atol=1e-10)
+
+
+def test_budget_quiet_ushape_early_dip_then_firms():
+    """U-shape IV signature: early burn-off dips the level below the anchor, then the
+    remaining close-bucket variance firms it back up into the expiry (spec §7). The
+    dip's depth/timing depends on the close-bucket weight — assert the robust ordering,
+    not a midday sign."""
+    dyn, model = _ubars()
+    v_atm = np.sqrt(dyn.v_bar)
+    lvl = lambda t: smile_iv(np.array([0.0]), model.smile,
+                             np.array([[v_atm]]), dyn, t)[0, 0] - dyn.iv0
+    assert lvl(0) == pytest.approx(0.0, abs=1e-12)     # L(0) == iv0 exactly anchored
+    assert lvl(6) < 0.0                                # open bucket burned off -> dip
+    assert lvl(39) > lvl(6)                            # recovery as close ramp dominates
+    assert lvl(70) > lvl(39)                           # keeps firming into the close
+
+
+def test_budget_stress_rises_into_close():
+    dyn, model = _ubars()
+    v_stress = 2.0 * np.sqrt(dyn.v_bar)
+    lvl = lambda t: smile_iv(np.array([0.0]), model.smile,
+                             np.array([[v_stress]]), dyn, t)[0, 0] - dyn.iv0
+    assert lvl(39) > 0.0                               # stress lifts IV above anchor
+    assert lvl(70) > lvl(39)                           # and it rises into the close
+
+
+def test_budget_off_branch_bit_identical_to_legacy_expression():
+    from sim_calibrate import build_dynamics
+    from sim_config import SimRunConfig
+    model = _budget_model(np.ones(78))
+    cfg = SimRunConfig(strategy_name="T", bar_size="5m")
+    dyn = build_dynamics(model, cfg)
+    m = np.linspace(-0.15, 0.15, 21)
+    sigma = np.array([[0.0007], [0.0004]])
+    out = smile_iv(m, model.smile, sigma, dyn, 3)
+    legacy = np.clip(model.smile.iv(m) + 0.75 * (sigma - SIGMA0), 0.01, 5.0)
+    assert np.array_equal(out, legacy)
+
