@@ -150,7 +150,7 @@ v_bar  = omega / (1 - p_eff)                           # same reference as sim_p
 E[sigma^2_{t+k} | sigma_t] = v_bar + p_eff^k * (sigma_t^2 - v_bar)   # z symmetric
 
 S(t) = sum_{k=t+1}^{steps-1} u_k^2 * dt                # backward: S(t) = S(t+1) + u_{t+1}^2 * dt
-P(t) = sum_{k=t+1}^{steps-1} p_eff^(k-t) * u_k^2 * dt  # backward: P(t) = u_{t+1}^2 * dt + p_eff * P(t+1)
+P(t) = sum_{k=t+1}^{steps-1} p_eff^(k-t) * u_k^2 * dt  # backward: P(t) = p_eff * (u_{t+1}^2 * dt + P(t+1))
 A(t) = v_bar * (S(t) - P(t));   B(t) = P(t)
 V(t, sigma_t) = A(t) + B(t) * sigma_tilde_t^2
 sigma_tilde_t^2 = v_bar + budget_beta * (sigma_t^2 - v_bar)
@@ -208,7 +208,7 @@ confirmed correct before the next phase is stacked.** A failed gate blocks the s
 
 | Gate | Runs against | Must pass |
 |---|---|---|
-| **Gate A** | Phase A only (`skew_t_gamma=0`, `atm_budget=False`) | (1) Unit: tilt direction (sigma up -> m<0 IV up, m>0 IV down, m=0 unchanged); clamp bounds; `flat_iv` short-circuit unaffected; put price monotone in strike on a grid (no butterfly flips). (2) **Bit-identical regression**: `skew_beta=0` full runs on 3 fixed seeds are `array_equal` vs master (fixture infrastructure in `tests/fixtures/generate_sim_fixture.py`). (3) Behavioral signature: `skew_beta=1` raises put-spread credits monotonically on down-drift paths vs legacy; deltas visible in the export report |
+| **Gate A** | Phase A only (`skew_t_gamma=0`, `atm_budget=False`) | (1) Unit: tilt direction (sigma up -> m<0 IV up, m>0 IV down, m=0 unchanged); clamp bounds; `flat_iv` short-circuit unaffected; put price monotone in strike on a grid (no butterfly flips). (2) **Bit-identical regression**: `skew_beta=0` full runs on 3 fixed seeds are `array_equal` vs master (fixture infrastructure in `tests/fixtures/generate_sim_fixture.py`). (3) Behavioral signature: `skew_beta=1` richens the put wing (m<0 IV up) and NARROWS bull-put credits on a vol spike / widens them on a collapse, verifiable on down-drift paths vs legacy; deltas visible in the export report |
 | **Gate B** | Phase A + B | (1) `skew_t_gamma=0` bit-identical to the Gate-A state. (2) At `gamma=0.4`, put prices monotone in strike at **every** bar. (3) Quantified late-window (last hour) credit/delta shift on stress paths — the report that justifies the phase |
 | **Gate C'** | Phase A + B + C' | (1) Table identities: `V = A + B*sigma^2` vs brute-force per-bar summation, and closed-form `E[sigma^2]` vs an explicit GJR recursion simulation (tol 1e-12). (2) `L(0) = iv0` exact. (3) Quiet-path IV shows the U-shape signature (early decline > midday; late firm-up — directional assertions). (4) Stress-path IV rises into the close. (5) `atm_budget=False` bit-identical to the Gate-B state. (6) Full-stack report: early-vs-late window entry credit bias, C' vs legacy — the original motivation, must show a number |
 | **Final** | Full stack | Full test suite; README and export docs updated in the same change |

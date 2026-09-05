@@ -125,11 +125,16 @@ Here's what the report it produces looks like:
 
 ### Intraday smile dynamics (sim)
 
+Each phase is independently validated over the constant-level/constant-tilt gates and
+a pinned bit-identical regression chain before the next is stacked; all dials default
+to legacy (bit-identical), so `skew_beta=skew_t_gamma=0` and `atm_budget=false`
+reproduce prior behavior exactly (fan-vs-market methodology, spec §3).
+
 The simulated smile now responds to the path's own volatility state. With
 `skew_beta = 0` (default) behavior is unchanged. `skew_beta > 0` tilts the IV curve
 when a path's GARCH sigma deviates from its calibrated mean: put wings get richer,
 call wings cheaper, ATM unchanged (`iv_t(m) += -skew_beta * clamp(sigma_t/sigma0 - 1,
--1, +3) * m`). The response is closed-form — the SVI is never refit at runtime.
+-1, +3) * (T0/T)^gamma * m`). The response is closed-form — the SVI is never refit at runtime.
 `skew_t_gamma` (0..1, literature anchor ~0.4) scales this tilt by `(T0/T)^gamma`, steepening wings toward expiry.
 
 `atm_budget = true` replaces the flat ATM level with a variance-budget anchor:
@@ -142,8 +147,7 @@ Note the anchor's state sensitivity is materially stronger than the legacy linea
 `vol_beta` link (it is the theory value: remaining variance scales with the persistent
 GARCH state); treat `budget_beta` as the A/B dial for that channel. The variance-risk-
 premium burn-off that makes real quiet-day late IV lower than the model's expectation
-is an accepted residual (spec §7). `skew_t_gamma` (0..1, literature anchor ~0.4)
-scales the skew tilt by `(T0/T)^gamma`, steepening wings toward expiry.
+is an accepted residual (spec §7).
 
 ### Reading results: win-rate sanity
 

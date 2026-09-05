@@ -59,6 +59,12 @@ def smile_iv(m, smile, sigma_t, dyn, t):
     base = smile.iv(m)
     if dyn.atm_budget:
         sig2t = dyn.v_bar + dyn.budget_beta * (sigma * sigma - dyn.v_bar)
+        # budget_beta>1 can push sig2t negative when a path's per-bar sigma sits below
+        # ~sqrt(v_bar*(bb-1)/bb) (intraday U-shape trough on quiet days); that would
+        # make v = a_tab + b_tab*sig2t negative and emit NaN through the sqrt below,
+        # which the final clip does NOT strip. Clamp to a physical variance floor.
+        # a_tab[t] >= 0 (S >= P) and b_tab[t] = P >= 0 guarantee v >= 0 once sig2t >= 0.
+        sig2t = np.maximum(sig2t, 0.0)
         v = dyn.a_tab[t] + dyn.b_tab[t] * sig2t
         level = dyn.iv0 * (np.sqrt(v / dyn.v0 * float(dyn.t_scale[t])) - 1.0)
     else:

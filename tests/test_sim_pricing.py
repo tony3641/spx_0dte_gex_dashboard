@@ -339,3 +339,12 @@ def test_late_window_entry_bias_report():
         "cohorts entered at different bars; credit means are not level-comparable"
     assert res["budget"].fill_credit[late_b].mean() > res["legacy"].fill_credit[late_l].mean()
 
+
+def test_budget_high_beta_low_sigma_is_finite():
+    """budget_beta>1 with sigma below the long-run floor must not emit NaN IV (final-review fix)."""
+    dyn, model = _ubars(budget_beta=2.0)
+    low = 0.30 * np.sqrt(dyn.v_bar)
+    for t in range(78):
+        iv = smile_iv(np.array([0.0]), model.smile, np.array([[low]]), dyn, t)[0, 0]
+        assert np.isfinite(iv), f"NaN IV at bar {t} (sig2t went negative)"
+
