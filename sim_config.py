@@ -39,6 +39,8 @@ class SimRunConfig:
     ladder_range_pct: float = 0.15
     skew_beta: float = 0.0              # smile tilt per unit vol-shock (>=0); 0 = legacy
     skew_t_gamma: float = 0.0           # expiry amplification exponent (0..1); 0 = Phase-A-only tilt
+    atm_budget: bool = False            # variance-budget ATM anchor (spec §7); False = legacy level shift
+    budget_beta: float = 1.0            # budget state-sensitivity scale (1.0 = theory)
 
     def steps_per_day(self) -> int:
         return (390 * 60) // BAR_SECONDS[self.bar_size]
@@ -78,6 +80,8 @@ class SimRunConfig:
             raise ValueError("skew_beta must be >= 0")
         if not (0 <= self.skew_t_gamma <= 1):
             raise ValueError("skew_t_gamma must be in [0, 1]")
+        if self.budget_beta < 0:
+            raise ValueError("budget_beta must be >= 0")
         if self.vol_cap_mult <= 0:
             raise ValueError("vol_cap_mult must be > 0")
         if self.atm_iv is not None and not (0 < self.atm_iv < 5.0):

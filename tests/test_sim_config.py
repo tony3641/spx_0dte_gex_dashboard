@@ -100,3 +100,14 @@ def test_t_gamma_default_is_neutral():
 def test_t_gamma_out_of_range_rejected():
     with pytest.raises(ValueError, match="skew_t_gamma"):
         _cfg(skew_t_gamma=1.5).validate()
+
+
+def test_budget_dials_default_neutral():
+    c = _cfg()
+    assert c.atm_budget is False
+    assert c.budget_beta == 1.0
+
+
+def test_negative_budget_beta_rejected():
+    with pytest.raises(ValueError, match="budget_beta"):
+        _cfg(budget_beta=-1.0).validate()
