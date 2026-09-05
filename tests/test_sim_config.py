@@ -91,3 +91,12 @@ def test_negative_skew_beta_rejected():
 
 def test_positive_skew_beta_accepted():
     _cfg(skew_beta=1.0).validate()   # must not raise
+
+
+def test_t_gamma_default_is_neutral():
+    assert _cfg().skew_t_gamma == 0.0
+
+
+def test_t_gamma_out_of_range_rejected():
+    with pytest.raises(ValueError, match="skew_t_gamma"):
+        _cfg(skew_t_gamma=1.5).validate()

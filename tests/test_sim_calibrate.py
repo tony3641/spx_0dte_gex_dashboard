@@ -202,3 +202,19 @@ def test_build_dynamics_neutral_fields():
     assert dyn.a_tab is None and dyn.b_tab is None
     assert dyn.t_scale.shape == (cfg.steps_per_day(),)
     assert np.array_equal(dyn.t_scale, np.ones(cfg.steps_per_day()))
+
+
+def test_build_dynamics_t_scale_table():
+    from sim_calibrate import build_dynamics
+    from sim_config import SimRunConfig
+    model = calibrate(_make_bars(), SimRunConfig(strategy_name="T", source="csv",
+                                                 bar_size="5m"))
+    cfg0 = SimRunConfig(strategy_name="T", source="csv", bar_size="5m")
+    assert np.array_equal(build_dynamics(model, cfg0).t_scale, np.ones(78))
+    cfg4 = SimRunConfig(strategy_name="T", source="csv", bar_size="5m",
+                        skew_t_gamma=0.4)
+    ts = build_dynamics(model, cfg4).t_scale
+    assert ts.shape == (78,)
+    assert ts[0] == 1.0                                  # anchored at the first bar
+    assert np.all(np.diff(ts) > 0.0)                     # grows monotonically to expiry
+    assert ts[-1] == pytest.approx(77 / 0.5)    # T_floor = half a 5-min bar (raw; gamma applied at eval)

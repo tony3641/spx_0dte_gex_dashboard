@@ -104,7 +104,7 @@ import json
 import os
 from dataclasses import dataclass, field
 
-from sim_config import SimRunConfig
+from sim_config import BAR_SECONDS, SimRunConfig
 from sim_data import BarSeries
 
 SMILE_CAPTURE_PATH = os.path.join("config", "sim_smile.json")
@@ -197,10 +197,17 @@ def build_dynamics(model: CalibratedModel, cfg: SimRunConfig) -> SmileDynamics:
     only, while these dials vary per run.
     """
     steps = cfg.steps_per_day()
+    t_scale = np.ones(steps)
+    if cfg.skew_t_gamma > 0.0:
+        # Same bar fraction as sim_pricing.bar_year_frac (avoided here to keep
+        # sim_calibrate free of a sim_pricing import): 252 RTH days x 6.5 h.
+        barf = BAR_SECONDS[cfg.bar_size] / (252 * 6.5 * 3600.0)
+        t_left = np.arange(steps - 1, -1, -1) * barf     # years to expiry after bar t
+        t_scale = t_left[0] / np.maximum(t_left, 0.5 * barf)
     return SmileDynamics(
         sigma0=model.sigma0, vol_beta=cfg.vol_beta, flat_iv=cfg.flat_iv,
         iv0=float(model.smile.iv(0.0)), skew_beta=cfg.skew_beta,
-        t_scale=np.ones(steps))
+        t_scale=t_scale, skew_t_gamma=cfg.skew_t_gamma)
 
 
 def fit_ushape(returns: np.ndarray, minute_of_day: np.ndarray, steps_per_day: int) -> np.ndarray:
