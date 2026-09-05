@@ -164,8 +164,14 @@ L(t) = iv0 * sqrt(V(t) / V0 * t_scale_t)               # annualized by remaining
   market snapshot at t=0 with no level jump.
 - Quiet-path behavior (`sigma_t ~ sqrt(v_bar)`): `L(t) = iv0 * sqrt(S(t)/S(0) * t_scale_t)`
   — a pure
-  U-shape ratio: fast early burn-off, midday trough, late firm-up. The intraday decay
+  U-shape ratio: fast early burn-off, then progressive firm-up into the close (the
+  trough's depth/timing follows the close-bucket weight). The intraday decay
   shape is *estimated from bar history*, with zero free parameters.
+- **State sensitivity vs legacy.** The anchor's sigma-sensitivity is materially
+  stronger than the legacy linear `vol_beta` link: with `p_eff ~= 0.95`, a 4x vol-state
+  shock raises remaining expected variance ~1.7x (annualized IV ~+30%), where the
+  legacy shift moves IV by well under 1%. This is the theory value — `budget_beta` is
+  the A/B dial for it (and for the implied-overreacts-vs-realized channel).
 - Stress behavior: through `B(t) * budget_beta * (sigma_t^2 - v_bar)`, elevated path
   sigma raises remaining expected variance and the IV level — the stress channel the
   legacy `vol_beta` shift provided, now with time-consistent persistence (`p_eff^k`).
