@@ -283,3 +283,59 @@ def test_budget_off_branch_bit_identical_to_legacy_expression():
     legacy = np.clip(model.smile.iv(m) + 0.75 * (sigma - SIGMA0), 0.01, 5.0)
     assert np.array_equal(out, legacy)
 
+
+def test_late_window_entry_bias_report():
+    """Gate C' deliverable (spec §8 item 6): the original motivation, quantified.
+
+    Deterministic directional case: close-heavy U-shape + elevated vol state. The
+    budget anchor's annualized remaining variance concentrates in the close bucket,
+    so late-window entries price RICHER than under the legacy flat level. The real
+    market's late-day IV crush comes from variance-premium burn-off, which is an
+    accepted residual (spec §7) — expect the anchor to move the other way from the
+    premium on quiet real days. Print the numbers for the Gate C' report.
+
+    The permissive short-delta band qualifies at the window open for every path, so
+    no path reaches the late window naturally (fixture captures are all bar 0). Gate
+    eligibility with run_entry's per_path_start, staggering starts across bars
+    47..53 (the accepted Task 8 fix): both cohorts enter in the late window at
+    IDENTICAL bars, so the credit means are comparable and differ only by the
+    budget-vs-legacy LEVEL. A uniform level shift raises the credit via vega (the
+    near-ATM short leg is the higher-vega side), so budget > legacy here — this is
+    NOT the backwards tilt direction rejected in Ruling #9.
+    """
+    from types import SimpleNamespace
+
+    from sim_calibrate import build_dynamics
+    from sim_config import SimRunConfig
+    from sim_engine import run_entry
+
+    u = np.interp(np.arange(78), [0, 6, 39, 72, 77], [2.0, 0.7, 0.6, 1.6, 2.4])
+    u /= u.mean()
+    g = GarchParams(omega=2e-10, alpha=0.05, gamma=0.10, beta=0.85, nu=6.0,
+                    converged=True)
+    v_bar = g.omega / (1.0 - (g.alpha + g.gamma / 2.0 + g.beta))
+    model = CalibratedModel(garch=g, ushape=u, sigma0=float(np.sqrt(v_bar)),
+                            smile=DEFAULT_SMILE, vix0=15.0, source="test")
+    rng = np.random.default_rng(1)
+    spots = np.full((60, 78), 6000.0) + rng.normal(0, 2.0, (60, 78)).cumsum(1) * 0.1
+    paths = SimpleNamespace(spots=spots, sigmas=np.full((60, 78), 1.5 * np.sqrt(v_bar)))
+    ladder = np.arange(5100.0, 6900.0 + 2.5, 5.0)
+    starts = 47 + np.arange(60) % 7                  # force eligibility into late bars 47..53
+    res = {}
+    for tag, kw in [("legacy", {}), ("budget", {"atm_budget": True})]:
+        cfg = SimRunConfig(strategy_name="T", bar_size="5m", skew_beta=1.0, **kw)
+        es = run_entry(model, cfg, _strategy_sim(), paths, ladder,
+                       per_path_start=starts, dyn=build_dynamics(model, cfg))
+        res[tag] = es
+    for tag in res:
+        late = (res[tag].entry_minute >= 47) & res[tag].entered
+        print(f"{tag}: late-window mean fill credit "
+              f"{res[tag].fill_credit[late].mean():.4f}")
+    late_l = (res["legacy"].entry_minute >= 47) & res["legacy"].entered
+    late_b = (res["budget"].entry_minute >= 47) & res["budget"].entered
+    assert late_l.any() and late_b.any()
+    assert np.array_equal(res["legacy"].entry_minute[res["legacy"].entered],
+                          res["budget"].entry_minute[res["budget"].entered]), \
+        "cohorts entered at different bars; credit means are not level-comparable"
+    assert res["budget"].fill_credit[late_b].mean() > res["legacy"].fill_credit[late_l].mean()
+

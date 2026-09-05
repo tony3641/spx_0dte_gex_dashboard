@@ -132,6 +132,19 @@ call wings cheaper, ATM unchanged (`iv_t(m) += -skew_beta * clamp(sigma_t/sigma0
 -1, +3) * m`). The response is closed-form — the SVI is never refit at runtime.
 `skew_t_gamma` (0..1, literature anchor ~0.4) scales this tilt by `(T0/T)^gamma`, steepening wings toward expiry.
 
+`atm_budget = true` replaces the flat ATM level with a variance-budget anchor:
+ATM IV is re-anchored each bar to the model's annualized remaining expected variance
+(closed-form GJR conditional expectation weighted by the intraday U-shape), normalized
+so the first bar matches the captured snapshot exactly. Quiet paths now show the
+model's intraday IV profile — early burn-off and progressive firm-up into the close
+(the trough's depth/timing follows the close-bucket weight) — instead of a flat level.
+Note the anchor's state sensitivity is materially stronger than the legacy linear
+`vol_beta` link (it is the theory value: remaining variance scales with the persistent
+GARCH state); treat `budget_beta` as the A/B dial for that channel. The variance-risk-
+premium burn-off that makes real quiet-day late IV lower than the model's expectation
+is an accepted residual (spec §7). `skew_t_gamma` (0..1, literature anchor ~0.4)
+scales the skew tilt by `(T0/T)^gamma`, steepening wings toward expiry.
+
 ### Reading results: win-rate sanity
 
 The engine is deterministic (same seed + same inputs = identical results) and covered by

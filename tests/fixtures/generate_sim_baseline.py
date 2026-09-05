@@ -54,6 +54,7 @@ def main() -> None:
                        bar_size="5m", n_paths=60, seed=42)
     cfg.skew_beta = a.skew_beta    # apply the dial or the npz is silently the neutral capture
     cfg.skew_t_gamma = a.t_gamma   # expiry-amplification dial (Phase B); apply or AB == A
+    cfg.atm_budget = a.budget      # variance-budget ATM anchor (Phase C'); apply or ABC == AB
     cfg.validate()
     bars = load_bars(cfg)
     model = calibrate(bars, cfg)

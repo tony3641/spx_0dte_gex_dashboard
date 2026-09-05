@@ -92,3 +92,17 @@ def test_phase_B_gamma0_matches_phase_A():
 
 def test_phase_B_activated_baseline_unchanged():
     _assert_cell_matches(_npz("AB"), *_cell(AB_STATE))
+
+
+ABC_STATE = {"skew_beta": 1.0, "skew_t_gamma": 0.4, "atm_budget": True,
+             "budget_beta": 1.0}
+
+
+def test_phase_C_budget_off_matches_phase_B():
+    """Gate C' chain link: atm_budget=False must reproduce the Phase-B baseline."""
+    _assert_cell_matches(_npz("AB"), *_cell(AB_STATE))
+
+
+def test_phase_C_full_stack_baseline_unchanged():
+    """Gate C' terminal link: the full-stack (ABC) npz is pinned by this test."""
+    _assert_cell_matches(_npz("ABC"), *_cell(ABC_STATE))
