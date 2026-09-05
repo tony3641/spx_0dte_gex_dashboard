@@ -218,3 +218,57 @@ def test_build_dynamics_t_scale_table():
     assert ts[0] == 1.0                                  # anchored at the first bar
     assert np.all(np.diff(ts) > 0.0)                     # grows monotonically to expiry
     assert ts[-1] == pytest.approx(77 / 0.5)    # T_floor = half a 5-min bar (raw; gamma applied at eval)
+
+
+def _budget_cfg(**kw):
+    from sim_config import SimRunConfig
+    return SimRunConfig(strategy_name="T", source="csv", bar_size="5m",
+                        atm_budget=True, **kw)
+
+
+def test_budget_tables_match_direct_summation():
+    from sim_calibrate import build_dynamics
+    bars = _make_bars()
+    cfg = _budget_cfg()
+    model = calibrate(bars, cfg)
+    dyn = build_dynamics(model, cfg)
+    steps = 78
+    barf = 300 / (252 * 6.5 * 3600.0)
+    u2 = np.asarray(model.ushape, dtype=float)[:steps] ** 2 * barf
+    p_eff = (model.garch.alpha + model.garch.gamma * cfg.gamma_mult / 2.0
+             + model.garch.beta)
+    v_bar = model.garch.omega / (1.0 - p_eff)
+    for t in (0, 1, 39, 76):
+        ks = np.arange(t + 1, steps)
+        s_direct = float(np.sum(u2[t + 1:]))
+        p_direct = float(np.sum(p_eff ** (ks - t) * u2[ks]))
+        assert dyn.a_tab[t] + dyn.b_tab[t] * v_bar == pytest.approx(v_bar * s_direct,
+                                                                    rel=1e-12)
+        assert dyn.b_tab[t] == pytest.approx(p_direct, rel=1e-12)
+    assert dyn.v0 == pytest.approx(v_bar * float(np.sum(u2[1:])), rel=1e-12)
+    assert dyn.v_bar == pytest.approx(v_bar, rel=1e-15)
+
+
+def test_conditional_expectation_closed_form():
+    """E[sigma^2_{t+k}] = v_bar + p^k (sigma^2 - v_bar): iterate the exact E-map."""
+    from sim_config import SimRunConfig
+    bars = _make_bars()
+    cfg = SimRunConfig(strategy_name="T", source="csv", bar_size="5m")
+    model = calibrate(bars, cfg)
+    g = model.garch
+    p_eff = g.alpha + g.gamma / 2.0 + g.beta
+    v_bar = g.omega / (1.0 - p_eff)
+    s2 = 3.0 * v_bar
+    for k in range(1, 60):
+        s2 = g.omega + p_eff * s2                      # exact expectation recursion
+        assert s2 == pytest.approx(v_bar + p_eff ** k * (3.0 * v_bar - v_bar),
+                                   rel=1e-12)
+
+
+def test_budget_off_leaves_tables_empty():
+    from sim_calibrate import build_dynamics
+    from sim_config import SimRunConfig
+    cfg = SimRunConfig(strategy_name="T", source="csv", bar_size="5m")
+    model = calibrate(_make_bars(), cfg)
+    dyn = build_dynamics(model, cfg)
+    assert dyn.a_tab is None and dyn.b_tab is None and dyn.v0 == 0.0

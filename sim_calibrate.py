@@ -197,17 +197,39 @@ def build_dynamics(model: CalibratedModel, cfg: SimRunConfig) -> SmileDynamics:
     only, while these dials vary per run.
     """
     steps = cfg.steps_per_day()
+    # Same bar fraction as sim_pricing.bar_year_frac (avoided here to keep
+    # sim_calibrate free of a sim_pricing import): 252 RTH days x 6.5 h.
+    barf = BAR_SECONDS[cfg.bar_size] / (252 * 6.5 * 3600.0)
     t_scale = np.ones(steps)
-    if cfg.skew_t_gamma > 0.0:
-        # Same bar fraction as sim_pricing.bar_year_frac (avoided here to keep
-        # sim_calibrate free of a sim_pricing import): 252 RTH days x 6.5 h.
-        barf = BAR_SECONDS[cfg.bar_size] / (252 * 6.5 * 3600.0)
+    if cfg.skew_t_gamma > 0.0 or cfg.atm_budget:
         t_left = np.arange(steps - 1, -1, -1) * barf     # years to expiry after bar t
         t_scale = t_left[0] / np.maximum(t_left, 0.5 * barf)
+    v_bar = a_tab = b_tab = None
+    v0 = 0.0
+    if cfg.atm_budget:
+        g = model.garch
+        # p_eff must mirror sim_paths.py:21 (gamma_mult scales the GJR term); the
+        # 1/2 comes from E[neg * eps^2] = E[eps^2]/2 by symmetry of the shocks.
+        p_eff = g.alpha + g.gamma * cfg.gamma_mult / 2.0 + g.beta
+        v_bar_val = g.omega / (1.0 - p_eff)
+        u2 = np.asarray(model.ushape, dtype=float)[:steps] ** 2 * barf
+        # S(t) = sum_{k>t} u2[k];  P(t) = sum_{k>t} p_eff^(k-t) u2[k]
+        S = np.zeros(steps)
+        P = np.zeros(steps)
+        for t in range(steps - 2, -1, -1):
+            S[t] = S[t + 1] + u2[t + 1]
+            P[t] = p_eff * u2[t + 1] + p_eff * P[t + 1]
+        v_bar = v_bar_val
+        a_tab = v_bar_val * (S - P)      # A(t) = v_bar*(S(t)-P(t))
+        b_tab = P                        # B(t) = P(t)
+        v0 = v_bar_val * float(S[0])     # V(0, initial state sigma^2 = v_bar)
     return SmileDynamics(
         sigma0=model.sigma0, vol_beta=cfg.vol_beta, flat_iv=cfg.flat_iv,
         iv0=float(model.smile.iv(0.0)), skew_beta=cfg.skew_beta,
-        t_scale=t_scale, skew_t_gamma=cfg.skew_t_gamma)
+        t_scale=t_scale, skew_t_gamma=cfg.skew_t_gamma,
+        atm_budget=cfg.atm_budget, budget_beta=cfg.budget_beta,
+        v_bar=v_bar if v_bar is not None else 0.0,
+        a_tab=a_tab, b_tab=b_tab, v0=v0)
 
 
 def fit_ushape(returns: np.ndarray, minute_of_day: np.ndarray, steps_per_day: int) -> np.ndarray:
