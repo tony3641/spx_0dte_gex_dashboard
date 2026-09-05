@@ -197,7 +197,8 @@ def execute_pipeline(cfg: SimRunConfig, bars: BarSeries, progress_cb: Callable,
                                                     gamma_mult=cfg.gamma_mult,
                                                     vol_beta=cfg.vol_beta, flat_iv=cfg.flat_iv,
                                                     atm_iv=cfg.atm_iv,
-                                                    vol_cap_mult=cfg.vol_cap_mult),
+                                                    vol_cap_mult=cfg.vol_cap_mult,
+                                                    skew_beta=cfg.skew_beta),
                 cancelled=cancelled)
     # SPX path fan: a property of the market simulation, not of any sweep cell (spot
     # dynamics ignore SL/k), so the first cell's full path set represents the run. A

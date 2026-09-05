@@ -123,6 +123,14 @@ Here's what the report it produces looks like:
   tick-floored conservative side (never better than the natural); **expiry settles at
   intrinsic value**. Stops trigger at mark ≥ multiplier × collected credit (+ slippage).
 
+### Intraday smile dynamics (sim)
+
+The simulated smile now responds to the path's own volatility state. With
+`skew_beta = 0` (default) behavior is unchanged. `skew_beta > 0` tilts the IV curve
+when a path's GARCH sigma deviates from its calibrated mean: put wings get richer,
+call wings cheaper, ATM unchanged (`iv_t(m) += -skew_beta * clamp(sigma_t/sigma0 - 1,
+-1, +3) * m`). The response is closed-form — the SVI is never refit at runtime.
+
 ### Reading results: win-rate sanity
 
 The engine is deterministic (same seed + same inputs = identical results) and covered by

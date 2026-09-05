@@ -273,3 +273,40 @@ def test_explicit_dyn_matches_lazy_build():
                             dyn=build_dynamics(model, cfg))
     assert np.array_equal(es_lazy.entered, es_explicit.entered)
     assert np.array_equal(es_lazy.fill_credit, es_explicit.fill_credit)
+
+
+def test_skew_tilt_moves_put_credits_with_sigma_state():
+    """Gate A behavioral signature (spec 2026-09-05 §8 Gate A(3), corrected).
+
+    tilt = -skew_beta * clamp(sigma_t/sigma0 - 1, -1, +3) * m. A bull-put spread
+    SELLS the near-ATM put (m ~ 0, where the tilt is ~0) and BUYS the deeper-OTM
+    wing put (m < 0). On a vol SPIKE (ratio > 0) the tilt richens the put wing, so
+    the leg we BUY appreciates more than the leg we SELL and the net fill credit
+    FALLS monotonically; on a vol COLLAPSE (ratio < 0) the wing cheapens and the
+    credit RISES monotonically; at sigma_t == sigma0 the tilt is identically zero
+    and the fills are bit-identical. Same down-drift paths, only skew_beta toggles.
+    """
+    from sim_calibrate import DEFAULT_SMILE, CalibratedModel, GarchParams
+    model = CalibratedModel(
+        garch=GarchParams(omega=2e-10, alpha=0.05, gamma=0.10, beta=0.85, nu=6.0,
+                          converged=True),
+        ushape=np.ones(78), sigma0=0.0005, smile=DEFAULT_SMILE, vix0=15.0, source="test")
+    cfg0 = SimRunConfig(strategy_name="T", bar_size="5m")
+    cfg1 = SimRunConfig(strategy_name="T", bar_size="5m", skew_beta=1.0)
+    strat = _strategy()
+
+    def fills(sigma_mult):
+        paths = _paths()
+        paths.spots = paths.spots * np.linspace(1.0, 0.97, paths.spots.shape[1])[None, :]
+        paths.sigmas = np.full_like(paths.sigmas, 0.0005 * sigma_mult)
+        return (run_entry(model, cfg0, strat, paths, _ladder()).fill_credit,
+                run_entry(model, cfg1, strat, paths, _ladder()).fill_credit)
+
+    f0, f1 = fills(1.8)                       # vol spike: put wing richens -> credit falls
+    assert (f1 <= f0 + 1e-12).all()
+    assert f1.sum() < f0.sum()
+    f0, f1 = fills(0.5)                       # vol collapse: put wing cheapens -> credit rises
+    assert (f1 >= f0 - 1e-12).all()
+    assert f1.sum() > f0.sum()
+    f0, f1 = fills(1.0)                       # sigma_t == sigma0: tilt identically zero
+    assert np.array_equal(f1, f0)

@@ -70,3 +70,11 @@ def _assert_cell_matches(z, entry, trials):
 
 def test_legacy_baseline_unchanged():
     _assert_cell_matches(_npz("legacy"), *_cell(LEGACY))
+
+
+A_STATE = {"skew_beta": 1.0, "skew_t_gamma": 0.0, "atm_budget": False}
+
+
+def test_phase_A_activated_baseline_unchanged():
+    """Gate A: skew_beta=1.0 outputs are pinned; Task 8 re-links to this npz."""
+    _assert_cell_matches(_npz("A"), *_cell(A_STATE))
