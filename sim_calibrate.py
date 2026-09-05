@@ -167,6 +167,42 @@ class CalibratedModel:
         return float(self.sigma0 * np.sqrt(cfg.steps_per_day() * 252))
 
 
+@dataclass(frozen=True)
+class SmileDynamics:
+    """Run-level smile response dials + precomputed tables (smile-dynamics spec §4).
+
+    Neutral values (skew_beta=0, skew_t_gamma=0, atm_budget=False) reproduce the
+    legacy IV formula clip(smile.iv(m) + vol_beta*(sigma - sigma0), 0.01, 5.0)
+    bit-for-bit — tests/test_sim_regression.py enforces the chain.
+    """
+    sigma0: float
+    vol_beta: float
+    flat_iv: bool
+    iv0: float
+    skew_beta: float = 0.0
+    t_scale: object = None      # (steps,) T_ref/max(T_t,T_floor); ones = neutral
+    skew_t_gamma: float = 0.0
+    atm_budget: bool = False
+    budget_beta: float = 1.0
+    v_bar: float = 0.0
+    a_tab: object = None        # (steps,) A(t) = v_bar*(S(t)-P(t))
+    b_tab: object = None        # (steps,) B(t) = P(t)
+    v0: float = 0.0
+
+
+def build_dynamics(model: CalibratedModel, cfg: SimRunConfig) -> SmileDynamics:
+    """Per-run smile dynamics from cfg dials. O(steps) precompute.
+
+    Never cache this with the model: sim_jobs._CALIB_CACHE keys on the data source
+    only, while these dials vary per run.
+    """
+    steps = cfg.steps_per_day()
+    return SmileDynamics(
+        sigma0=model.sigma0, vol_beta=cfg.vol_beta, flat_iv=cfg.flat_iv,
+        iv0=float(model.smile.iv(0.0)), skew_beta=cfg.skew_beta,
+        t_scale=np.ones(steps))
+
+
 def fit_ushape(returns: np.ndarray, minute_of_day: np.ndarray, steps_per_day: int) -> np.ndarray:
     """Multiplicative per-bar vol profile from mean |return| by minute-of-day, smoothed."""
     # RTH day is 390 minutes (09:30-16:00). Derive the per-bar width in whole

@@ -183,3 +183,22 @@ def test_calibrate_end_to_end():
     assert model.source == "csv"
     ann = model.sigma_annual(SimRunConfig(strategy_name="Main"))
     assert 0.02 < ann < 5.0
+
+
+def test_build_dynamics_neutral_fields():
+    from sim_calibrate import build_dynamics
+    from sim_config import SimRunConfig
+    bars = _make_bars()
+    cfg = SimRunConfig(strategy_name="T", source="csv", bar_size="5m")
+    model = calibrate(bars, cfg)
+    dyn = build_dynamics(model, cfg)
+    assert dyn.sigma0 == model.sigma0
+    assert dyn.vol_beta == cfg.vol_beta == 0.75
+    assert dyn.flat_iv is False
+    assert dyn.iv0 == float(model.smile.iv(0.0))
+    assert dyn.skew_beta == 0.0
+    assert dyn.skew_t_gamma == 0.0
+    assert dyn.atm_budget is False
+    assert dyn.a_tab is None and dyn.b_tab is None
+    assert dyn.t_scale.shape == (cfg.steps_per_day(),)
+    assert np.array_equal(dyn.t_scale, np.ones(cfg.steps_per_day()))
