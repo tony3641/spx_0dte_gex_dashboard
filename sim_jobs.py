@@ -8,7 +8,7 @@ from typing import Callable, Dict, Optional
 
 import numpy as np
 
-from sim_calibrate import CalibratedModel, calibrate
+from sim_calibrate import CalibratedModel, build_dynamics, calibrate
 from sim_config import SimRunConfig, sweep_cells
 from sim_data import BarSeries, load_bars
 from sim_engine import run_cell, run_family
@@ -152,6 +152,7 @@ def execute_pipeline(cfg: SimRunConfig, bars: BarSeries, progress_cb: Callable,
     if cfg.mode == "family" and state is not None:
         children = [s for s in state.strategies.values() if s.parent_name == strat.name]
     ladder = build_ladder(spot0, cfg.ladder_range_pct)
+    dyn = build_dynamics(model, cfg)   # per-run dials; NOT cached with the model
     cells = sweep_cells(cfg)
     results = []
     spx_chunks = []     # first cell's market paths -> SPX fan (see note below the loop)
@@ -168,7 +169,7 @@ def execute_pipeline(cfg: SimRunConfig, bars: BarSeries, progress_cb: Callable,
             if ci == 0:
                 spx_chunks.append(paths.spots)
             if cfg.mode == "family" and children:
-                _, total = run_family(model, cfg, strat, children, paths, ladder)
+                _, total = run_family(model, cfg, strat, children, paths, ladder, dyn=dyn)
                 from sim_engine import TrialResult
                 trials = [TrialResult(entered=True, entry_minute=-1, exit_minute=-1,
                                       exit_reason="expired", short_strike=0, long_strike=0,
@@ -176,7 +177,7 @@ def execute_pipeline(cfg: SimRunConfig, bars: BarSeries, progress_cb: Callable,
                                       pnl=float(total[p])) for p in range(n_here)]
             else:
                 trials = run_cell(model, cfg, strat, paths, ladder,
-                                  sl_multiplier=cell["sl_multiplier"], k=cell["k"])
+                                  sl_multiplier=cell["sl_multiplier"], k=cell["k"], dyn=dyn)
             pnls_all += [t.pnl for t in trials]
             trials_all += trials
             mtms_all += [t.mtm for t in trials if t.mtm is not None]

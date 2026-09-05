@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from sim_calibrate import CalibratedModel, DEFAULT_SMILE, GarchParams
+from sim_calibrate import CalibratedModel, DEFAULT_SMILE, GarchParams, calibrate
 from sim_config import SimRunConfig
 from sim_engine import EntryState, extract_conditions, run_entry, window_minutes
 from sim_paths import SimPaths
@@ -257,3 +257,19 @@ def test_run_cell_end_to_end_small():
     for r in res:
         if r.entered:
             assert r.mtm is not None and np.isnan(r.mtm[: r.entry_minute]).all()
+
+
+def test_explicit_dyn_matches_lazy_build():
+    from sim_calibrate import build_dynamics
+    from sim_data import parse_csv
+    import os
+    cfg = SimRunConfig(strategy_name="T", source="csv",
+                       csv_path=os.path.join("tests", "fixtures", "sim_bars_5m.csv"),
+                       bar_size="5m")
+    bars = parse_csv(cfg.csv_path, 300)
+    model = calibrate(bars, cfg)
+    es_lazy = run_entry(model, cfg, _strategy(), _paths(), _ladder())
+    es_explicit = run_entry(model, cfg, _strategy(), _paths(), _ladder(),
+                            dyn=build_dynamics(model, cfg))
+    assert np.array_equal(es_lazy.entered, es_explicit.entered)
+    assert np.array_equal(es_lazy.fill_credit, es_explicit.fill_credit)

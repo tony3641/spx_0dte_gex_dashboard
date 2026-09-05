@@ -38,13 +38,26 @@ def bsm_put_delta(S, K, T, r, sigma):
     return ndtr(d1) - 1.0
 
 
-def smile_iv(m, smile, sigma_col, sigma0, vol_beta, flat_iv, iv_atm):
-    """IV matrix from log-moneyness m (broadcastable) + vol-level link lam*(sigma - sigma0)."""
-    if flat_iv:
-        return np.full(np.broadcast_shapes(np.shape(m), np.shape(sigma_col)), float(iv_atm))
+_VOL_RATIO_MIN = -1.0
+_VOL_RATIO_MAX = 3.0
+
+
+def smile_iv(m, smile, sigma_t, dyn, t):
+    """IV at bar t from log-moneyness m + per-path per-bar sigma_t (smile-dynamics spec §4).
+
+    dyn is a sim_calibrate.SmileDynamics carrying the run's dials/tables; neutral dyn
+    reproduces the legacy formula exactly:
+        clip(smile.iv(m) + vol_beta*(sigma - sigma0), 0.01, 5.0)
+    """
+    m = np.asarray(m, dtype=float)
+    sigma = np.asarray(sigma_t, dtype=float)
+    if dyn.flat_iv:
+        return np.full(np.broadcast_shapes(m.shape, sigma.shape), dyn.iv0)
     base = smile.iv(m)
-    linked = base + vol_beta * (np.asarray(sigma_col) - sigma0)
-    return np.clip(linked, 0.01, 5.0)
+    level = dyn.vol_beta * (sigma - dyn.sigma0)
+    ratio = np.clip(sigma / dyn.sigma0 - 1.0, _VOL_RATIO_MIN, _VOL_RATIO_MAX)
+    tilt = -dyn.skew_beta * (float(dyn.t_scale[t]) ** dyn.skew_t_gamma) * ratio * m
+    return np.clip(base + level + tilt, 0.01, 5.0)
 
 
 def half_spread(m, hs_atm):
